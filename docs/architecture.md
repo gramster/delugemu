@@ -35,12 +35,38 @@ How delugemu is structured and how it plugs into QEMU.
 `scripts/integrate.sh`:
 
 1. Symlinks `src/` to `qemu/hw/deluge`.
-2. Appends a single, marker-guarded `subdir('deluge')` to `qemu/hw/meson.build`.
+2. Symlinks our public headers into `qemu/include/hw/<category>/` so they
+   resolve on the normal compiler include path.
+3. Appends a single, marker-guarded `subdir('deluge')` to `qemu/hw/meson.build`.
+4. Appends a single, marker-guarded `source deluge/Kconfig` to `qemu/hw/Kconfig`.
 
 Our `src/meson.build` then adds the model sources to the `arm-softmmu` target's
 source set, conditional on a `CONFIG_DELUGE` Kconfig switch
-(`src/Kconfig`). Running `integrate.sh --undo` removes both the symlink and the
-injected line, restoring a clean tree.
+(`src/Kconfig`). Running `integrate.sh --undo` removes the symlinks and the
+injected lines, restoring a pristine tree.
+
+### Keeping the submodule working tree clean
+
+QEMU has no out-of-tree device build, so the four steps above necessarily touch
+files *inside* the submodule. Left unmanaged that shows up as a dirty submodule
+(`m qemu` in the parent repo) plus a pile of untracked symlinks — both easy to
+stage, commit, or clobber by accident. To keep design goal #2 honest,
+`integrate.sh` makes the injection invisible to git, locally and reversibly:
+
+- The two appended tracked files (`hw/meson.build`, `hw/Kconfig`) are marked
+  `git update-index --skip-worktree`, so git ignores our local edits and the
+  submodule reports clean.
+- The injected symlinks (`hw/deluge`, the `include/hw/*/*.h` headers) are added
+  to the submodule's `.git/info/exclude`, so they never appear as untracked and
+  cannot be `git add`ed into QEMU.
+
+Both are local to the checkout (never committed anywhere) and the recorded
+submodule commit is never changed. `integrate.sh --undo` clears the
+skip-worktree bits, strips the exclude block, and removes the appended lines
+byte-for-byte, returning the submodule to a pristine state. Because
+skip-worktree pins those two files, run `integrate.sh --undo` before bumping the
+pinned QEMU revision (otherwise the checkout of `hw/meson.build`/`hw/Kconfig`
+would be blocked).
 
 ## Object model (QOM)
 
