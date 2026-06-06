@@ -20,6 +20,7 @@ If --write-preview is set, it writes a copy with the detected rectangle drawn.
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -128,21 +129,35 @@ def print_scale_report(rect: OledRect, target_mult: float) -> None:
         )
 
 
-def centered_target_rect(rect: OledRect, target_mult: float) -> OledRect:
+def centered_target_rect(
+    rect: OledRect,
+    target_mult: float,
+    top_overhang_frac: float,
+) -> OledRect:
     target_w = int(round(OLED_W * target_mult))
     target_h = int(round(OLED_H * target_mult))
 
-    cx = rect.x + rect.w / 2.0
-    cy = rect.y + rect.h / 2.0
+    if not (0.0 <= top_overhang_frac <= 1.0):
+        raise ValueError("top_overhang_frac must be in [0,1]")
 
+    # Horizontal alignment stays centered.
+    cx = rect.x + rect.w / 2.0
     x = int(round(cx - target_w / 2.0))
-    y = int(round(cy - target_h / 2.0))
+
+    # Vertical alignment can bias extra height above the detected aperture.
+    extra_h = target_h - rect.h
+    top_overhang = int(math.floor(extra_h * top_overhang_frac))
+    y = rect.y - top_overhang
 
     return OledRect(x=x, y=y, w=target_w, h=target_h, score=0.0)
 
 
-def print_centered_target_report(rect: OledRect, target_mult: float) -> None:
-    target = centered_target_rect(rect, target_mult)
+def print_centered_target_report(
+    rect: OledRect,
+    target_mult: float,
+    top_overhang_frac: float,
+) -> None:
+    target = centered_target_rect(rect, target_mult, top_overhang_frac)
 
     left_overhang = rect.x - target.x
     right_overhang = (target.x + target.w) - (rect.x + rect.w)
@@ -153,7 +168,8 @@ def print_centered_target_report(rect: OledRect, target_mult: float) -> None:
     print("Centered fixed viewport (no global image distortion):")
     print(
         f"  target x={target.x}, y={target.y}, w={target.w}, h={target.h} "
-        f"(centered on detected OLED)"
+        f"(x centered, vertical overhang split top={top_overhang_frac:.3f} / "
+        f"bottom={1.0 - top_overhang_frac:.3f})"
     )
     print(
         "  overhang vs detected aperture "
@@ -183,10 +199,11 @@ def write_preview_with_target(
     img: np.ndarray,
     rect: OledRect,
     target_mult: float,
+    top_overhang_frac: float,
     out_path: Path,
 ) -> None:
     preview = img.copy()
-    target = centered_target_rect(rect, target_mult)
+    target = centered_target_rect(rect, target_mult, top_overhang_frac)
 
     # Detected bezel/aperture from photo.
     cv2.rectangle(preview, (rect.x, rect.y), (rect.x + rect.w, rect.y + rect.h), (0, 255, 255), 2)
@@ -228,6 +245,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True, type=Path)
     parser.add_argument("--target-mult", type=float, default=2.0)
+    parser.add_argument(
+        "--top-overhang-frac",
+        type=float,
+        default=0.75,
+        help=(
+            "Fraction of the target-height overhang placed above the detected "
+            "aperture (0.75 means 75%% top / 25%% bottom)."
+        ),
+    )
     parser.add_argument("--write-preview", type=Path)
     args = parser.parse_args()
 
@@ -237,10 +263,16 @@ def main() -> None:
 
     rect = detect_oled_rect(img)
     print_scale_report(rect, args.target_mult)
-    print_centered_target_report(rect, args.target_mult)
+    print_centered_target_report(rect, args.target_mult, args.top_overhang_frac)
 
     if args.write_preview:
-        write_preview_with_target(img, rect, args.target_mult, args.write_preview)
+        write_preview_with_target(
+            img,
+            rect,
+            args.target_mult,
+            args.top_overhang_frac,
+            args.write_preview,
+        )
         print(f"Preview written: {args.write_preview}")
 
 
