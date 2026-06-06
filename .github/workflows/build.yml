@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Building QEMU is expensive; let newer pushes cancel in-flight runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-smoke:
+    name: Build qemu-system-arm + smoke test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout (without submodules; we fetch QEMU shallowly)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev flex bison
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja pkg-config glib pixman meson
+
+      - name: Bootstrap QEMU submodule
+        run: ./scripts/bootstrap.sh
+
+      - name: Integrate device models
+        run: ./scripts/integrate.sh
+
+      - name: Build
+        run: ./scripts/build.sh
+
+      - name: Smoke test
+        run: ./tests/smoke.sh

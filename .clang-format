@@ -1,0 +1,18 @@
+# QEMU coding style. Keep in sync with qemu/.clang-format so our device models
+# match the upstream tree they are linked into.
+---
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 80
+AllowShortFunctionsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterStruct: false
+SpaceAfterCStyleCast: false
+SortIncludes: false
+AlignTrailingComments: true

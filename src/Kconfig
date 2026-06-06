@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Kconfig for the Deluge board/SoC models.
+#
+# scripts/integrate.sh links this tree in as qemu/hw/deluge and appends
+# `source deluge/Kconfig` to qemu/hw/Kconfig so these symbols are visible.
+#
+# DELUGE defaults on for any build that includes the Arm hardware (which the
+# arm-softmmu target does), so the `deluge` machine is available without
+# touching QEMU's own default-configs. It selects the generic infrastructure
+# the board and SoC depend on.
+
+config DELUGE
+    bool
+    default y
+    depends on ARM
+    select ARM_GIC          # Cortex-A9 MPCore interrupt controller
+    select PL310            # L2 cache controller (modelled as no-op)
+    select PTIMER           # for timer models added later
+    select UNIMP            # create_unimplemented_device() for the catch-all

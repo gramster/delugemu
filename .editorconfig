@@ -1,0 +1,28 @@
+# EditorConfig — https://editorconfig.org
+# C source follows the QEMU coding style (4-space indent, no tabs).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h}]
+indent_style = space
+indent_size = 4
+max_line_length = 80
+
+[*.{sh,py}]
+indent_style = space
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+[meson.build]
+indent_style = space
+indent_size = 2

@@ -1,0 +1,26 @@
+# Build output
+/build/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# QEMU in-tree build artifacts (the submodule itself is tracked, its build is not)
+/qemu/build/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python virtualenvs (used by helper scripts / firmware toolchain)
+.venv/
+__pycache__/
+*.pyc
+
+# Local config overrides
+/.env
+/local.mk
