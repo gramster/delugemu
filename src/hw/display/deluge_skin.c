@@ -244,13 +244,14 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
 
         for (int side = 0; side < 2; side++) {
             int x = DELUGE_SKIN_PAD_SIDE_X0 + side * DELUGE_SKIN_PAD_SIDE_DX;
+            int side_y = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
             int col = 16 + side;
             uint8_t rr = p->rgb[col][row][0];
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
 
             if (rr || gg || bb) {
-                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 215);
+                deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, 215);
             }
         }
     }
