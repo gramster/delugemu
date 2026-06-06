@@ -21,8 +21,14 @@
  *     whose top bit reports whether an OLED is fitted.
  *
  * Full decoding of the remaining commands (LEDs, scrolling, display data) and
- * synthesising pad/button/encoder input events are handled in later layers; an
+ * synthesising pad/button input events are handled in later layers; an
  * unrecognised command is framed here as a zero-payload message.
+ *
+ * Inbound events: this layer also synthesises the PIC-to-firmware input stream.
+ * Pad and button presses/releases are encoded with the same matrix indices and
+ * NEXT_PAD_OFF framing the hardware uses, and an idle heartbeat reports "no
+ * presses happening" whenever nothing is held. The host-input mapping that
+ * drives these is a separate layer.
  *
  * Copyright (c) 2026 delugemu contributors
  *
@@ -32,6 +38,7 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "chardev/char.h"
 #include "qom/object.h"
 #include "hw/dma/rza1l_dmac.h"
@@ -71,6 +78,17 @@
 
 /* PIC-to-firmware response bytes (see pic.h Response). */
 #define PIC_RESP_FIRMWARE_VERSION_NEXT 245
+#define PIC_RESP_NEXT_PAD_OFF          252  /* prefixes a release event       */
+#define PIC_RESP_NO_PRESSES_HAPPENING  254  /* idle "scan found nothing" beat */
+
+/*
+ * Idle-heartbeat period. The hardware PIC reports "no presses happening" at the
+ * end of every matrix scan that finds nothing pressed; the firmware uses it to
+ * reconcile any state it thinks is held. The exact rate is not observable to
+ * the firmware, so a steady 100 ms beat (matching the firmware's READ_INPUTS
+ * cadence) is plenty without flooding the receive ring.
+ */
+#define DELUGE_PIC_HEARTBEAT_MS 100
 
 /*
  * Reported PIC firmware version. The low 7 bits are the version number; the
@@ -94,6 +112,41 @@ static void deluge_pic_send_version(DelugePicState *s)
 {
     deluge_pic_respond(s, PIC_RESP_FIRMWARE_VERSION_NEXT);
     deluge_pic_respond(s, DELUGE_PIC_VERSION_BYTE);
+}
+
+/*
+ * Idle heartbeat: while nothing is held, report "no presses happening" so the
+ * firmware keeps its view of the matrix in sync. Suppressed during a hold,
+ * because that message would make the firmware release the held pad/button.
+ */
+static void deluge_pic_heartbeat(void *opaque)
+{
+    DelugePicState *s = opaque;
+
+    if (s->held_count == 0) {
+        deluge_pic_respond(s, PIC_RESP_NO_PRESSES_HAPPENING);
+    }
+    timer_mod(s->heartbeat,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + DELUGE_PIC_HEARTBEAT_MS);
+}
+
+/*
+ * Report a matrix event to the firmware: NEXT_PAD_OFF first for a release, then
+ * the index byte. The firmware distinguishes pads (index < 144) from buttons by
+ * range, so callers pass an already-encoded index.
+ */
+static void deluge_pic_send_event(DelugePicState *s, uint8_t index, bool pressed)
+{
+    if (!pressed) {
+        deluge_pic_respond(s, PIC_RESP_NEXT_PAD_OFF);
+    }
+    deluge_pic_respond(s, index);
+
+    if (pressed) {
+        s->held_count++;
+    } else if (s->held_count > 0) {
+        s->held_count--;
+    }
 }
 
 /*
@@ -278,6 +331,61 @@ void deluge_pic_set_dma(Chardev *chr, struct RzA1lDmacState *dmac,
     s->dmac = dmac;
     s->rx_dma_channel = rx_dma_channel;
     rza1l_dmac_register_rx_ring(dmac, rx_dma_channel);
+
+    /*
+     * Start the idle heartbeat now that the receive path exists. The PIC owns
+     * its own scan cadence, so a free-running virtual-clock timer models it
+     * independently of anything the firmware does.
+     */
+    if (!s->heartbeat) {
+        s->heartbeat = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                    deluge_pic_heartbeat, s);
+    }
+    timer_mod(s->heartbeat,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + DELUGE_PIC_HEARTBEAT_MS);
+}
+
+void deluge_pic_pad_event(Chardev *chr, int x, int y, bool pressed)
+{
+    DelugePicState *s = DELUGE_PIC(chr);
+    uint8_t index;
+
+    if (x < 0 || x >= DELUGE_PIC_GRID_COLS ||
+        y < 0 || y >= DELUGE_PIC_GRID_ROWS) {
+        return;
+    }
+
+    /*
+     * Pad index encoding (firmware hid/matrix/pad.cpp Pad::toChar): 9 * y plus
+     * the column-pair number x/2, with the odd column of each pair living in
+     * the upper half of the index space (+9 * kDisplayHeight).
+     */
+    index = 9 * y + (x >> 1);
+    if (x & 1) {
+        index += 9 * DELUGE_PIC_GRID_ROWS;
+    }
+
+    deluge_pic_send_event(s, index, pressed);
+}
+
+void deluge_pic_button_event(Chardev *chr, int x, int y, bool pressed)
+{
+    DelugePicState *s = DELUGE_PIC(chr);
+    uint8_t index;
+
+    if (x < 0 || x >= DELUGE_PIC_BTN_COLS ||
+        y < 0 || y >= DELUGE_PIC_BTN_ROWS) {
+        return;
+    }
+
+    /*
+     * Button index encoding (firmware hid/button.h button::fromXY): the button
+     * matrix sits above the pad index space at 9 * (y + kDisplayHeight * 2) + x,
+     * i.e. indices 144..179.
+     */
+    index = 9 * (y + DELUGE_PIC_GRID_ROWS * 2) + x;
+
+    deluge_pic_send_event(s, index, pressed);
 }
 
 void deluge_pic_set_oled(Chardev *chr, struct DelugeOledState *oled)
@@ -309,11 +417,22 @@ static void deluge_pic_class_init(ObjectClass *oc, const void *data)
     cc->chr_write = deluge_pic_chr_write;
 }
 
+static void deluge_pic_finalize(Object *obj)
+{
+    DelugePicState *s = DELUGE_PIC(obj);
+
+    if (s->heartbeat) {
+        timer_free(s->heartbeat);
+        s->heartbeat = NULL;
+    }
+}
+
 static const TypeInfo deluge_pic_info = {
-    .name          = TYPE_DELUGE_PIC,
-    .parent        = TYPE_CHARDEV,
-    .instance_size = sizeof(DelugePicState),
-    .class_init    = deluge_pic_class_init,
+    .name            = TYPE_DELUGE_PIC,
+    .parent          = TYPE_CHARDEV,
+    .instance_size   = sizeof(DelugePicState),
+    .instance_finalize = deluge_pic_finalize,
+    .class_init      = deluge_pic_class_init,
 };
 
 static void deluge_pic_register_types(void)

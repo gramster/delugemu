@@ -46,6 +46,10 @@ DECLARE_INSTANCE_CHECKER(DelugePicState, DELUGE_PIC, TYPE_DELUGE_PIC)
 #define DELUGE_PIC_GOLD_KNOBS 2
 #define DELUGE_PIC_GOLD_LEDS  4
 
+/* Button matrix scanned by the PIC: NUM_BUTTON_COLS(9) x NUM_BUTTON_ROWS(4). */
+#define DELUGE_PIC_BTN_COLS   9
+#define DELUGE_PIC_BTN_ROWS   4
+
 /* Largest message payload: vertical scroll carries (16 + 2) RGB triples. */
 #define DELUGE_PIC_MAX_PAYLOAD ((16 + 2) * 3)
 
@@ -91,6 +95,16 @@ struct DelugePicState {
     uint8_t baud_div;
 
     /*
+     * Input-event synthesis. The PIC continuously scans the pad/button matrix
+     * and reports presses, releases and idle ("no presses happening") status
+     * to the firmware. held_count tracks how many pads/buttons are currently
+     * down so the idle heartbeat is only emitted while nothing is pressed (a
+     * heartbeat sent during a hold would make the firmware drop the press).
+     */
+    struct QEMUTimer *heartbeat;
+    unsigned held_count;
+
+    /*
      * Display state decoded from the command stream, for the renderers.
      *   pad_grid  — RGB per pad, [column][row]; columns include the sidebar.
      *   led_on    — the 28 discrete indicator LEDs (mute/CV/etc.).
@@ -125,5 +139,19 @@ void deluge_pic_set_padgrid(Chardev *chr, struct DelugePadGridState *padgrid);
 
 /* Bind the 7-segment renderer the PIC forwards numeric updates to. */
 void deluge_pic_set_segment(Chardev *chr, struct DelugeSegmentState *segment);
+
+/*
+ * Inject a pad press or release. (x, y) addresses the 18-column (16 main + 2
+ * sidebar) by 8-row pad grid; coordinates outside that range are ignored. A
+ * press reports the pad index; a release prefixes it with NEXT_PAD_OFF, exactly
+ * as the hardware PIC does. Called by the host-input layer.
+ */
+void deluge_pic_pad_event(Chardev *chr, int x, int y, bool pressed);
+
+/*
+ * Inject a button press or release. (x, y) addresses the 9-column by 4-row
+ * button matrix; out-of-range coordinates are ignored. Framing matches pads.
+ */
+void deluge_pic_button_event(Chardev *chr, int x, int y, bool pressed);
 
 #endif /* HW_MISC_DELUGE_PIC_H */
