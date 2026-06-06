@@ -38,8 +38,8 @@ smoke test green.
 
 ## M4 — Audio
 
-- [ ] SSI/I²S model wired to QEMU's audio backend for real-time output.
-- [ ] Audio input path.
+- [x] SSI/I²S model wired to QEMU's audio backend for real-time output.
+- [x] Audio input path.
 - [ ] Verify against known firmware audio behaviour.
 
 ## M5 — Quality
