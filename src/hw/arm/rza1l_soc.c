@@ -255,7 +255,15 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
      * USB stack at start-up; with no cable attached, the register stub reports
      * an idle, disconnected bus so initialisation completes cleanly. Mapped
      * over the io.mid catch-all; interrupts wired below after the GIC.
+     *
+     * The firmware drives host-mode USB-MIDI on USB200 (IP0) only, so the
+     * bulk MIDI bridge attaches to usb0. Its host backend is the second serial
+     * chardev (serial_hd(1)), mirroring how SCIF0's DIN MIDI uses serial_hd(0);
+     * with no second -serial backend the device simply has no MIDI host.
      */
+    if (serial_hd(1)) {
+        qdev_prop_set_chr(DEVICE(&s->usb0), "chardev", serial_hd(1));
+    }
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->usb0), errp)) {
         return;
     }

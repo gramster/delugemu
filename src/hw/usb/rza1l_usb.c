@@ -20,7 +20,15 @@
  *     firmware's host control-transfer state machine expects. The firmware
  *     recognises the MIDIStreaming (audio-class) interface, completes
  *     enumeration (SET_CONFIGURATION), and sets up its bulk MIDI pipes.
- *     Bridging actual bulk MIDI data to a chardev is left for a follow-up.
+ *
+ *     Bulk MIDI data is bridged to a host serial-MIDI chardev (the "chardev"
+ *     property). The firmware selects a bulk pipe onto the CFIFO data port via
+ *     CFIFOSEL.CURPIPE and transfers 32-bit USB-MIDI event packets: the bulk IN
+ *     pipe (PIPE2..PIPE5) carries host->device MIDI, delivered by framing raw
+ *     chardev bytes into packets and raising the pipe's BRDY interrupt; the bulk
+ *     OUT pipe (PIPE1) carries device->host MIDI, deframed from the packets the
+ *     firmware writes to CFIFO and emitted as a raw MIDI byte stream, with the
+ *     transfer acknowledged by the pipe's BEMP interrupt.
  *
  * Register offsets and bit definitions are taken from the firmware's
  * usb20_iodefine.h and r_usb_bitdefine.h.
@@ -36,6 +44,8 @@
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "chardev/char-fe.h"
 #include "migration/vmstate.h"
 #include "hw/usb/rza1l_usb.h"
 
@@ -68,6 +78,7 @@
 #define USB_DCPCTR   0x60
 #define USB_PIPESEL  0x64
 #define USB_PIPECFG  0x68
+#define USB_PIPE1CTR 0x70   /* PIPEnCTR = PIPE1CTR + (n-1)*2, up to PIPE9CTR */
 
 /* ---- Bit definitions ---------------------------------------------------- */
 /* SYSSTS0 */
@@ -103,6 +114,15 @@
 /* DCPCTR */
 #define USB_SUREQ    0x4000
 #define USB_CCPL     0x0004   /* control transfer end (issue status stage) */
+
+/* PIPEnCTR */
+#define USB_PID      0x0003   /* PID field mask */
+#define USB_PID_BUF  0x0001   /* BUF: pipe armed for transfer */
+
+/* Bulk MIDI pipe assignment (firmware r_usb_hmidi_config.h). */
+#define USB_BULK_SEND_PIPE 1  /* host OUT: Deluge transmits MIDI */
+#define USB_BULK_RECV_MIN  2  /* host IN:  Deluge receives MIDI */
+#define USB_BULK_RECV_MAX  5
 
 /* Standard control requests (bRequest). */
 #define USB_REQ_SET_ADDRESS       0x05
@@ -262,6 +282,209 @@ static void rza1l_usb_schedule_event(RzA1lUsbState *s)
     qemu_bh_schedule(s->event_bh);
 }
 
+/* ---- Bulk MIDI data bridge ---------------------------------------------- */
+
+/* Per-pipe interrupt status bit (BRDYSTS/BEMPSTS/BRDYENB/...): pipe n -> 1<<n. */
+static inline uint16_t rza1l_usb_pipe_bit(uint16_t pipe)
+{
+    return (uint16_t)(1u << pipe);
+}
+
+/* Number of MIDI bytes carried by a USB-MIDI event packet, indexed by CIN. */
+static const uint8_t usb_midi_cin_len[16] = {
+    0, 0, 2, 3, 3, 1, 2, 3, 3, 3, 3, 3, 2, 2, 3, 1,
+};
+
+/*
+ * Enqueue one complete 4-byte USB-MIDI event packet onto the bulk IN ring.
+ * Packets are dropped if the firmware has fallen too far behind (the ring is
+ * full) - the same lossy behaviour a real MIDI input would exhibit.
+ */
+static void rza1l_usb_rxq_push(RzA1lUsbState *s, uint8_t cin, uint8_t b0,
+                               uint8_t b1, uint8_t b2)
+{
+    if (s->rx_q_count + 4 > RZA1L_USB_RXQ_BYTES) {
+        USB_DBG("bulk IN ring full, dropping MIDI packet");
+        return;
+    }
+    s->rx_q[s->rx_q_tail] = cin;
+    s->rx_q[(s->rx_q_tail + 1) % RZA1L_USB_RXQ_BYTES] = b0;
+    s->rx_q[(s->rx_q_tail + 2) % RZA1L_USB_RXQ_BYTES] = b1;
+    s->rx_q[(s->rx_q_tail + 3) % RZA1L_USB_RXQ_BYTES] = b2;
+    s->rx_q_tail = (s->rx_q_tail + 4) % RZA1L_USB_RXQ_BYTES;
+    s->rx_q_count += 4;
+}
+
+/*
+ * Frame one raw host-MIDI byte into USB-MIDI event packets (cable 0). Handles
+ * channel-voice messages (with running status), system common / real-time
+ * messages, and SysEx. Completed packets are pushed onto the bulk IN ring.
+ */
+static void rza1l_usb_midi_frame_byte(RzA1lUsbState *s, uint8_t b)
+{
+    if (b >= 0xf8) {
+        /* System real-time: a single status byte, may interleave anywhere. */
+        rza1l_usb_rxq_push(s, 0x0f, b, 0, 0);
+        return;
+    }
+
+    if (b & 0x80) {
+        /* Status byte. */
+        if (b == 0xf0) {
+            s->in_sysex = true;
+            s->sysex_buf[0] = 0xf0;
+            s->sysex_len = 1;
+            return;
+        }
+        if (b == 0xf7) {
+            if (s->in_sysex) {
+                s->sysex_buf[s->sysex_len++] = 0xf7;
+                switch (s->sysex_len) {
+                case 1:
+                    rza1l_usb_rxq_push(s, 0x05, 0xf7, 0, 0);
+                    break;
+                case 2:
+                    rza1l_usb_rxq_push(s, 0x06, s->sysex_buf[0],
+                                       s->sysex_buf[1], 0);
+                    break;
+                default:
+                    rza1l_usb_rxq_push(s, 0x07, s->sysex_buf[0],
+                                       s->sysex_buf[1], s->sysex_buf[2]);
+                    break;
+                }
+                s->in_sysex = false;
+                s->sysex_len = 0;
+            }
+            return;
+        }
+        /* Any other status terminates an in-progress SysEx. */
+        s->in_sysex = false;
+        s->sysex_len = 0;
+
+        if (b < 0xf0) {
+            /* Channel-voice status: set running status. */
+            s->midi_status = b;
+            s->midi_ndata = 0;
+            s->midi_need = (b < 0xc0 || b >= 0xe0) ? 2 : 1;
+        } else {
+            /* System common (0xf1..0xf6). */
+            s->midi_status = b;
+            s->midi_ndata = 0;
+            switch (b) {
+            case 0xf2: s->midi_need = 2; break;       /* song position */
+            case 0xf1: case 0xf3: s->midi_need = 1; break; /* MTC / song sel */
+            default:                                   /* f4,f5,f6: no data */
+                rza1l_usb_rxq_push(s, 0x05, b, 0, 0);
+                s->midi_status = 0;
+                s->midi_need = 0;
+                break;
+            }
+        }
+        return;
+    }
+
+    /* Data byte. */
+    if (s->in_sysex) {
+        s->sysex_buf[s->sysex_len++] = b;
+        if (s->sysex_len == 3) {
+            rza1l_usb_rxq_push(s, 0x04, s->sysex_buf[0], s->sysex_buf[1],
+                               s->sysex_buf[2]);
+            s->sysex_len = 0;
+        }
+        return;
+    }
+
+    if (s->midi_status == 0) {
+        return; /* orphan data byte */
+    }
+
+    s->midi_data[s->midi_ndata++] = b;
+    if (s->midi_ndata < s->midi_need) {
+        return;
+    }
+
+    /* A complete message has been collected; emit its USB-MIDI packet. */
+    if (s->midi_status < 0xf0) {
+        uint8_t cin = s->midi_status >> 4;
+        rza1l_usb_rxq_push(s, cin, s->midi_status, s->midi_data[0],
+                           s->midi_need == 2 ? s->midi_data[1] : 0);
+        /* Channel-voice messages support running status. */
+        s->midi_ndata = 0;
+    } else {
+        uint8_t cin = (s->midi_status == 0xf2) ? 0x03 : 0x02;
+        rza1l_usb_rxq_push(s, cin, s->midi_status, s->midi_data[0],
+                           s->midi_need == 2 ? s->midi_data[1] : 0);
+        s->midi_status = 0; /* system common does not run */
+        s->midi_ndata = 0;
+    }
+}
+
+/*
+ * If a bulk IN pipe is armed (PID=BUF), its BRDY interrupt is enabled, no
+ * transfer is already in flight, and packets are queued, latch up to one
+ * bulk-max-packet transfer and raise the pipe's BRDY interrupt so the firmware
+ * drains it via CFIFO.
+ */
+static void rza1l_usb_try_deliver_rx(RzA1lUsbState *s)
+{
+    uint16_t pipe;
+
+    if (!s->midi || s->rx_xfer_len != 0 || s->rx_q_count == 0) {
+        return;
+    }
+
+    for (pipe = USB_BULK_RECV_MIN; pipe <= USB_BULK_RECV_MAX; pipe++) {
+        uint16_t bit = rza1l_usb_pipe_bit(pipe);
+
+        if (!(s->recv_armed & bit)) {
+            continue;
+        }
+        if (!(s->regs[USB_BRDYENB >> 1] & bit)) {
+            continue;
+        }
+
+        /* Latch up to one max-size transfer from the ring. */
+        uint32_t n = MIN(s->rx_q_count, RZA1L_USB_BULK_MAXP);
+        uint32_t i;
+        for (i = 0; i < n; i++) {
+            s->rx_xfer[i] = s->rx_q[s->rx_q_head];
+            s->rx_q_head = (s->rx_q_head + 1) % RZA1L_USB_RXQ_BYTES;
+        }
+        s->rx_q_count -= n;
+        s->rx_xfer_len = n;
+        s->rx_xfer_pos = 0;
+        s->rx_xfer_pipe = pipe;
+
+        /* This transfer consumes the pipe's armed state; the firmware re-arms
+         * (PID=BUF) after draining the data in checkIncomingUsbMidi(). */
+        s->recv_armed &= ~bit;
+
+        s->pending_brdy |= bit;
+        rza1l_usb_schedule_event(s);
+        USB_DBG("bulk IN pipe %u: deliver %u bytes (BRDY)", pipe, n);
+        return;
+    }
+}
+
+/*
+ * Deframe the bulk OUT transfer the firmware just committed (CFIFO + BVAL) back
+ * into a raw MIDI byte stream and write it to the host chardev.
+ */
+static void rza1l_usb_flush_tx(RzA1lUsbState *s)
+{
+    uint32_t i;
+
+    for (i = 0; i + 4 <= s->tx_len; i += 4) {
+        uint8_t cin = s->tx_buf[i] & 0x0f;
+        uint8_t len = usb_midi_cin_len[cin];
+        if (len) {
+            /* qemu_chr_fe_write_all is a no-op if no chardev is connected. */
+            qemu_chr_fe_write_all(&s->chr, &s->tx_buf[i + 1], len);
+        }
+    }
+    s->tx_len = 0;
+}
+
 /* ---- Control-transfer engine (DCP / pipe 0) ----------------------------- */
 
 /*
@@ -354,12 +577,23 @@ static uint16_t rza1l_usb_read16(RzA1lUsbState *s, hwaddr offset)
     }
 
     case USB_CFIFOCTR: {
+        uint16_t pipe = s->regs[USB_CFIFOSEL >> 1] & USB_CURPIPE;
+
+        /* Bulk IN pipe with a latched transfer: report FRDY and the number of
+         * bytes the firmware should read out of CFIFO. */
+        if (pipe >= USB_BULK_RECV_MIN && pipe <= USB_BULK_RECV_MAX &&
+            pipe == s->rx_xfer_pipe && s->rx_xfer_len > s->rx_xfer_pos) {
+            uint32_t rem = s->rx_xfer_len - s->rx_xfer_pos;
+            return USB_FRDY | (rem & USB_DTLN);
+        }
+
         /* Control IN data: FIFO ready, DTLN = bytes left in this packet. */
         if (s->data_ready) {
             uint32_t rem = s->resp_len - s->resp_pos;
             uint32_t pkt = MIN(rem, RZA1L_USB_DCP_MAXP);
             return USB_FRDY | (pkt & USB_DTLN);
         }
+        /* Otherwise the FIFO is ready/empty (e.g. bulk OUT write, no IN data). */
         return USB_FRDY;
     }
 
@@ -383,8 +617,27 @@ static uint16_t rza1l_usb_read16(RzA1lUsbState *s, hwaddr offset)
 
 static uint32_t rza1l_usb_read_cfifo(RzA1lUsbState *s)
 {
+    uint16_t pipe = s->regs[USB_CFIFOSEL >> 1] & USB_CURPIPE;
     uint32_t v = 0;
     int i;
+
+    /* Bulk IN pipe: drain the latched transfer four bytes at a time, LE. */
+    if (pipe >= USB_BULK_RECV_MIN && pipe <= USB_BULK_RECV_MAX &&
+        pipe == s->rx_xfer_pipe && s->rx_xfer_len > 0) {
+        for (i = 0; i < 4; i++) {
+            if (s->rx_xfer_pos < s->rx_xfer_len) {
+                v |= (uint32_t)s->rx_xfer[s->rx_xfer_pos++] << (8 * i);
+            }
+        }
+        if (s->rx_xfer_pos >= s->rx_xfer_len) {
+            /* Transfer drained; release the latch and deliver any backlog once
+             * the firmware re-arms the pipe. */
+            s->rx_xfer_len = 0;
+            s->rx_xfer_pos = 0;
+            s->rx_xfer_pipe = 0;
+        }
+        return v;
+    }
 
     /* Return up to four bytes of the staged control-IN response, LE order. */
     for (i = 0; i < 4; i++) {
@@ -404,6 +657,26 @@ static uint32_t rza1l_usb_read_cfifo(RzA1lUsbState *s)
         rza1l_usb_schedule_event(s);
     }
     return v;
+}
+
+/*
+ * CFIFO write. For the bulk OUT (send) pipe the firmware streams 32-bit
+ * USB-MIDI event packets here before committing the transfer with CFIFOCTR.BVAL;
+ * accumulate them. Writes on any other pipe (control OUT status stages) are
+ * accepted and discarded.
+ */
+static void rza1l_usb_write_cfifo(RzA1lUsbState *s, uint32_t value)
+{
+    uint16_t pipe = s->regs[USB_CFIFOSEL >> 1] & USB_CURPIPE;
+    int i;
+
+    if (s->midi && pipe == USB_BULK_SEND_PIPE) {
+        for (i = 0; i < 4; i++) {
+            if (s->tx_len < RZA1L_USB_TXBUF_BYTES) {
+                s->tx_buf[s->tx_len++] = (value >> (8 * i)) & 0xff;
+            }
+        }
+    }
 }
 
 static uint64_t rza1l_usb_read(void *opaque, hwaddr offset, unsigned size)
@@ -514,6 +787,14 @@ static void rza1l_usb_write16(RzA1lUsbState *s, hwaddr offset, uint16_t value)
                 rza1l_usb_schedule_event(s);
             }
         }
+        /* Enabling a bulk IN pipe's BRDY may unblock a queued transfer. */
+        rza1l_usb_try_deliver_rx(s);
+        /*
+         * Re-evaluate the interrupt: a per-pipe BRDYSTS bit may already be
+         * latched (the status is set independently of its enable), so enabling
+         * it here must raise the level-triggered interrupt immediately.
+         */
+        rza1l_usb_update_irq(s);
         return;
 
     case USB_BEMPENB:
@@ -529,11 +810,58 @@ static void rza1l_usb_write16(RzA1lUsbState *s, hwaddr offset, uint16_t value)
             s->pending_bemp |= 0x0001;
             rza1l_usb_schedule_event(s);
         }
+        /*
+         * Re-evaluate the interrupt: the bulk OUT transfer completes (BEMPSTS
+         * latched) as soon as the firmware commits the FIFO with BVAL, which
+         * happens before it enables this pipe's BEMP. Enabling it here must
+         * therefore raise the level-triggered interrupt for the already-latched
+         * completion so multi-transfer sends continue.
+         */
+        rza1l_usb_update_irq(s);
         return;
 
-    case USB_CFIFOCTR:
-        /* BCLR clears the buffer; BVAL marks an OUT buffer ready (ignored). */
+    case USB_CFIFOCTR: {
+        uint16_t pipe = s->regs[USB_CFIFOSEL >> 1] & USB_CURPIPE;
+        /*
+         * BVAL on the bulk OUT pipe commits a transmit buffer: deframe the
+         * accumulated USB-MIDI packets to raw MIDI on the chardev and signal
+         * transmit completion via the pipe's BEMP interrupt. BCLR discards a
+         * (zero-length) buffer. Pipe-0 control writes are no-ops here.
+         */
+        if (s->midi && pipe == USB_BULK_SEND_PIPE && (value & USB_BVAL)) {
+            rza1l_usb_flush_tx(s);
+            s->pending_bemp |= rza1l_usb_pipe_bit(USB_BULK_SEND_PIPE);
+            rza1l_usb_schedule_event(s);
+        } else if (value & USB_BCLR) {
+            s->tx_len = 0;
+        }
         return;
+    }
+
+    case USB_PIPE1CTR + 0:  /* PIPE1CTR */
+    case USB_PIPE1CTR + 2:  /* PIPE2CTR */
+    case USB_PIPE1CTR + 4:  /* PIPE3CTR */
+    case USB_PIPE1CTR + 6:  /* PIPE4CTR */
+    case USB_PIPE1CTR + 8:  /* PIPE5CTR */
+    case USB_PIPE1CTR + 10: /* PIPE6CTR */
+    case USB_PIPE1CTR + 12: /* PIPE7CTR */
+    case USB_PIPE1CTR + 14: /* PIPE8CTR */
+    case USB_PIPE1CTR + 16: /* PIPE9CTR */ {
+        uint16_t pipe = ((offset - USB_PIPE1CTR) >> 1) + 1;
+        s->regs[offset >> 1] = value;
+        /*
+         * Writing PID=BUF to a bulk IN pipe arms it to receive: the firmware
+         * is ready for the next USB-MIDI transfer. Deliver any queued data.
+         */
+        if (s->midi && pipe >= USB_BULK_RECV_MIN && pipe <= USB_BULK_RECV_MAX &&
+            (value & USB_PID) == USB_PID_BUF) {
+            s->recv_armed |= rza1l_usb_pipe_bit(pipe);
+            USB_DBG("arm bulk IN pipe %u (PID=BUF), recv_armed=0x%x",
+                    pipe, s->recv_armed);
+            rza1l_usb_try_deliver_rx(s);
+        }
+        return;
+    }
 
     case USB_SYSSTS0:
         return; /* read-only */
@@ -550,7 +878,7 @@ static void rza1l_usb_write(void *opaque, hwaddr offset, uint64_t value,
     RzA1lUsbState *s = opaque;
 
     if (offset == USB_CFIFO) {
-        /* Host->device bulk/control OUT data: accepted and dropped for now. */
+        rza1l_usb_write_cfifo(s, value);
         return;
     }
 
@@ -586,6 +914,35 @@ static const MemoryRegionOps rza1l_usb_ops = {
     .valid.max_access_size = 4,
 };
 
+/* ---- Host MIDI chardev (bulk IN source) -------------------------------- */
+
+/*
+ * Flow control for the host->device direction: only accept as many raw MIDI
+ * bytes as could still fit in the bulk IN ring once framed. Each raw byte
+ * frames into at most one 4-byte packet, so report a quarter of the free ring.
+ */
+static int rza1l_usb_chr_can_receive(void *opaque)
+{
+    RzA1lUsbState *s = opaque;
+    uint32_t free_bytes = RZA1L_USB_RXQ_BYTES - s->rx_q_count;
+
+    return free_bytes / 4;
+}
+
+static void rza1l_usb_chr_receive(void *opaque, const uint8_t *buf, int size)
+{
+    RzA1lUsbState *s = opaque;
+    int i;
+
+    USB_DBG("chardev RX %d bytes (first=0x%02x)", size, size ? buf[0] : 0);
+    for (i = 0; i < size; i++) {
+        rza1l_usb_midi_frame_byte(s, buf[i]);
+    }
+    USB_DBG("after framing: rx_q_count=%u recv_armed=0x%x brdyenb=0x%x",
+            s->rx_q_count, s->recv_armed, s->regs[USB_BRDYENB >> 1]);
+    rza1l_usb_try_deliver_rx(s);
+}
+
 static void rza1l_usb_reset(DeviceState *dev)
 {
     RzA1lUsbState *s = RZA1L_USB(dev);
@@ -613,6 +970,22 @@ static void rza1l_usb_reset(DeviceState *dev)
     s->pending_bemp = 0;
     s->pending_attach = false;
     s->attach_signalled = false;
+
+    /* Bulk MIDI bridge state. */
+    s->rx_q_head = 0;
+    s->rx_q_tail = 0;
+    s->rx_q_count = 0;
+    s->rx_xfer_len = 0;
+    s->rx_xfer_pos = 0;
+    s->rx_xfer_pipe = 0;
+    s->recv_armed = 0;
+    s->midi_status = 0;
+    s->midi_ndata = 0;
+    s->midi_need = 0;
+    s->in_sysex = false;
+    s->sysex_len = 0;
+    s->tx_len = 0;
+
     qemu_set_irq(s->irq, 0);
 }
 
@@ -627,6 +1000,16 @@ static void rza1l_usb_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(sbd, &s->irq);
 
     s->event_bh = qemu_bh_new(rza1l_usb_event, s);
+
+    /*
+     * Bridge the bulk MIDI pipes to the host chardev (if one is configured).
+     * Incoming raw MIDI bytes are framed and delivered over the bulk IN pipe;
+     * the receive handler runs in the main loop, the same context as MMIO.
+     */
+    USB_DBG("realize: chardev connected=%d",
+            qemu_chr_fe_backend_connected(&s->chr));
+    qemu_chr_fe_set_handlers(&s->chr, rza1l_usb_chr_can_receive,
+                             rza1l_usb_chr_receive, NULL, NULL, s, NULL, true);
 }
 
 static const VMStateDescription vmstate_rza1l_usb = {
@@ -645,6 +1028,7 @@ static const VMStateDescription vmstate_rza1l_usb = {
 
 static const Property rza1l_usb_properties[] = {
     DEFINE_PROP_BOOL("midi", RzA1lUsbState, midi, false),
+    DEFINE_PROP_CHR("chardev", RzA1lUsbState, chr),
 };
 
 static void rza1l_usb_class_init(ObjectClass *klass, const void *data)

@@ -12,6 +12,10 @@
 #                           e.g. --midi udp:127.0.0.1:1999 or --midi pty. When
 #                           omitted, SCIF0 is multiplexed with the monitor on
 #                           stdio (-serial mon:stdio).
+#   --usb-midi <chardev>    Attach a host USB-MIDI device backed by a QEMU
+#                           chardev spec, e.g. --usb-midi udp:127.0.0.1:1998 or
+#                           --usb-midi pty. Bridges the firmware's bulk USB-MIDI
+#                           pipes to that backend (routed to serial slot 1).
 #   --audio <driver>        Add a QEMU audio backend (-audiodev <driver>),
 #                           e.g. --audio coreaudio / pa / sdl / none. (No audio
 #                           device consumes it yet; reserved for the M5 SSI sink.)
@@ -30,7 +34,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
-    sed -n '4,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '4,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 BIN="${QEMU_BUILD_DIR}/qemu-system-arm"
@@ -45,6 +49,7 @@ esac
 shift
 
 MIDI=""
+USB_MIDI=""
 AUDIO=""
 DISPLAY_MODE="headless"
 
@@ -75,6 +80,11 @@ while [ $# -gt 0 ]; do
             MIDI="$2"; shift 2
             ;;
         --midi=*) MIDI="${1#--midi=}"; shift ;;
+        --usb-midi)
+            [ -n "${2:-}" ] || die "--usb-midi requires a chardev spec"
+            USB_MIDI="$2"; shift 2
+            ;;
+        --usb-midi=*) USB_MIDI="${1#--usb-midi=}"; shift ;;
         --audio)
             [ -n "${2:-}" ] || die "--audio requires a driver name"
             AUDIO="$2"; shift 2
@@ -103,6 +113,14 @@ else
     SERIAL_ARGS=(-serial mon:stdio)
 fi
 
+# Host USB-MIDI device: present the device on USB200 and route its bulk pipes
+# to the second serial chardev (serial_hd(1)), which the SoC binds to usb0.
+USB_MIDI_ARGS=()
+if [ -n "${USB_MIDI}" ]; then
+    USB_MIDI_ARGS=(-serial "${USB_MIDI}" -global "rza1l-usb.midi=on")
+    log "Attaching host USB-MIDI device on chardev: ${USB_MIDI}"
+fi
+
 # Display mode.
 DISPLAY_ARGS=()
 case "${DISPLAY_MODE}" in
@@ -128,6 +146,7 @@ exec "${BIN}" \
     -M "${DELUGE_MACHINE}" \
     -kernel "${FIRMWARE}" \
     "${SERIAL_ARGS[@]}" \
+    "${USB_MIDI_ARGS[@]+"${USB_MIDI_ARGS[@]}"}" \
     "${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"}" \
     "${AUDIO_ARGS[@]+"${AUDIO_ARGS[@]}"}" \
     "${SD_ARGS[@]+"${SD_ARGS[@]}"}" \

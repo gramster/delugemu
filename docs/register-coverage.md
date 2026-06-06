@@ -211,6 +211,9 @@ drives the firmware's host enumeration to completion:
 - The firmware completes GET_DESCRIPTOR → SET_ADDRESS → GET_DESCRIPTOR(full
   config) → SET_CONFIGURATION, recognises the audio-class interface as a
   USB-MIDI device, and sets up its bulk MIDI pipes.
+- Once configured, raw MIDI on the device's data chardev (`chardev` property /
+  `-serial chardev:` slot 1) is bridged over those bulk pipes in both
+  directions (see *Bulk MIDI data bridge* below).
 
 | Offset | Reg | Coverage | Notes |
 | ------ | --- | -------- | ----- |
@@ -218,20 +221,40 @@ drives the firmware's host enumeration to completion:
 | 0x02 | BUSWAIT | shadow | bus wait cycles |
 | 0x04 | SYSSTS0 | model | LNST = SE0 (disconnected) or FS-J (midi attached) |
 | 0x08 | DVSTCTR0 | model | bus reset / UACT / speed; RHST reports FS after reset |
-| 0x14 | CFIFO | model | DCP control-transfer data port (descriptor reads) |
-| 0x20–0x22 | CFIFOSEL/CTR | model | DCP FIFO selector + FRDY/DTLN |
+| 0x14 | CFIFO | model | DCP control data port **and** bulk pipe data port (CURPIPE-routed) |
+| 0x20–0x22 | CFIFOSEL/CTR | model | FIFO selector (CURPIPE/ISEL) + FRDY/DTLN; BVAL/BCLR commit |
 | 0x30/0x32 | INTENB0/1 | model | interrupt enables; INTENB1.ATTCH arms attach |
-| 0x36–0x3A | BRDY/NRDY/BEMPENB | model | per-pipe interrupt enables |
+| 0x36–0x3A | BRDY/NRDY/BEMPENB | model | per-pipe interrupt enables (re-evaluate IRQ on write) |
 | 0x40/0x42 | INTSTS0/1 | model | INTSTS0 BRDY/NRDY/BEMP are live summaries |
-| 0x46–0x4A | BRDY/NRDY/BEMPSTS | model | write-0-to-clear pipe status |
+| 0x46–0x4A | BRDY/NRDY/BEMPSTS | model | write-0-to-clear per-pipe status |
 | 0x54–0x5A | USBREQ/VAL/INDX/LENG | model | latched control SETUP packet |
 | 0x5C–0x60 | DCPCFG/MAXP/CTR | model | SUREQ triggers SETUP; CCPL/PID handshakes |
 | 0x64/0x68 | PIPESEL/PIPECFG | shadow | bulk-pipe setup absorbed |
+| 0x70–0x80 | PIPE1–9CTR | model | PID=BUF arms a pipe; INBUFM reads 0 (send-complete gate) |
 | others | pipe/DCP regs | shadow | absorbed |
 
-Bulk MIDI data transfer over the configured pipes (bridging the D0/D1 FIFOs to a
-host MIDI chardev as 32-bit USB-MIDI event packets) is not yet implemented; see
-the follow-up issue. USB mass-storage device emulation is likewise out of scope.
+**Bulk MIDI data bridge.** The Deluge's customised ("rohan") USB driver does not
+use the D0/D1 FIFOs for MIDI — both directions stream 32-bit USB-MIDI event
+packets through the shared **CFIFO** with the active pipe selected on
+`CFIFOSEL.CURPIPE`. The model routes CFIFO accesses by the selected pipe:
+
+- *Receive* (host → device, bulk IN, pipes 2–5). Raw MIDI from the chardev is
+  framed into 4-byte USB-MIDI packets (running-status aware, with SysEx
+  continuation) and queued. When the firmware arms a receive pipe (`PIPEnCTR`
+  PID=BUF) with its `BRDYENB` bit set, the model latches up to 64 bytes,
+  reports the byte count via `CFIFOCTR.DTLN`, hands the packets out on CFIFO
+  reads, and raises that pipe's **BRDY**.
+- *Transmit* (device → host, bulk OUT, pipe 1). The firmware writes packets to
+  CFIFO and commits the buffer with `CFIFOCTR.BVAL`; the model deframes them
+  (per the USB-MIDI CIN→length table) back to raw MIDI on the chardev and
+  raises pipe 1's **BEMP** send-complete interrupt. Because the firmware enables
+  `BEMPENB` *after* committing the buffer, enable-register writes re-evaluate
+  the level-triggered interrupt so the already-latched completion fires and
+  multi-transfer sends (e.g. a SysEx reply spanning several 8-byte chunks)
+  continue. `PIPE1CTR.INBUFM` reads back 0 so the firmware's BEMP handler
+  invokes its send-complete path.
+
+USB mass-storage device emulation remains out of scope.
 
 ### ADC — S12AD battery sense · `rza1l-adc`
 

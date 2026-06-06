@@ -113,6 +113,32 @@ machine) keeps the board file small, makes the SoC reusable, and mirrors how
 QEMU models other SoCs (e.g. `bcm2836`, `stm32f405`). The board file then only
 deals with what is specific to the Deluge: the PIC, the display and audio.
 
+## MIDI I/O
+
+The Deluge exposes MIDI two ways, and the emulator maps each to a host chardev
+on a separate `-serial` slot:
+
+- **DIN MIDI** is plain serial on SCIF0; it bridges to `-serial`/`--midi`
+  slot 0 via the SCIF0 DMA receive path (see *register coverage*).
+- **USB-MIDI** runs over the Renesas USB host controller (`rza1l-usb`). When the
+  synthetic USB-MIDI device is enabled (`-global rza1l-usb.midi=on`), its data
+  port is bridged to slot 1. The controller takes a `CharBackend chr` property
+  and the SoC wires it with `serial_hd(1)` (mirroring how SCIF0 claims
+  `serial_hd(0)`), so `-serial chardev:<id>` slot 1 connects a host MIDI
+  endpoint to the firmware's bulk MIDI pipes.
+
+> The bead originally proposed a `-global rza1l-usb.chardev=…` hook. That was
+> implemented as a `serial_hd(1)` wiring instead: a bare `-global` on the
+> chardev property double-claims the backend (QEMU's chardev is consumed both by
+> the property and by the implicit serial mux), which aborts at realize. Routing
+> through the standard serial slot avoids the double-claim and matches the DIN
+> MIDI convention. `scripts/run.sh --usb-midi <chardev>` wires it up for you.
+
+`tests/usb-midi-bridge.sh` exercises the full path: it bridges the USB-MIDI port
+to a UNIX socket, sends a SysEx Identity Request, and asserts the firmware's MIDI
+engine answers with a complete Identity Reply — proving the receive framer, the
+transmit deframer, and the per-pipe BRDY/BEMP transfer interrupts together.
+
 ## Testing
 
 See [`tests/`](../tests). The first milestone is a smoke test that builds
