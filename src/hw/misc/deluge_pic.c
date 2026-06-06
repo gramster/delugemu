@@ -37,9 +37,34 @@
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/misc/deluge_pic.h"
 
-/* Firmware-to-PIC command bytes (see deluge/drivers/pic/pic.h Message). */
+/*
+ * Firmware-to-PIC command bytes (see firmware deluge/drivers/pic/pic.h
+ * PIC::Message). Several commands occupy contiguous ranges where the low part
+ * of the byte encodes an index added to the base value.
+ */
+#define PIC_MSG_SET_COLOUR_BASE      1    /* 1..9: column-pair RGB block      */
+#define PIC_MSG_SET_COLOUR_LAST      9
+#define PIC_MSG_SET_DEBOUNCE_TIME    18
+#define PIC_MSG_SET_REFRESH_TIME     19
+#define PIC_MSG_SET_GOLD_KNOB0       20
+#define PIC_MSG_SET_GOLD_KNOB1       21
+#define PIC_MSG_SET_FLASH_LENGTH     23
+#define PIC_MSG_SET_LED_OFF_BASE     152  /* 152..179: indicator LED off      */
+#define PIC_MSG_SET_LED_ON_BASE      188  /* 188..215: indicator LED on       */
+#define PIC_MSG_UPDATE_SEVEN_SEGMENT 224
 #define PIC_MSG_SET_UART_SPEED       225
+#define PIC_MSG_SET_SCROLL_ROW_BASE  228  /* 228..235: scroll-row + 1 RGB     */
+#define PIC_MSG_SET_SCROLL_ROW_LAST  235
+#define PIC_MSG_SET_SCROLL_UP        241
+#define PIC_MSG_SET_SCROLL_DOWN      242
+#define PIC_MSG_SET_DIMMER_INTERVAL  243
+#define PIC_MSG_SET_MIN_INT_INTERVAL 244
 #define PIC_MSG_REQUEST_FW_VERSION   245
+#define PIC_MSG_ENABLE_OLED          247
+#define PIC_MSG_SELECT_OLED          248
+#define PIC_MSG_DESELECT_OLED        249
+#define PIC_MSG_SET_DC_LOW           250
+#define PIC_MSG_SET_DC_HIGH          251
 
 /* PIC-to-firmware response bytes (see pic.h Response). */
 #define PIC_RESP_FIRMWARE_VERSION_NEXT 245
@@ -68,29 +93,139 @@ static void deluge_pic_send_version(DelugePicState *s)
     deluge_pic_respond(s, DELUGE_PIC_VERSION_BYTE);
 }
 
-/* Frame a single incoming byte from the firmware. */
-static void deluge_pic_rx_byte(DelugePicState *s, uint8_t b)
+/*
+ * Number of payload bytes that follow a command byte. The PIC firmware has no
+ * length field; both ends agree on a fixed payload size per command, so the
+ * model must reproduce the same sizes to stay framed. Commands not listed here
+ * (single-byte controls and the index-encoded pad-flash / LED / scroll-flag
+ * ranges) carry no payload.
+ */
+static unsigned deluge_pic_payload_len(uint8_t cmd)
 {
-    if (s->pending_payload > 0) {
-        s->pending_payload--;
-        if (s->awaiting_baud) {
-            s->baud_div = b;
-            s->awaiting_baud = false;
+    if (cmd >= PIC_MSG_SET_COLOUR_BASE && cmd <= PIC_MSG_SET_COLOUR_LAST) {
+        /* Two columns of kDisplayHeight pads, RGB each. */
+        return DELUGE_PIC_GRID_ROWS * 2 * 3;
+    }
+    if (cmd >= PIC_MSG_SET_SCROLL_ROW_BASE &&
+        cmd <= PIC_MSG_SET_SCROLL_ROW_LAST) {
+        return 3; /* one RGB colour */
+    }
+    switch (cmd) {
+    case PIC_MSG_SET_DEBOUNCE_TIME:
+    case PIC_MSG_SET_REFRESH_TIME:
+    case PIC_MSG_SET_FLASH_LENGTH:
+    case PIC_MSG_SET_UART_SPEED:
+    case PIC_MSG_SET_DIMMER_INTERVAL:
+    case PIC_MSG_SET_MIN_INT_INTERVAL:
+        return 1;
+    case PIC_MSG_SET_GOLD_KNOB0:
+    case PIC_MSG_SET_GOLD_KNOB1:
+        return DELUGE_PIC_GOLD_LEDS;
+    case PIC_MSG_UPDATE_SEVEN_SEGMENT:
+        return DELUGE_PIC_SEG_DIGITS;
+    case PIC_MSG_SET_SCROLL_UP:
+    case PIC_MSG_SET_SCROLL_DOWN:
+        return (DELUGE_PIC_GRID_COLS) * 3; /* (width + sidebar) RGB colours */
+    default:
+        return 0;
+    }
+}
+
+/* Act on a fully-assembled command (its payload, if any, is in s->payload). */
+static void deluge_pic_dispatch(DelugePicState *s)
+{
+    uint8_t cmd = s->cmd;
+
+    if (cmd >= PIC_MSG_SET_COLOUR_BASE && cmd <= PIC_MSG_SET_COLOUR_LAST) {
+        /*
+         * Column-pair RGB block: 2*kDisplayHeight colours filling the two
+         * columns 2*idx and 2*idx+1, eight rows each (column-major).
+         */
+        unsigned idx = cmd - PIC_MSG_SET_COLOUR_BASE;
+        unsigned col0 = idx * 2;
+
+        for (unsigned i = 0; i < DELUGE_PIC_GRID_ROWS * 2; i++) {
+            unsigned col = col0 + (i / DELUGE_PIC_GRID_ROWS);
+            unsigned row = i % DELUGE_PIC_GRID_ROWS;
+
+            if (col < DELUGE_PIC_GRID_COLS) {
+                memcpy(s->pad_grid[col][row], &s->payload[i * 3], 3);
+            }
         }
         return;
     }
+    if (cmd >= PIC_MSG_SET_LED_OFF_BASE &&
+        cmd < PIC_MSG_SET_LED_OFF_BASE + DELUGE_PIC_NUM_LEDS) {
+        s->led_on[cmd - PIC_MSG_SET_LED_OFF_BASE] = false;
+        return;
+    }
+    if (cmd >= PIC_MSG_SET_LED_ON_BASE &&
+        cmd < PIC_MSG_SET_LED_ON_BASE + DELUGE_PIC_NUM_LEDS) {
+        s->led_on[cmd - PIC_MSG_SET_LED_ON_BASE] = true;
+        return;
+    }
 
-    switch (b) {
+    switch (cmd) {
     case PIC_MSG_SET_UART_SPEED:
-        s->pending_payload = 1;
-        s->awaiting_baud = true;
+        s->baud_div = s->payload[0];
+        break;
+    case PIC_MSG_SET_GOLD_KNOB0:
+        memcpy(s->gold_knob[0], s->payload, DELUGE_PIC_GOLD_LEDS);
+        break;
+    case PIC_MSG_SET_GOLD_KNOB1:
+        memcpy(s->gold_knob[1], s->payload, DELUGE_PIC_GOLD_LEDS);
+        break;
+    case PIC_MSG_UPDATE_SEVEN_SEGMENT:
+        memcpy(s->seven_seg, s->payload, DELUGE_PIC_SEG_DIGITS);
+        break;
+    case PIC_MSG_ENABLE_OLED:
+        s->oled_enabled = true;
+        break;
+    case PIC_MSG_SELECT_OLED:
+        s->oled_selected = true;
+        break;
+    case PIC_MSG_DESELECT_OLED:
+        s->oled_selected = false;
+        break;
+    case PIC_MSG_SET_DC_LOW:
+        s->oled_dc_high = false;
+        break;
+    case PIC_MSG_SET_DC_HIGH:
+        s->oled_dc_high = true;
         break;
     case PIC_MSG_REQUEST_FW_VERSION:
         deluge_pic_send_version(s);
         break;
     default:
-        /* Higher layer decodes the rest; frame unknowns as zero-payload. */
+        /*
+         * Remaining commands (flash colour/pad, debounce/refresh/flash timing,
+         * dimmer, scroll rows/flags, resend-button-states, done-sending-rows)
+         * affect PIC-internal behaviour with no state the renderers need yet;
+         * their payloads are framed and consumed above.
+         */
         break;
+    }
+}
+
+/* Frame a single incoming byte from the firmware. */
+static void deluge_pic_rx_byte(DelugePicState *s, uint8_t b)
+{
+    if (s->in_message) {
+        s->payload[s->payload_have++] = b;
+        if (s->payload_have >= s->payload_needed) {
+            s->in_message = false;
+            deluge_pic_dispatch(s);
+        }
+        return;
+    }
+
+    s->cmd = b;
+    s->payload_needed = deluge_pic_payload_len(b);
+    if (s->payload_needed == 0) {
+        deluge_pic_dispatch(s);
+    } else {
+        s->in_message = true;
+        s->payload_have = 0;
     }
 }
 

@@ -8,9 +8,11 @@
  * firmware transmits to the PIC arrives at deluge_pic's chr_write, and replies
  * are delivered straight into the firmware's receive DMA ring.
  *
- * This file implements the link + framing layer and the boot handshake
- * (baud-rate switch and firmware-version query). Decoding the full command
- * stream and synthesising input events are layered on top separately.
+ * This file implements the link + framing layer, the boot handshake (baud-rate
+ * switch and firmware-version query), and decoding of the outbound command
+ * stream into the LED / 7-segment / pad-grid / OLED-control state that the
+ * display renderers consume. Synthesising input events is layered on top
+ * separately.
  *
  * Copyright (c) 2026 delugemu contributors
  *
@@ -29,6 +31,21 @@ struct RzA1lDmacState;
 typedef struct DelugePicState DelugePicState;
 DECLARE_INSTANCE_CHECKER(DelugePicState, DELUGE_PIC, TYPE_DELUGE_PIC)
 
+/*
+ * Display geometry, mirrored from the firmware (definitions_cxx.hpp):
+ * kDisplayWidth 16, kSideBarWidth 2, kDisplayHeight 8, kNumericDisplayLength 4,
+ * kNumGoldKnobIndicatorLEDs 4. The pad grid is (width + sidebar) columns wide.
+ */
+#define DELUGE_PIC_GRID_COLS  (16 + 2)
+#define DELUGE_PIC_GRID_ROWS  8
+#define DELUGE_PIC_NUM_LEDS   36  /* NUM_LED_COLS(9) * NUM_LED_ROWS(4) */
+#define DELUGE_PIC_SEG_DIGITS 4
+#define DELUGE_PIC_GOLD_KNOBS 2
+#define DELUGE_PIC_GOLD_LEDS  4
+
+/* Largest message payload: vertical scroll carries (16 + 2) RGB triples. */
+#define DELUGE_PIC_MAX_PAYLOAD ((16 + 2) * 3)
+
 struct DelugePicState {
     /*< private >*/
     Chardev parent;
@@ -42,12 +59,37 @@ struct DelugePicState {
     struct RzA1lDmacState *dmac;
     int rx_dma_channel;
 
-    /* Framing state: payload bytes still expected for the current message. */
-    int pending_payload;
-    bool awaiting_baud;
+    /*
+     * Command framing. When a command byte carries a payload, cmd holds it and
+     * payload_have/payload_needed track collection of the following bytes.
+     */
+    uint8_t cmd;
+    bool in_message;
+    unsigned payload_have;
+    unsigned payload_needed;
+    uint8_t payload[DELUGE_PIC_MAX_PAYLOAD];
 
     /* Last UART-speed divisor the firmware programmed (PIC message 225). */
     uint8_t baud_div;
+
+    /*
+     * Display state decoded from the command stream, for the renderers.
+     *   pad_grid  — RGB per pad, [column][row]; columns include the sidebar.
+     *   led_on    — the 28 discrete indicator LEDs (mute/CV/etc.).
+     *   seven_seg — raw segment bitmasks for the 4-digit numeric display.
+     *   gold_knob — per-knob brightness for the 4 indicator LEDs around each
+     *               of the two gold (endless) encoders.
+     *   oled_*    — the OLED control lines the PIC drives (panel power, chip
+     *               select and data/command); pixel data goes over SPI, not
+     *               the PIC, so only these control bits are tracked here.
+     */
+    uint8_t pad_grid[DELUGE_PIC_GRID_COLS][DELUGE_PIC_GRID_ROWS][3];
+    bool led_on[DELUGE_PIC_NUM_LEDS];
+    uint8_t seven_seg[DELUGE_PIC_SEG_DIGITS];
+    uint8_t gold_knob[DELUGE_PIC_GOLD_KNOBS][DELUGE_PIC_GOLD_LEDS];
+    bool oled_enabled;
+    bool oled_selected;
+    bool oled_dc_high;
 };
 
 /*

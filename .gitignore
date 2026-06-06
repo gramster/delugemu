@@ -25,4 +25,5 @@ __pycache__/
 /.env
 /local.mk
 firmware/
+firmware2/
 sdcard/
