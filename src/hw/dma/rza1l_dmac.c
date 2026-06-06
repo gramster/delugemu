@@ -216,7 +216,60 @@ static void rza1l_dmac_chctrl_write(RzA1lDmacState *s, int ch, uint32_t val)
         rza1l_dmac_do_transfer(s, ch);
         c->chstat &= ~(CHSTAT_EN | CHSTAT_TACT | CHSTAT_ER);
         c->chstat |= CHSTAT_END | CHSTAT_TC;
+
+        /*
+         * A channel registered as a peripheral receive ring is additionally
+         * latched onto its descriptor's destination buffer so a peripheral can
+         * push bytes into it (see rza1l_dmac_peripheral_rx_push). Only the
+         * self-linking ring descriptors used for SCIF receive are handled; all
+         * other channels (including audio ring buffers) keep the plain
+         * synchronous behaviour above.
+         *
+         * Descriptor layout (8 little-endian words at NXLA):
+         *   [0] header [1] src addr [2] dst addr [3] byte count
+         *   [4] config [5] interval [6] extension [7] next link
+         */
+        if (c->rx_ring_peripheral && c->nxla != 0) {
+            uint8_t d[32];
+
+            dma_memory_read(&address_space_memory, c->nxla, d, sizeof(d),
+                            MEMTXATTRS_UNSPECIFIED);
+            if (ldl_le_p(d + 28) == c->nxla) {
+                c->crda = ldl_le_p(d + 8);
+                c->rx_ring_base = c->crda;
+                c->rx_ring_size = ldl_le_p(d + 12);
+                c->rx_ring_active = (c->rx_ring_size != 0);
+            }
+        }
     }
+}
+
+void rza1l_dmac_register_rx_ring(RzA1lDmacState *s, int ch)
+{
+    if (ch >= 0 && ch < RZA1L_DMAC_NUM_CH) {
+        s->ch[ch].rx_ring_peripheral = true;
+    }
+}
+
+bool rza1l_dmac_peripheral_rx_push(RzA1lDmacState *s, int ch, uint8_t byte)
+{
+    RzA1lDmacChannel *c;
+    uint32_t off;
+
+    if (ch < 0 || ch >= RZA1L_DMAC_NUM_CH) {
+        return false;
+    }
+    c = &s->ch[ch];
+    if (!c->rx_ring_active || c->rx_ring_size == 0) {
+        return false;
+    }
+
+    dma_memory_write(&address_space_memory, c->crda, &byte, 1,
+                     MEMTXATTRS_UNSPECIFIED);
+
+    off = (c->crda - c->rx_ring_base + 1) % c->rx_ring_size;
+    c->crda = c->rx_ring_base + off;
+    return true;
 }
 
 static uint64_t rza1l_dmac_read(void *opaque, hwaddr offset, unsigned size)
@@ -346,6 +399,10 @@ static const VMStateDescription vmstate_rza1l_dmac_channel = {
         VMSTATE_UINT32(chext, RzA1lDmacChannel),
         VMSTATE_UINT32(nxla, RzA1lDmacChannel),
         VMSTATE_UINT32(crla, RzA1lDmacChannel),
+        VMSTATE_BOOL(rx_ring_peripheral, RzA1lDmacChannel),
+        VMSTATE_UINT32(rx_ring_base, RzA1lDmacChannel),
+        VMSTATE_UINT32(rx_ring_size, RzA1lDmacChannel),
+        VMSTATE_BOOL(rx_ring_active, RzA1lDmacChannel),
         VMSTATE_END_OF_LIST()
     },
 };

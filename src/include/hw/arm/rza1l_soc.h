@@ -123,6 +123,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
  */
 #define RZA1L_SCIF0_BASE     0xE8007000
 #define RZA1L_SCIF1_BASE     0xE8007800
+
+/* DMA channel the firmware reads PIC input from (PIC_RX_DMA_CHANNEL). */
+#define RZA1L_PIC_RX_DMA_CH  12
 #define RZA1L_SCIF_RXI0_SPI  (223 - 32)
 #define RZA1L_SCIF_RXI1_SPI  (227 - 32)
 
@@ -154,6 +157,9 @@ struct RzA1lSocState {
     RzA1lCpgState cpg;
     RzA1lWdtState wdt;
     RzA1lBscState bsc;
+
+    /* PIC coprocessor on SCIF1 (a character backend, not a sysbus device). */
+    Chardev *pic;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board

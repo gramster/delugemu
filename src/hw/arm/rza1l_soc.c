@@ -27,6 +27,8 @@
 #include "hw/gpio/rza1l_gpio.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/char/rza1l_scif.h"
+#include "hw/misc/deluge_pic.h"
+#include "chardev/char.h"
 
 static void rza1l_soc_init(Object *obj)
 {
@@ -225,9 +227,10 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                        qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_FIQ));
 
     /*
-     * SCIF UART channels 0 (MIDI) and 1 (PIC). Wire each to a host character
-     * backend (-serial) and connect its receive interrupt to the GIC. Mapped
-     * over the io.mid catch-all.
+     * SCIF UART channels 0 (MIDI) and 1 (PIC). SCIF0 is wired to a host
+     * character backend (-serial) for MIDI; SCIF1 is wired to the on-board PIC
+     * coprocessor model. Each channel's receive interrupt connects to the GIC.
+     * Mapped over the io.mid catch-all.
      */
     qdev_prop_set_chr(DEVICE(&s->scif0), "chardev", serial_hd(0));
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif0), errp)) {
@@ -240,7 +243,14 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->scif0), 0,
                        qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SCIF_RXI0_SPI));
 
-    qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", serial_hd(1));
+    /*
+     * The PIC talks to the firmware over SCIF1 and is read back via DMA
+     * channel 12 (PIC_RX_DMA_CHANNEL), so bind it to the DMAC before wiring it
+     * as SCIF1's backend.
+     */
+    s->pic = qemu_chardev_new(NULL, TYPE_DELUGE_PIC, NULL, NULL, &error_abort);
+    deluge_pic_set_dma(s->pic, &s->dmac, RZA1L_PIC_RX_DMA_CH);
+    qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
         return;
     }

@@ -37,6 +37,18 @@ typedef struct RzA1lDmacChannel {
     uint32_t chext;
     uint32_t nxla;
     uint32_t crla;
+
+    /*
+     * Link/register-mode peripheral receive ring (e.g. a SCIF RX channel).
+     * When such a channel is enabled the descriptor's destination buffer is
+     * latched here so a peripheral can deliver bytes one at a time, advancing
+     * CRDA around the ring (see rza1l_dmac_peripheral_rx_push). Only channels
+     * registered via rza1l_dmac_register_rx_ring are treated this way.
+     */
+    bool     rx_ring_peripheral;
+    uint32_t rx_ring_base;
+    uint32_t rx_ring_size;
+    bool     rx_ring_active;
 } RzA1lDmacChannel;
 
 struct RzA1lDmacState {
@@ -51,5 +63,20 @@ struct RzA1lDmacState {
     /* Group common control registers (DCTRL_0_7 / DCTRL_8_15), shadowed. */
     uint32_t dctrl[2];
 };
+
+/*
+ * Mark a channel as a peripheral receive ring. When the firmware enables such
+ * a channel with a self-linking link descriptor, its destination buffer is
+ * latched so a peripheral can deliver bytes via rza1l_dmac_peripheral_rx_push.
+ */
+void rza1l_dmac_register_rx_ring(RzA1lDmacState *s, int ch);
+
+/*
+ * Deliver one byte from a peripheral into a link-mode receive-ring channel.
+ * Writes the byte at the channel's current destination address (CRDA) in
+ * guest memory and advances CRDA by one, wrapping within the descriptor's
+ * destination buffer. Returns true if the channel was an armed receive ring.
+ */
+bool rza1l_dmac_peripheral_rx_push(RzA1lDmacState *s, int ch, uint8_t byte);
 
 #endif /* HW_DMA_RZA1L_DMAC_H */
