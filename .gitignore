@@ -27,3 +27,4 @@ __pycache__/
 firmware/
 firmware2/
 sdcard/
+qemu/
