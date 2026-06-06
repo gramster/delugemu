@@ -136,6 +136,26 @@ Base `0x3FEFA000` · size `0x100` · shadow array with special status.
 
 Manual-mode transfers complete instantly; no backing flash.
 
+### SSIF0 — serial sound interface (I²S) · `rza1l-ssif`
+
+Base `0xE820B000` · size `0x800` · IRQs SSII0/SSIRXI0/SSITXI0 (GIC SPI 140/141/142 ← INTC 172/173/174), wired but quiescent.
+
+The firmware streams audio through DMA (ch6 TX → SSIFTDR, ch7 RX ← SSIFRDR) and
+tracks playback from the DMA source address, so the FIFOs are never CPU-serviced.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00 | SSICR | shadow | control (TEN/REN etc.) |
+| 0x04 | SSISR | shadow | no under/overrun modelled |
+| 0x0C | SSIFCR | shadow | FIFO control; reset = TFRST\|RFRST |
+| 0x10 | SSIFSR | stub | reads TDE (TX FIFO empty/ready); RX flags clear |
+| 0x14 | SSIFTDR | special | TX data absorbed (delivered via DMA) |
+| 0x18 | SSIFRDR | stub | reads 0 (RX data delivered via DMA) |
+| 0x1C | SSITDMR | shadow | TDM mode |
+| 0x20 | SSIFCCR | shadow | FIFO clock control |
+| 0x24 | SSIFCMR | shadow | FIFO clock measure |
+| 0x28 | SSIFCSR | shadow | FIFO clock status |
+
 ### ADC — S12AD battery sense · `rza1l-adc`
 
 Base `0xE8005800` · size `0x100`.

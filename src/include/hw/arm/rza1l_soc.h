@@ -14,6 +14,7 @@
 #include "qom/object.h"
 #include "hw/ssi/rza1l_rspi.h"
 #include "hw/ssi/rza1l_spibsc.h"
+#include "hw/ssi/rza1l_ssif.h"
 #include "hw/timer/rza1l_mtu2.h"
 #include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
@@ -110,6 +111,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_ADC_BASE      0xE8005800
 #define RZA1L_RTC_BASE      0xFCFF1000
 
+/* SSIF0 — serial sound interface (I2S audio). Channels are 0x800 apart. */
+#define RZA1L_SSIF0_BASE    0xE820B000
+
+/*
+ * SSI channel-0 interrupts: idle/error (SSII0 = 172), receive-full
+ * (SSIRXI0 = 173) and transmit-empty (SSITXI0 = 174); GIC SPI line = ID - 32.
+ */
+#define RZA1L_SSIF_SSII0_SPI  (172 - 32)
+#define RZA1L_SSIF_RXI0_SPI   (173 - 32)
+#define RZA1L_SSIF_TXI0_SPI   (174 - 32)
+
+/* DMA channel the firmware drains SSI receive into (SSI_RX_DMA_CHANNEL). */
+#define RZA1L_SSI_RX_DMA_CH  7
+
 /*
  * PL310 (L2C-310) L2 cache controller. Instantiated from QEMU's built-in
  * "l2x0" model purely to absorb the firmware's cache-init register writes.
@@ -184,6 +199,7 @@ struct RzA1lSocState {
     MemoryRegion sdram_mirror;
 
     RzA1lRspiState rspi0;
+    RzA1lSsifState ssif;
     RzA1lMtu2State mtu2;
     RzA1lDmacState dmac;
     RzA1lSpibscState spibsc;

@@ -42,7 +42,7 @@ registers are real vs. shadow/stub — is documented in
 | SD host interface (SDHI)      | `0xE804E800` | `0x100`  | `rza1l-sdhi` | full SD host controller |
 | ADC (S12AD)                   | `0xE8005800` | `0x100`  | `rza1l-adc` | battery-sense stub |
 | RTC                           | `0xFCFF1000` | `0x40`   | `rza1l-rtc` | fixed-time stub |
-| SSI (I²S audio)               | (TBD)        | —        | (TBD)  | M5 audio milestone |
+| SSIF0 (I²S audio)             | `0xE820B000` | `0x800`  | `rza1l-ssif` | Codec link; serviced via DMA ch6/7 |
 
 ## Board-level (Deluge) devices
 

@@ -21,6 +21,7 @@
 #include "hw/arm/rza1l_soc.h"
 #include "hw/ssi/rza1l_rspi.h"
 #include "hw/ssi/rza1l_spibsc.h"
+#include "hw/ssi/rza1l_ssif.h"
 #include "hw/timer/rza1l_mtu2.h"
 #include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
@@ -38,6 +39,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "cpu", &s->cpu, RZA1L_CPU_TYPE);
 
     object_initialize_child(obj, "rspi0", &s->rspi0, TYPE_RZA1L_RSPI);
+    object_initialize_child(obj, "ssif", &s->ssif, TYPE_RZA1L_SSIF);
     object_initialize_child(obj, "mtu2", &s->mtu2, TYPE_RZA1L_MTU2);
     object_initialize_child(obj, "dmac", &s->dmac, TYPE_RZA1L_DMAC);
     object_initialize_child(obj, "spibsc", &s->spibsc, TYPE_RZA1L_SPIBSC);
@@ -221,6 +223,24 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     rza1l_dmac_register_tx_audio_ring(&s->dmac, RZA1L_SSI_TX_DMA_CH);
 
     /*
+     * SSIF0 (I2S audio). Presents the SSI control/status registers so the
+     * firmware's audio bring-up completes, and (with an audio backend) mirrors
+     * the transmit DMA ring to QEMU's audio out and feeds the receive ring.
+     * Bound to the DMAC's audio transmit/receive channels. Mapped over the
+     * io.mid catch-all.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->ssif), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_SSIF0_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->ssif), 0),
+                                        1);
+    rza1l_ssif_set_dma(&s->ssif, &s->dmac, RZA1L_SSI_TX_DMA_CH,
+                       RZA1L_SSI_RX_DMA_CH);
+
+
+    /*
      * SPIBSC0 (serial flash controller). Reports transfers complete so the
      * firmware's flash status/command polls succeed. Mapped over the io.low
      * catch-all.
@@ -293,6 +313,18 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                            qdev_get_gpio_in(DEVICE(&s->gic),
                                             RZA1L_DMAINT_SPI(ch)));
     }
+
+    /*
+     * SSI channel-0 FIFO interrupts (idle/error, receive-full, transmit-empty).
+     * Wired for completeness; the firmware services audio through DMA, so the
+     * model leaves them quiescent.
+     */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->ssif), 0,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SSIF_SSII0_SPI));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->ssif), 1,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SSIF_RXI0_SPI));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->ssif), 2,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SSIF_TXI0_SPI));
 
     /*
      * RSPI0 receive interrupt (SPRI0). The firmware completes each CV/gate word
