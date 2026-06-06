@@ -237,6 +237,16 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
 
+            if (s->test_grid && (col == 0 || row == 0)) {
+                if (col == 0 && row == 0) {
+                    rr = 255; gg = 255; bb = 0;
+                } else if (col == 0) {
+                    rr = 255; gg = 32; bb = 32;
+                } else {
+                    rr = 32; gg = 96; bb = 255;
+                }
+            }
+
             if (rr || gg || bb) {
                 deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 215);
             }
@@ -249,6 +259,10 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t rr = p->rgb[col][row][0];
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
+
+            if (s->test_grid && row == 0) {
+                rr = 32; gg = 96; bb = 255;
+            }
 
             if (rr || gg || bb) {
                 deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, 215);
@@ -349,6 +363,13 @@ static void deluge_skin_realize(DeviceState *dev, Error **errp)
 {
     DelugeSkinState *s = DELUGE_SKIN(dev);
     const char *path = s->image_path ? s->image_path : "Synthstrom_Deluge_Skin.png";
+    const char *grid = getenv("DELUGE_SKIN_TEST_GRID");
+
+    if (grid && g_ascii_strcasecmp(grid, "0") != 0 &&
+        g_ascii_strcasecmp(grid, "false") != 0 &&
+        g_ascii_strcasecmp(grid, "off") != 0) {
+        s->test_grid = true;
+    }
 
     s->bg_argb = g_new0(uint32_t, DELUGE_SKIN_IMAGE_WIDTH * DELUGE_SKIN_IMAGE_HEIGHT);
     s->bg_loaded = deluge_skin_load_png_argb(path, s->bg_argb);
