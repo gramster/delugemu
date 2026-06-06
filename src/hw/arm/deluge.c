@@ -18,7 +18,9 @@
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/arm/machines-qom.h"
+#include "hw/sd/sd.h"
 #include "system/address-spaces.h"
+#include "system/blockdev.h"
 #include "system/reset.h"
 #include "system/system.h"
 
@@ -143,6 +145,7 @@ static void deluge_machine_init(MachineState *machine)
 {
     DelugeMachineState *m = DELUGE_MACHINE(machine);
     MemoryRegion *system_memory = get_system_memory();
+    DriveInfo *dinfo;
 
     /* Instantiate and realize the SoC, handing it the system address space. */
     object_initialize_child(OBJECT(machine), "soc", &m->soc, TYPE_RZA1L_SOC);
@@ -151,9 +154,23 @@ static void deluge_machine_init(MachineState *machine)
     qdev_realize(DEVICE(&m->soc), NULL, &error_fatal);
 
     /*
+     * Attach an SD card to the SDHI controller's bus if the user supplied an
+     * image (-sd <file> or -drive if=sd,...). The firmware mounts it through
+     * FatFS on demand. With no image the bus stays empty and the card-detect
+     * lines read "no card", which is harmless.
+     */
+    dinfo = drive_get(IF_SD, 0, 0);
+    if (dinfo) {
+        DeviceState *card = qdev_new(TYPE_SD_CARD);
+        BusState *sdbus = qdev_get_child_bus(DEVICE(&m->soc.sdhi), "sd-bus");
+
+        qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(dinfo),
+                                &error_fatal);
+        qdev_realize_and_unref(card, sdbus, &error_fatal);
+    }
+
+    /*
      * TODO(M1+): create and wire the Deluge board peripherals here:
-     *   - TYPE_DELUGE_PIC  (input bridge)  -> SoC serial + IRQ
-     *   - TYPE_DELUGE_OLED / TYPE_DELUGE_SEGMENT (display)
      *   - audio codec on SSI
      */
 
@@ -176,6 +193,9 @@ static void deluge_machine_class_init(ObjectClass *oc, const void *data)
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
     mc->no_parallel = 1;
+    /* Permit a single -sd / -drive if=sd image attached to the SDHI port. */
+    mc->block_default_type = IF_SD;
+    mc->units_per_default_bus = 1;
 }
 
 static const TypeInfo deluge_machine_info = {

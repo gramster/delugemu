@@ -9,9 +9,14 @@
  * deluge/drivers/sd/sd.c) is configured for hardware-interrupt mode
  * (SDCFG_HWINT) and DMA data transfer (SDCFG_TRNS_DMA). After issuing a command
  * it waits on the SDHI interrupt; its ISR reads SD_INFO1/SD_INFO2. Data is moved
- * by DMAC channel 2 reading/writing the SD_BUF0 FIFO. Because the DMAC model
+ * by a DMAC channel reading/writing the SD data FIFO. Because the DMAC model
  * accesses its source/destination through the system address space, the same
- * SD_BUF0 FIFO serves both DMA and PIO accesses.
+ * FIFO serves both DMA and PIO accesses.
+ *
+ * In 64-byte DMA mode (SDCFG_TRANS_DMA_64) the firmware points the DMAC at the
+ * register base rather than at SD_BUF0, so the controller also exposes the data
+ * FIFO through the low 64-byte window (offsets 0x00..0x3F) while a DMA transfer
+ * is in progress; see the DMA_FIFO_WINDOW handling below.
  *
  * Copyright (c) 2026 delugemu contributors
  *
@@ -56,9 +61,14 @@
 /* SD_INFO1 bits. */
 #define INFO1_RESP       0x0001  /* response/command end */
 #define INFO1_DATA_TRNS  0x0004  /* data-transfer/access end */
-#define INFO1_INS_DAT3   0x0200  /* card inserted (DAT3) */
-#define INFO1_DET_CD     0x0018  /* card detect (CD pin) */
-#define INFO1_DET_DAT3   0x0300  /* card detect (DAT3 pin) */
+#define INFO1_REM_CD     0x0008  /* CD-pin removal event */
+#define INFO1_INS_CD     0x0010  /* CD-pin insertion event */
+#define INFO1_CD_LEVEL   0x0020  /* CD-pin current level (1 = card present) */
+#define INFO1_REM_DAT3   0x0100  /* DAT3 removal event */
+#define INFO1_INS_DAT3   0x0200  /* DAT3 insertion event */
+#define INFO1_DAT3_LEVEL 0x0400  /* DAT3 current level (1 = card present) */
+#define INFO1_DET_CD     (INFO1_REM_CD | INFO1_INS_CD)
+#define INFO1_DET_DAT3   (INFO1_REM_DAT3 | INFO1_INS_DAT3)
 #define INFO1_IRQ_BITS   (INFO1_RESP | INFO1_DATA_TRNS | INFO1_DET_CD | \
                           INFO1_DET_DAT3)
 
@@ -74,6 +84,28 @@
 #define INFO2_IRQ_BITS   (INFO2_RE | INFO2_WE | INFO2_ERR_MASK)
 
 #define SD_CMD_INDEX_MASK 0x003f
+
+/* CC_EXT_MODE bits. */
+#define CC_EXT_MODE_DMASDRW 0x0002  /* SD buffer accesses are driven by DMA */
+
+/*
+ * Size of the 64-byte DMA data window. In DMA mode (SDCFG_TRANS_DMA_64) the
+ * firmware points the DMAC source/destination at the register base rather than
+ * at SD_BUF0, so the SDHI exposes the data FIFO through the low 64-byte window
+ * (offsets 0x00..0x3F) instead of only at SD_BUF0. While a DMA-driven data
+ * transfer is in progress, accesses in that window stream the FIFO.
+ */
+#define DMA_FIFO_WINDOW 0x40
+
+/*
+ * Standard SD/MMC commands that complete without any response. For these a
+ * zero-length result from the card is normal and must not be reported as a
+ * response timeout. CMD0 GO_IDLE_STATE, CMD4 SET_DSR, CMD15 GO_INACTIVE_STATE.
+ */
+static bool rza1l_sdhi_cmd_has_no_response(uint8_t cmd)
+{
+    return cmd == 0 || cmd == 4 || cmd == 15;
+}
 
 static void rza1l_sdhi_update_irq(RzA1lSdhiState *s)
 {
@@ -109,8 +141,14 @@ static void rza1l_sdhi_command(RzA1lSdhiState *s, uint16_t cmdreg)
     rlen = sdbus_do_command(&s->sdbus, &req, rsp, sizeof(rsp));
 
     if (rlen == 0) {
-        /* No response (e.g. no card): signal a response timeout. */
-        s->info2 |= INFO2_ERR6;
+        /*
+         * No response. For commands that genuinely return none this is the
+         * expected outcome; otherwise it means the card did not answer, which
+         * the controller reports as a response timeout.
+         */
+        if (!rza1l_sdhi_cmd_has_no_response(req.cmd)) {
+            s->info2 |= INFO2_ERR6;
+        }
     } else if (rlen == 4) {
         /* Short response (R1/R1b/R3/R6/R7): RESP1:RESP0 = 32-bit content. */
         uint32_t v = ldl_be_p(&rsp[0]);
@@ -220,6 +258,16 @@ static uint64_t rza1l_sdhi_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lSdhiState *s = opaque;
 
+    /*
+     * During a DMA-driven read the DMAC pulls bytes from the register base
+     * (the 64-byte DMA window), not from SD_BUF0; route those accesses to the
+     * data FIFO so the block is properly drained.
+     */
+    if (s->data_dir != 0 && (s->cc_ext_mode & CC_EXT_MODE_DMASDRW) &&
+        offset < DMA_FIFO_WINDOW) {
+        return rza1l_sdhi_read_buf(s, size);
+    }
+
     if (offset >= SD_RESP0 && offset <= SD_RESP7) {
         return s->resp[(offset - SD_RESP0) / 2];
     }
@@ -236,7 +284,15 @@ static uint64_t rza1l_sdhi_read(void *opaque, hwaddr offset, unsigned size)
     case SD_SECCNT:
         return s->seccnt;
     case SD_INFO1:
-        return s->info1;
+        /*
+         * The CD/DAT3 level bits reflect the live card-detect state and are not
+         * latching, so report them from the bus rather than from stored status
+         * (which a clear-write could otherwise drop).
+         */
+        if (sdbus_get_inserted(&s->sdbus)) {
+            return s->info1 | INFO1_CD_LEVEL | INFO1_DAT3_LEVEL;
+        }
+        return s->info1 & ~(INFO1_CD_LEVEL | INFO1_DAT3_LEVEL);
     case SD_INFO2:
         /* SCLKDIVEN is always reported set: the SD bus is never busy. */
         return s->info2 | INFO2_SCLKDIVEN;
@@ -282,6 +338,13 @@ static void rza1l_sdhi_write(void *opaque, hwaddr offset, uint64_t value,
 {
     RzA1lSdhiState *s = opaque;
     uint16_t val = (uint16_t)value;
+
+    /* DMA-driven writes target the 64-byte DMA window; route to the FIFO. */
+    if (s->data_dir != 0 && (s->cc_ext_mode & CC_EXT_MODE_DMASDRW) &&
+        offset < DMA_FIFO_WINDOW) {
+        rza1l_sdhi_write_buf(s, (uint32_t)value, size);
+        return;
+    }
 
     if (offset >= SD_RESP0 && offset <= SD_RESP7) {
         /* Response registers are read-only. */
@@ -378,11 +441,11 @@ static const MemoryRegionOps rza1l_sdhi_ops = {
     .write = rza1l_sdhi_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 2,
+        .min_access_size = 1,
         .max_access_size = 4,
     },
     .impl = {
-        .min_access_size = 2,
+        .min_access_size = 1,
         .max_access_size = 4,
     },
 };
@@ -429,11 +492,6 @@ static void rza1l_sdhi_reset(DeviceState *dev)
     s->blocklen = 0;
     s->blockcnt = 0;
     s->datacnt = 0;
-
-    /* Reflect current card presence. */
-    if (sdbus_get_inserted(&s->sdbus)) {
-        s->info1 |= INFO1_INS_DAT3;
-    }
 
     qemu_set_irq(s->irq, 0);
 }
