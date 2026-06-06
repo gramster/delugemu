@@ -76,6 +76,10 @@ See [docs/architecture.md](docs/architecture.md) for details.
 
 # 4. Run firmware
 ./scripts/run.sh path/to/deluge_firmware.elf
+
+# Options: attach an SD image, route MIDI to a chardev, add an audio
+# backend, or pick a display mode (headless/console/none). See --help.
+./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
 ```
 
 ## Repository layout
