@@ -83,9 +83,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_DMAC_BASE     0xE8200000
 
 /* SPIBSC0 — SPI multi-I/O bus controller (serial flash). */
-#define RZA1L_SPIBSC_BASE   0x3FEFA000
-
-/* OSTM — OS timer (two free-running 32-bit channels). */
+#define RZA1L_SPIBSC_BASE   0x3FEFA000/* OSTM — OS timer (two free-running 32-bit channels). */
 #define RZA1L_OSTM_BASE     0xFCFEC000
 
 /* GPIO — general-purpose I/O ports (struct base, per the firmware macro). */
@@ -96,6 +94,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 
 /* WDT — watchdog timer. */
 #define RZA1L_WDT_BASE      0xFCFE0000
+
+/*
+ * PL310 (L2C-310) L2 cache controller. Instantiated from QEMU's built-in
+ * "l2x0" model purely to absorb the firmware's cache-init register writes.
+ */
+#define RZA1L_PL310_BASE    0x3FFFF000
+#define RZA1L_PL310_TYPE    "l2x0"
 
 /*
  * INTC — the RZ/A1 interrupt controller is an ARM GICv1: the GIC distributor

@@ -271,6 +271,14 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->wdt), 0),
                                         1);
+
+    /*
+     * PL310 L2 cache controller. QEMU's built-in "l2x0" model implements the
+     * register interface (cache ops always report complete); the firmware's
+     * L2 init writes land here instead of the io.low catch-all. Created and
+     * mapped dynamically since the model exports no public state type.
+     */
+    sysbus_create_simple(RZA1L_PL310_TYPE, RZA1L_PL310_BASE, NULL);
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)
