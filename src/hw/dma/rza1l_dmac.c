@@ -33,9 +33,18 @@
 #include "qemu/log.h"
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
+#include "qemu/timer.h"
 #include "system/address-spaces.h"
 #include "system/dma.h"
 #include "hw/dma/rza1l_dmac.h"
+
+/*
+ * Audio sample clock. The SSI plays the firmware's stereo TX buffer at
+ * kSampleRate (44100 Hz); each sample frame is NUM_MONO_OUTPUT_CHANNELS (2) *
+ * 4 bytes = 8 bytes, so the transmit DMA consumes 44100 * 8 = 352800 bytes per
+ * second. See rza1l_dmac_register_tx_audio_ring.
+ */
+#define RZA1L_DMAC_AUDIO_BYTES_PER_SEC 352800u
 
 /* Per-channel register byte offsets within a 0x40 channel block. */
 #define DMAC_N0SA   0x00
@@ -92,6 +101,16 @@
 #define CHCFG_SAD       0x00100000  /* set: source address fixed */
 #define CHCFG_DAD       0x00200000  /* set: destination address fixed */
 #define CHCFG_DEM       0x01000000  /* set: transfer-end interrupt masked */
+
+/*
+ * Bootloader-configured OLED DMA channel and its CHCFG value. The Deluge
+ * bootloader leaves channel 4 set up to stream the OLED framebuffer to RSPI0;
+ * the application firmware detects the OLED by reading this register back (see
+ * rza1l_dmac_reset). The value matches the firmware's oledDMAInit() config:
+ * destination address fixed (DAD), 8-bit transfer units, request source 4.
+ */
+#define RZA1L_DMAC_OLED_CH         4
+#define RZA1L_DMAC_OLED_BOOT_CHCFG 0x0020026cu
 
 /*
  * Decode an MMIO offset into a channel index and the register offset within
@@ -254,6 +273,24 @@ static void rza1l_dmac_chctrl_write(RzA1lDmacState *s, int ch, uint32_t val)
                 c->rx_ring_size = ldl_le_p(d + 12);
                 c->rx_ring_active = (c->rx_ring_size != 0);
             }
+        } else if (c->tx_audio_ring && c->nxla != 0) {
+            /*
+             * The SSI transmit channel uses a self-linking descriptor whose
+             * source is the audio TX buffer. Latch the source base and size
+             * and start the playback clock; CRSA is then synthesised from
+             * elapsed virtual time on each read (see rza1l_dmac_read).
+             */
+            uint8_t d[32];
+
+            dma_memory_read(&address_space_memory, c->nxla, d, sizeof(d),
+                            MEMTXATTRS_UNSPECIFIED);
+            if (ldl_le_p(d + 28) == c->nxla) {
+                c->tx_audio_base = ldl_le_p(d + 4);
+                c->tx_audio_size = ldl_le_p(d + 12);
+                c->tx_audio_active = (c->tx_audio_size != 0);
+                c->tx_audio_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+                c->crsa = c->tx_audio_base;
+            }
         }
     }
 }
@@ -263,6 +300,31 @@ void rza1l_dmac_register_rx_ring(RzA1lDmacState *s, int ch)
     if (ch >= 0 && ch < RZA1L_DMAC_NUM_CH) {
         s->ch[ch].rx_ring_peripheral = true;
     }
+}
+
+void rza1l_dmac_register_tx_audio_ring(RzA1lDmacState *s, int ch)
+{
+    if (ch >= 0 && ch < RZA1L_DMAC_NUM_CH) {
+        s->ch[ch].tx_audio_ring = true;
+    }
+}
+
+/*
+ * Synthesise the SSI transmit channel's current source address from elapsed
+ * virtual time, modelling the audio DMA continuously reading the TX buffer at
+ * the sample rate. Returns the live CRSA value within the ring buffer.
+ */
+static uint32_t rza1l_dmac_tx_audio_crsa(RzA1lDmacChannel *c)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed = now - c->tx_audio_start_ns;
+    uint64_t bytes;
+
+    if (elapsed < 0) {
+        elapsed = 0;
+    }
+    bytes = ((uint64_t)elapsed * RZA1L_DMAC_AUDIO_BYTES_PER_SEC) / 1000000000u;
+    return c->tx_audio_base + (uint32_t)(bytes % c->tx_audio_size);
 }
 
 bool rza1l_dmac_peripheral_rx_push(RzA1lDmacState *s, int ch, uint8_t byte)
@@ -298,6 +360,10 @@ static uint64_t rza1l_dmac_read(void *opaque, hwaddr offset, unsigned size)
     if (rza1l_dmac_decode_ch(base, &ch, &chreg)) {
         if (chreg == DMAC_CHCTRL) {
             reg = 0; /* control bits are write-only / self-clearing */
+        } else if (chreg == DMAC_CRSA && s->ch[ch].tx_audio_active) {
+            /* Live audio playback position (see rza1l_dmac_tx_audio_crsa). */
+            s->ch[ch].crsa = rza1l_dmac_tx_audio_crsa(&s->ch[ch]);
+            reg = s->ch[ch].crsa;
         } else {
             uint32_t *p = rza1l_dmac_ch_reg_ptr(&s->ch[ch], chreg);
             reg = p ? *p : 0;
@@ -378,9 +444,45 @@ static const MemoryRegionOps rza1l_dmac_ops = {
 static void rza1l_dmac_reset(DeviceState *dev)
 {
     RzA1lDmacState *s = RZA1L_DMAC(dev);
+    bool rx_ring_peripheral[RZA1L_DMAC_NUM_CH];
+    bool tx_audio_ring[RZA1L_DMAC_NUM_CH];
+
+    /*
+     * rx_ring_peripheral and tx_audio_ring are static wiring properties (set
+     * once at machine construction by rza1l_dmac_register_rx_ring /
+     * rza1l_dmac_register_tx_audio_ring), not transfer state, so they must
+     * survive a device reset. Preserve them across the memset that clears the
+     * per-channel registers.
+     */
+    for (int i = 0; i < RZA1L_DMAC_NUM_CH; i++) {
+        rx_ring_peripheral[i] = s->ch[i].rx_ring_peripheral;
+        tx_audio_ring[i] = s->ch[i].tx_audio_ring;
+    }
 
     memset(s->ch, 0, sizeof(s->ch));
     memset(s->dctrl, 0, sizeof(s->dctrl));
+
+    for (int i = 0; i < RZA1L_DMAC_NUM_CH; i++) {
+        s->ch[i].rx_ring_peripheral = rx_ring_peripheral[i];
+        s->ch[i].tx_audio_ring = tx_audio_ring[i];
+    }
+
+    /*
+     * Emulate the bootloader's OLED DMA setup. On real hardware the bootloader
+     * configures DMA channel 4 (OLED_SPI_DMA_CHANNEL) to feed RSPI0 for the
+     * OLED panel; deluge_main() "piggybacks" off this to detect an OLED screen:
+     *
+     *   oledSPIDMAConfig = 0b1101000 | (4 & 7)            == 0x6c
+     *   have_oled = ((DMACn(4).CHCFG_n & oledSPIDMAConfig) == oledSPIDMAConfig)
+     *
+     * We load the application firmware directly (skipping the bootloader), so
+     * seed channel 4's CHCFG with the value the bootloader leaves behind
+     * (0b00000000001000000000001001101000 | 4 == 0x0020026c). This both makes
+     * have_oled true (selecting the OLED display path) and provides a valid
+     * transfer config (DAD fixed = SPDR, 8-bit units, incrementing source)
+     * for the framebuffer DMA before the firmware reprograms it.
+     */
+    s->ch[RZA1L_DMAC_OLED_CH].chcfg = RZA1L_DMAC_OLED_BOOT_CHCFG;
 }
 
 static void rza1l_dmac_realize(DeviceState *dev, Error **errp)
@@ -421,6 +523,11 @@ static const VMStateDescription vmstate_rza1l_dmac_channel = {
         VMSTATE_UINT32(rx_ring_base, RzA1lDmacChannel),
         VMSTATE_UINT32(rx_ring_size, RzA1lDmacChannel),
         VMSTATE_BOOL(rx_ring_active, RzA1lDmacChannel),
+        VMSTATE_BOOL(tx_audio_ring, RzA1lDmacChannel),
+        VMSTATE_BOOL(tx_audio_active, RzA1lDmacChannel),
+        VMSTATE_UINT32(tx_audio_base, RzA1lDmacChannel),
+        VMSTATE_UINT32(tx_audio_size, RzA1lDmacChannel),
+        VMSTATE_INT64(tx_audio_start_ns, RzA1lDmacChannel),
         VMSTATE_END_OF_LIST()
     },
 };

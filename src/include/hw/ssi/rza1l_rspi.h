@@ -12,6 +12,8 @@
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
 
+struct DelugeOledState;
+
 #define TYPE_RZA1L_RSPI "rza1l-rspi"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lRspiState, RZA1L_RSPI)
 
@@ -26,8 +28,19 @@ struct RzA1lRspiState {
     MemoryRegion iomem;
     qemu_irq irq;
 
+    /*
+     * OLED panel this channel feeds. Data-register writes (from the CPU for
+     * init commands, or from DMA for the framebuffer) are forwarded here; the
+     * OLED itself ignores them unless its chip select is asserted, so CV/gate
+     * traffic on the same channel is harmless.
+     */
+    struct DelugeOledState *oled;
+
     /* Shadow of the writable configuration registers for read-back. */
     uint8_t regs[RZA1L_RSPI_MMIO_SIZE];
 };
+
+/* Bind the OLED panel this RSPI channel drives (called by the board). */
+void rza1l_rspi_set_oled(RzA1lRspiState *s, struct DelugeOledState *oled);
 
 #endif /* HW_SSI_RZA1L_RSPI_H */

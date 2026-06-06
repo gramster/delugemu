@@ -23,6 +23,7 @@
 #include "hw/misc/rza1l_cpg.h"
 #include "hw/misc/rza1l_wdt.h"
 #include "hw/misc/rza1l_bsc.h"
+#include "hw/display/deluge_oled.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -126,8 +127,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 
 /* DMA channel the firmware reads PIC input from (PIC_RX_DMA_CHANNEL). */
 #define RZA1L_PIC_RX_DMA_CH  12
+/* DMA channel the firmware streams audio to the SSI on (SSI_TX_DMA_CHANNEL). */
+#define RZA1L_SSI_TX_DMA_CH  6
 #define RZA1L_SCIF_RXI0_SPI  (223 - 32)
 #define RZA1L_SCIF_RXI1_SPI  (227 - 32)
+
+/*
+ * RSPI0 receive-buffer-full interrupt (SPRI0). INTC_ID_SPRI0 is 271; the
+ * firmware advances its shared SPI transfer queue from this interrupt
+ * (cvSPITransferComplete), which is what kicks off OLED frame transfers.
+ */
+#define RZA1L_RSPI0_SPRI_ID  271
+#define RZA1L_RSPI0_SPRI_SPI (RZA1L_RSPI0_SPRI_ID - 32)
 
 /*
  * DMAC transfer-end interrupts. INTC_ID_DMAINT0 is 41; channel ch uses
@@ -164,6 +175,7 @@ struct RzA1lSocState {
     RzA1lCpgState cpg;
     RzA1lWdtState wdt;
     RzA1lBscState bsc;
+    DelugeOledState oled;
 
     /* PIC coprocessor on SCIF1 (a character backend, not a sysbus device). */
     Chardev *pic;

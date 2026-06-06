@@ -35,6 +35,7 @@
 #include "chardev/char.h"
 #include "qom/object.h"
 #include "hw/dma/rza1l_dmac.h"
+#include "hw/display/deluge_oled.h"
 #include "hw/misc/deluge_pic.h"
 
 /*
@@ -180,18 +181,40 @@ static void deluge_pic_dispatch(DelugePicState *s)
         break;
     case PIC_MSG_ENABLE_OLED:
         s->oled_enabled = true;
+        if (s->oled) {
+            deluge_oled_set_enable(s->oled, true);
+        }
         break;
     case PIC_MSG_SELECT_OLED:
         s->oled_selected = true;
+        if (s->oled) {
+            deluge_oled_set_select(s->oled, true);
+        }
+        /*
+         * The firmware's OLED low-level driver sends SELECT/DESELECT and then
+         * blocks until the PIC echoes the same byte back before starting (or
+         * tearing down) the framebuffer DMA. Echo it so the transfer proceeds.
+         */
+        deluge_pic_respond(s, PIC_MSG_SELECT_OLED);
         break;
     case PIC_MSG_DESELECT_OLED:
         s->oled_selected = false;
+        if (s->oled) {
+            deluge_oled_set_select(s->oled, false);
+        }
+        deluge_pic_respond(s, PIC_MSG_DESELECT_OLED);
         break;
     case PIC_MSG_SET_DC_LOW:
         s->oled_dc_high = false;
+        if (s->oled) {
+            deluge_oled_set_dc(s->oled, false);
+        }
         break;
     case PIC_MSG_SET_DC_HIGH:
         s->oled_dc_high = true;
+        if (s->oled) {
+            deluge_oled_set_dc(s->oled, true);
+        }
         break;
     case PIC_MSG_REQUEST_FW_VERSION:
         deluge_pic_send_version(s);
@@ -247,6 +270,13 @@ void deluge_pic_set_dma(Chardev *chr, struct RzA1lDmacState *dmac,
     s->dmac = dmac;
     s->rx_dma_channel = rx_dma_channel;
     rza1l_dmac_register_rx_ring(dmac, rx_dma_channel);
+}
+
+void deluge_pic_set_oled(Chardev *chr, struct DelugeOledState *oled)
+{
+    DelugePicState *s = DELUGE_PIC(chr);
+
+    s->oled = oled;
 }
 
 static void deluge_pic_class_init(ObjectClass *oc, const void *data)

@@ -49,6 +49,22 @@ typedef struct RzA1lDmacChannel {
     uint32_t rx_ring_base;
     uint32_t rx_ring_size;
     bool     rx_ring_active;
+
+    /*
+     * Audio playback ring (the SSI transmit channel). The SSI continuously
+     * streams the firmware's TX buffer to the audio codec, and the firmware
+     * uses the channel's current source address (CRSA) as its master audio
+     * sample clock. Rather than transfer instantly, this channel's CRSA is
+     * advanced from virtual time at the audio sample rate so the firmware's
+     * audioSampleTimer (and every UI timer derived from it) keeps ticking.
+     * Only channels registered via rza1l_dmac_register_tx_audio_ring behave
+     * this way.
+     */
+    bool     tx_audio_ring;
+    bool     tx_audio_active;
+    uint32_t tx_audio_base;
+    uint32_t tx_audio_size;
+    int64_t  tx_audio_start_ns;
 } RzA1lDmacChannel;
 
 struct RzA1lDmacState {
@@ -77,6 +93,14 @@ struct RzA1lDmacState {
  * latched so a peripheral can deliver bytes via rza1l_dmac_peripheral_rx_push.
  */
 void rza1l_dmac_register_rx_ring(RzA1lDmacState *s, int ch);
+
+/*
+ * Mark a channel as the SSI audio transmit ring. When the firmware enables
+ * such a channel with a self-linking link descriptor, its source buffer is
+ * latched and its current source address (CRSA) is thereafter advanced from
+ * virtual time at the audio sample rate, modelling continuous playback.
+ */
+void rza1l_dmac_register_tx_audio_ring(RzA1lDmacState *s, int ch);
 
 /*
  * Deliver one byte from a peripheral into a link-mode receive-ring channel.

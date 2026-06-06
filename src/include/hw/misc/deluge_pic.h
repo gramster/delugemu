@@ -26,6 +26,7 @@
 #include "qom/object.h"
 
 struct RzA1lDmacState;
+struct DelugeOledState;
 
 #define TYPE_DELUGE_PIC "chardev-deluge-pic"
 typedef struct DelugePicState DelugePicState;
@@ -58,6 +59,13 @@ struct DelugePicState {
      */
     struct RzA1lDmacState *dmac;
     int rx_dma_channel;
+
+    /*
+     * The OLED panel whose data/command, chip-select and power lines the PIC
+     * drives. Pixel data reaches the panel over SPI, not through here; only
+     * the control lines are forwarded. Set by the board.
+     */
+    struct DelugeOledState *oled;
 
     /*
      * Command framing. When a command byte carries a payload, cmd holds it and
@@ -98,5 +106,8 @@ struct DelugePicState {
  */
 void deluge_pic_set_dma(Chardev *chr, struct RzA1lDmacState *dmac,
                         int rx_dma_channel);
+
+/* Bind the OLED panel whose control lines the PIC drives (board setup). */
+void deluge_pic_set_oled(Chardev *chr, struct DelugeOledState *oled);
 
 #endif /* HW_MISC_DELUGE_PIC_H */

@@ -11,8 +11,9 @@
  *
  * This model accepts all writes, discards transmitted data, and always reports
  * the transmitter as ready (SPTEF | TEND set) so the firmware never stalls.
- * Actual pixel/CV output is handled elsewhere (OLED model, M4) once the SPI/DMA
- * path is wired up; for boot bring-up an always-ready transmitter is enough.
+ * The low byte of each data-register write is forwarded to the OLED panel
+ * model (deluge_oled), which decodes the SSD130x command/pixel stream; CV/gate
+ * words are ignored by the panel while its chip select is de-asserted.
  *
  * Copyright (c) 2026 delugemu contributors
  *
@@ -24,11 +25,16 @@
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/ssi/rza1l_rspi.h"
+#include "hw/display/deluge_oled.h"
 
 /* Register offsets within an RSPI channel block. */
+#define RSPI_SPCR     0x00  /* control register */
 #define RSPI_SPSR     0x03  /* status register (read-mostly) */
 #define RSPI_SPDR     0x04  /* data register (32-bit) */
 #define RSPI_SPDR_END 0x08
+
+/* SPCR control bits. */
+#define RSPI_SPCR_SPRIE 0x80  /* receive-buffer-full interrupt enable */
 
 /* SPSR status bits. */
 #define RSPI_SPSR_SPTEF 0x20  /* transmit buffer empty */
@@ -63,21 +69,61 @@ static void rza1l_rspi_write(void *opaque, hwaddr offset, uint64_t value,
                              unsigned size)
 {
     RzA1lRspiState *s = opaque;
+    bool spdr_written = false;
+    bool spcr_written = false;
 
     for (unsigned i = 0; i < size; i++) {
         hwaddr boff = offset + i;
         uint8_t b = (value >> (8 * i)) & 0xff;
 
         if (boff >= RSPI_SPDR && boff < RSPI_SPDR_END) {
-            /* Transmitted data: accepted and discarded. */
+            /*
+             * Transmitted data. The OLED panel is fed from the low byte of
+             * the data register (the firmware streams 8-bit pixel/command
+             * bytes through SPDR.BYTE.LL); the panel ignores them while its
+             * chip select is de-asserted, so CV/gate words are unaffected.
+             */
+            if (boff == RSPI_SPDR && s->oled) {
+                deluge_oled_spi_byte(s->oled, b);
+            }
+            spdr_written = true;
             continue;
         }
         if (boff == RSPI_SPSR) {
             /* Status is driven by hardware state, not by writes. */
             continue;
         }
+        if (boff == RSPI_SPCR) {
+            spcr_written = true;
+        }
         s->regs[boff] = b;
     }
+
+    /*
+     * Receive-buffer-full interrupt (SPRI). The CV/gate path arms it via
+     * SPCR.SPRIE and then drives a 32-bit word into SPDR, relying on the
+     * resulting interrupt (cvSPITransferComplete) to advance the shared SPI
+     * transfer queue — which is what eventually kicks off OLED frame
+     * transfers. This model completes every transfer instantly, so the
+     * receive buffer is "full" as soon as the word is written.
+     *
+     * SPRF/SPRI is level-sensitive on real hardware: the line stays asserted
+     * until the ISR clears the condition, which it does by clearing SPRIE
+     * (RSPI.SPCR &= ~(1 << 7)) on entry. Model it the same way so the GIC
+     * latches it reliably (a brief pulse would be dropped). OLED pixel/command
+     * bytes are streamed with SPRIE clear (they use DMA + the DMA-complete
+     * IRQ), so they never assert this line.
+     */
+    if (spdr_written && (s->regs[RSPI_SPCR] & RSPI_SPCR_SPRIE)) {
+        qemu_set_irq(s->irq, 1);
+    } else if (spcr_written && !(s->regs[RSPI_SPCR] & RSPI_SPCR_SPRIE)) {
+        qemu_set_irq(s->irq, 0);
+    }
+}
+
+void rza1l_rspi_set_oled(RzA1lRspiState *s, struct DelugeOledState *oled)
+{
+    s->oled = oled;
 }
 
 static const MemoryRegionOps rza1l_rspi_ops = {

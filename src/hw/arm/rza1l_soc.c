@@ -48,6 +48,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "cpg", &s->cpg, TYPE_RZA1L_CPG);
     object_initialize_child(obj, "wdt", &s->wdt, TYPE_RZA1L_WDT);
     object_initialize_child(obj, "bsc", &s->bsc, TYPE_RZA1L_BSC);
+    object_initialize_child(obj, "oled", &s->oled, TYPE_DELUGE_OLED);
 
     /*
      * The board points this at its system address space before realize. The
@@ -116,6 +117,19 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                 &s->sdram_mirror);
 
     /*
+     * Low boot-mirror region (0x00000000..SDRAM). On the RZ/A1 the address
+     * space below the external memories mirrors the SPI multi-I/O boot flash
+     * and reads back real (readable) data. The Deluge firmware occasionally
+     * reads from these low addresses — e.g. a debug log that prints the PIC
+     * firmware-version byte with "%s", which dereferences the small integer as
+     * a string pointer. On hardware that harmlessly reads boot-mirror bytes; in
+     * the model the region would otherwise be unmapped and the stray read would
+     * raise a data abort. Back it with a catch-all that returns zero so such
+     * reads terminate immediately (an empty string) instead of faulting.
+     */
+    create_unimplemented_device("rza1l.boot.mirror", 0, RZA1L_SDRAM_BASE);
+
+    /*
      * Catch-alls for the three peripheral windows. They log unimplemented
      * accesses (-d unimp) so we can see what the firmware touches and decide
      * which device to model next. Real peripherals are mapped over the top of
@@ -141,6 +155,15 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         1);
 
     /*
+     * OLED panel. The firmware streams its command/pixel bytes through RSPI0's
+     * data register, so bind it to RSPI0; the PIC drives its control lines.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->oled), errp)) {
+        return;
+    }
+    rza1l_rspi_set_oled(&s->rspi0, &s->oled);
+
+    /*
      * MTU2 timer. Provides the free-running counters the firmware uses for
      * busy-wait delays. Mapped over the io.high catch-all.
      */
@@ -163,6 +186,13 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->dmac), 0),
                                         1);
+
+    /*
+     * The SSI transmit channel streams the audio TX buffer continuously; mark
+     * it so its CRSA advances from virtual time at the sample rate, driving the
+     * firmware's audioSampleTimer and all UI timers derived from it.
+     */
+    rza1l_dmac_register_tx_audio_ring(&s->dmac, RZA1L_SSI_TX_DMA_CH);
 
     /*
      * SPIBSC0 (serial flash controller). Reports transfers complete so the
@@ -239,6 +269,16 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     }
 
     /*
+     * RSPI0 receive interrupt (SPRI0). The firmware completes each CV/gate word
+     * and advances its shared SPI transfer queue from this interrupt
+     * (cvSPITransferComplete); without it the queue stalls after the first CV
+     * transfer and OLED frames never get sent.
+     */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->rspi0), 0,
+                       qdev_get_gpio_in(DEVICE(&s->gic),
+                                        RZA1L_RSPI0_SPRI_SPI));
+
+    /*
      * SCIF UART channels 0 (MIDI) and 1 (PIC). SCIF0 is wired to a host
      * character backend (-serial) for MIDI; SCIF1 is wired to the on-board PIC
      * coprocessor model. Each channel's receive interrupt connects to the GIC.
@@ -262,6 +302,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
      */
     s->pic = qemu_chardev_new(NULL, TYPE_DELUGE_PIC, NULL, NULL, &error_abort);
     deluge_pic_set_dma(s->pic, &s->dmac, RZA1L_PIC_RX_DMA_CH);
+    deluge_pic_set_oled(s->pic, &s->oled);
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
         return;
