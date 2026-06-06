@@ -28,4 +28,20 @@
 #define DELUGE_SKIN_OLED_W 256
 #define DELUGE_SKIN_OLED_H 96
 
+/*
+ * Pad-grid overlay geometry (first-pass calibration from skin photo).
+ *
+ * Main matrix: 16 columns x 8 rows.
+ * Sidebar: 2 columns x 8 rows to the right of the main matrix.
+ */
+#define DELUGE_SKIN_PAD_MAIN_X0   158
+#define DELUGE_SKIN_PAD_MAIN_DX    52
+#define DELUGE_SKIN_PAD_ROWS_Y0   705
+#define DELUGE_SKIN_PAD_ROWS_DY    70
+
+#define DELUGE_SKIN_PAD_SIDE_X0  1048
+#define DELUGE_SKIN_PAD_SIDE_DX    72
+
+#define DELUGE_SKIN_PAD_RADIUS     24
+
 #endif /* HW_DISPLAY_DELUGE_SKIN_LAYOUT_H */

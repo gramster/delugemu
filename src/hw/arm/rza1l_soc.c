@@ -182,6 +182,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
         return;
     }
     deluge_skin_set_oled(DEVICE(&s->skin), &s->oled);
+    deluge_skin_set_padgrid(DEVICE(&s->skin), &s->padgrid);
 
     /*
      * RGB pad-grid display. Driven entirely by PIC commands; the PIC forwards

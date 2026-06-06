@@ -19,6 +19,7 @@
 
 #include "hw/display/deluge_skin.h"
 #include "hw/display/deluge_oled.h"
+#include "hw/display/deluge_padgrid.h"
 #include "hw/display/deluge_skin_layout.h"
 
 #define DELUGE_SKIN_REFRESH_MS 33
@@ -151,6 +152,93 @@ static void deluge_skin_draw_oled(DelugeSkinState *s, uint32_t *dst, int stride)
     }
 }
 
+static inline uint8_t blend_chan(uint8_t dst, uint8_t src, uint8_t a)
+{
+    return (uint8_t)(((int)dst * (255 - a) + (int)src * a) / 255);
+}
+
+static void deluge_skin_blend_circle(uint32_t *dst, int stride,
+                                     int cx, int cy, int r,
+                                     uint8_t rr, uint8_t gg, uint8_t bb,
+                                     uint8_t alpha)
+{
+    int r2 = r * r;
+
+    for (int y = -r; y <= r; y++) {
+        int py = cy + y;
+        if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
+            continue;
+        }
+        for (int x = -r; x <= r; x++) {
+            int px = cx + x;
+            int d2 = x * x + y * y;
+            uint32_t p;
+            uint8_t pr, pg, pb;
+            uint8_t a;
+
+            if (px < 0 || px >= DELUGE_SKIN_IMAGE_WIDTH || d2 > r2) {
+                continue;
+            }
+
+            p = dst[py * stride + px];
+            pr = (p >> 16) & 0xff;
+            pg = (p >> 8) & 0xff;
+            pb = p & 0xff;
+
+            /* Soft edge to mimic LED diffusion. */
+            a = (uint8_t)((alpha * (r2 - d2)) / MAX(1, r2));
+            pr = blend_chan(pr, rr, a);
+            pg = blend_chan(pg, gg, a);
+            pb = blend_chan(pb, bb, a);
+
+            dst[py * stride + px] = 0xff000000u |
+                                     ((uint32_t)pr << 16) |
+                                     ((uint32_t)pg << 8) |
+                                     (uint32_t)pb;
+        }
+    }
+}
+
+static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
+{
+    DelugePadGridState *p = s->padgrid;
+
+    if (!p) {
+        return;
+    }
+
+    for (int row = 0; row < DELUGE_PADGRID_ROWS; row++) {
+        int y = DELUGE_SKIN_PAD_ROWS_Y0 + row * DELUGE_SKIN_PAD_ROWS_DY;
+
+        for (int col = 0; col < 16; col++) {
+            int x = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;
+            uint8_t rr = p->rgb[col][row][0];
+            uint8_t gg = p->rgb[col][row][1];
+            uint8_t bb = p->rgb[col][row][2];
+
+            if (rr || gg || bb) {
+                deluge_skin_blend_circle(dst, stride, x, y,
+                                         DELUGE_SKIN_PAD_RADIUS,
+                                         rr, gg, bb, 210);
+            }
+        }
+
+        for (int side = 0; side < 2; side++) {
+            int x = DELUGE_SKIN_PAD_SIDE_X0 + side * DELUGE_SKIN_PAD_SIDE_DX;
+            int col = 16 + side;
+            uint8_t rr = p->rgb[col][row][0];
+            uint8_t gg = p->rgb[col][row][1];
+            uint8_t bb = p->rgb[col][row][2];
+
+            if (rr || gg || bb) {
+                deluge_skin_blend_circle(dst, stride, x, y,
+                                         DELUGE_SKIN_PAD_RADIUS,
+                                         rr, gg, bb, 210);
+            }
+        }
+    }
+}
+
 static void deluge_skin_render(DelugeSkinState *s)
 {
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -178,6 +266,7 @@ static void deluge_skin_render(DelugeSkinState *s)
     }
 
     deluge_skin_draw_oled(s, dst, stride);
+    deluge_skin_draw_pads(s, dst, stride);
 
     dpy_gfx_update(s->con, 0, 0,
                    DELUGE_SKIN_IMAGE_WIDTH,
@@ -220,6 +309,14 @@ void deluge_skin_set_oled(DeviceState *dev, DelugeOledState *oled)
     DelugeSkinState *s = DELUGE_SKIN(dev);
 
     s->oled = oled;
+    s->dirty = true;
+}
+
+void deluge_skin_set_padgrid(DeviceState *dev, DelugePadGridState *padgrid)
+{
+    DelugeSkinState *s = DELUGE_SKIN(dev);
+
+    s->padgrid = padgrid;
     s->dirty = true;
 }
 

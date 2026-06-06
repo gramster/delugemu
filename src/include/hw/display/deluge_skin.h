@@ -17,6 +17,7 @@
 OBJECT_DECLARE_SIMPLE_TYPE(DelugeSkinState, DELUGE_SKIN)
 
 struct DelugeOledState;
+struct DelugePadGridState;
 
 struct DelugeSkinState {
     /*< private >*/
@@ -26,6 +27,7 @@ struct DelugeSkinState {
     QemuConsole *con;
 
     struct DelugeOledState *oled;
+    struct DelugePadGridState *padgrid;
 
     /* RGBA skin background, converted to 32-bit ARGB pixels. */
     uint32_t *bg_argb;
@@ -39,5 +41,7 @@ struct DelugeSkinState {
 };
 
 void deluge_skin_set_oled(DeviceState *dev, struct DelugeOledState *oled);
+void deluge_skin_set_padgrid(DeviceState *dev,
+                             struct DelugePadGridState *padgrid);
 
 #endif /* HW_DISPLAY_DELUGE_SKIN_H */
