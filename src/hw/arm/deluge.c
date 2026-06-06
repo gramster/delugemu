@@ -11,12 +11,15 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "qemu/units.h"
+#include "elf.h"
 #include "hw/core/boards.h"
+#include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
 #include "system/address-spaces.h"
+#include "system/reset.h"
 #include "system/system.h"
 
 #include "hw/arm/rza1l_soc.h"
@@ -27,6 +30,9 @@ struct DelugeMachineState {
 
     /*< public >*/
     RzA1lSocState soc;
+
+    /* Address the CPU starts executing at after reset (firmware entry). */
+    uint64_t firmware_entry;
 };
 typedef struct DelugeMachineState DelugeMachineState;
 
@@ -34,8 +40,56 @@ typedef struct DelugeMachineState DelugeMachineState;
 DECLARE_INSTANCE_CHECKER(DelugeMachineState, DELUGE_MACHINE,
                          TYPE_DELUGE_MACHINE)
 
-/* Description of the firmware image for QEMU's Arm boot loader. */
-static struct arm_boot_info deluge_boot_info;
+/*
+ * Reset hook: point the CPU at the firmware entry. Registered after the SoC is
+ * realized so it runs after the CPU's own reset, mirroring how the Deluge
+ * bootloader hands control to the validated user image in on-chip SRAM.
+ */
+static void deluge_cpu_reset(void *opaque)
+{
+    DelugeMachineState *m = opaque;
+
+    cpu_set_pc(CPU(&m->soc.cpu), m->firmware_entry);
+}
+
+/*
+ * Load the firmware passed with -kernel. Accepts either an ELF (firmware built
+ * with symbols, loaded by its program headers) or a raw image such as
+ * deluge-c1_2_1.bin. On real hardware a small bootloader in SPI flash validates
+ * the image, copies it into on-chip SRAM at 0x20000000 and branches to its
+ * "start" entry; we emulate the end state by loading the raw image there and
+ * starting execution at the SRAM base.
+ */
+static void deluge_load_firmware(DelugeMachineState *m, MachineState *machine)
+{
+    const char *filename = machine->kernel_filename;
+    uint64_t entry = 0;
+    ssize_t loaded;
+
+    if (filename == NULL) {
+        warn_report("no firmware image given (-kernel); CPU will idle at the "
+                    "SRAM base");
+        m->firmware_entry = RZA1L_SRAM_BASE;
+        return;
+    }
+
+    /* Prefer ELF: it carries its own load addresses and entry point. */
+    loaded = load_elf(filename, NULL, NULL, NULL, &entry, NULL, NULL, NULL,
+                      ELFDATA2LSB, EM_ARM, 1, 0);
+    if (loaded > 0) {
+        m->firmware_entry = entry;
+        return;
+    }
+
+    /* Otherwise treat it as a raw image and load it into on-chip SRAM. */
+    loaded = load_image_targphys(filename, RZA1L_SRAM_BASE, RZA1L_SRAM_SIZE,
+                                 &error_fatal);
+    if (loaded < 0) {
+        error_report("could not load firmware image '%s'", filename);
+        exit(1);
+    }
+    m->firmware_entry = RZA1L_SRAM_BASE;
+}
 
 static void deluge_machine_init(MachineState *machine)
 {
@@ -55,15 +109,8 @@ static void deluge_machine_init(MachineState *machine)
      *   - audio codec on SSI
      */
 
-    /*
-     * Boot via the firmware ELF passed with -kernel. The Deluge runs bare
-     * metal from on-chip SRAM; the ELF entry point and segments drive the
-     * initial PC and memory contents.
-     */
-    deluge_boot_info.ram_size = RZA1L_SDRAM_SIZE;
-    deluge_boot_info.board_id = -1;
-    deluge_boot_info.loader_start = RZA1L_SRAM_BASE;
-    arm_load_kernel(&m->soc.cpu, machine, &deluge_boot_info);
+    deluge_load_firmware(m, machine);
+    qemu_register_reset(deluge_cpu_reset, m);
 }
 
 static void deluge_machine_class_init(ObjectClass *oc, const void *data)
