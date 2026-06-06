@@ -227,6 +227,18 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                        qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_FIQ));
 
     /*
+     * DMAC transfer-end interrupts (DMAINT0..DMAINT15). The firmware drains
+     * its UART TX queues (PIC on channel 10, MIDI on channel 11) from these
+     * interrupts, so each channel's end-of-transfer line is wired to the GIC
+     * at SPI (INTC_ID_DMAINT0 + channel - 32).
+     */
+    for (int ch = 0; ch < RZA1L_DMAC_NUM_CH; ch++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->dmac), ch,
+                           qdev_get_gpio_in(DEVICE(&s->gic),
+                                            RZA1L_DMAINT_SPI(ch)));
+    }
+
+    /*
      * SCIF UART channels 0 (MIDI) and 1 (PIC). SCIF0 is wired to a host
      * character backend (-serial) for MIDI; SCIF1 is wired to the on-board PIC
      * coprocessor model. Each channel's receive interrupt connects to the GIC.

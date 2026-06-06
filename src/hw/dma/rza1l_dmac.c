@@ -31,6 +31,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
 #include "system/dma.h"
@@ -90,6 +91,7 @@
 #define CHCFG_DDS_MASK  0x000f0000
 #define CHCFG_SAD       0x00100000  /* set: source address fixed */
 #define CHCFG_DAD       0x00200000  /* set: destination address fixed */
+#define CHCFG_DEM       0x01000000  /* set: transfer-end interrupt masked */
 
 /*
  * Decode an MMIO offset into a channel index and the register offset within
@@ -216,6 +218,18 @@ static void rza1l_dmac_chctrl_write(RzA1lDmacState *s, int ch, uint32_t val)
         rza1l_dmac_do_transfer(s, ch);
         c->chstat &= ~(CHSTAT_EN | CHSTAT_TACT | CHSTAT_ER);
         c->chstat |= CHSTAT_END | CHSTAT_TC;
+
+        /*
+         * Signal transfer completion. The RZ/A1 DMAINT lines are edge
+         * triggered (the firmware configures IDs 48-57 as edge in ICDICFR3),
+         * so a pulse latches a pending interrupt in the GIC. The firmware
+         * relies on this end-of-transfer interrupt to advance its UART TX
+         * queues; without it txSending never clears and later sends stall.
+         * Skip it when the channel masks the end interrupt (CHCFG.DEM set).
+         */
+        if (!(c->chcfg & CHCFG_DEM)) {
+            qemu_irq_pulse(s->irq[ch]);
+        }
 
         /*
          * A channel registered as a peripheral receive ring is additionally
@@ -377,6 +391,10 @@ static void rza1l_dmac_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->iomem, OBJECT(dev), &rza1l_dmac_ops, s,
                           TYPE_RZA1L_DMAC, RZA1L_DMAC_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+
+    for (int i = 0; i < RZA1L_DMAC_NUM_CH; i++) {
+        sysbus_init_irq(sbd, &s->irq[i]);
+    }
 }
 
 static const VMStateDescription vmstate_rza1l_dmac_channel = {

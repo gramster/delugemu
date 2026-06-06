@@ -129,6 +129,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_SCIF_RXI0_SPI  (223 - 32)
 #define RZA1L_SCIF_RXI1_SPI  (227 - 32)
 
+/*
+ * DMAC transfer-end interrupts. INTC_ID_DMAINT0 is 41; channel ch uses
+ * INTC ID (41 + ch), i.e. GIC SPI line (41 + ch - 32) = (9 + ch).
+ */
+#define RZA1L_DMAINT0_ID     41
+#define RZA1L_DMAINT_SPI(ch) (RZA1L_DMAINT0_ID + (ch) - 32)
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL

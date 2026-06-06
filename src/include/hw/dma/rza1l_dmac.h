@@ -60,6 +60,13 @@ struct RzA1lDmacState {
 
     RzA1lDmacChannel ch[RZA1L_DMAC_NUM_CH];
 
+    /*
+     * Per-channel transfer-end interrupt lines (DMAINT0..DMAINT15). Pulsed
+     * when a transfer completes with the channel's end-interrupt unmasked
+     * (CHCFG.DEM clear). These are wired to the GIC by the SoC.
+     */
+    qemu_irq irq[RZA1L_DMAC_NUM_CH];
+
     /* Group common control registers (DCTRL_0_7 / DCTRL_8_15), shadowed. */
     uint32_t dctrl[2];
 };
