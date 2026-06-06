@@ -40,6 +40,7 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "chardev/char.h"
+#include "migration/vmstate.h"
 #include "qom/object.h"
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/display/deluge_oled.h"
@@ -323,6 +324,37 @@ static int deluge_pic_chr_write(Chardev *chr, const uint8_t *buf, int len)
     return len;
 }
 
+/*
+ * Migration state. The PIC carries no MMIO of its own; what matters for a
+ * snapshot round-trip is the command-framing position and the decoded display
+ * state the renderers mirror. Device pointers, the DMA channel and the
+ * heartbeat timer are transient and re-established by deluge_pic_set_dma().
+ */
+static const VMStateDescription vmstate_deluge_pic = {
+    .name = TYPE_DELUGE_PIC,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(cmd, DelugePicState),
+        VMSTATE_BOOL(in_message, DelugePicState),
+        VMSTATE_UINT32(payload_have, DelugePicState),
+        VMSTATE_UINT32(payload_needed, DelugePicState),
+        VMSTATE_UINT8_ARRAY(payload, DelugePicState, DELUGE_PIC_MAX_PAYLOAD),
+        VMSTATE_UINT8(baud_div, DelugePicState),
+        VMSTATE_UINT32(held_count, DelugePicState),
+        VMSTATE_BUFFER_UNSAFE(pad_grid, DelugePicState, 0,
+                              DELUGE_PIC_GRID_COLS * DELUGE_PIC_GRID_ROWS * 3),
+        VMSTATE_BOOL_ARRAY(led_on, DelugePicState, DELUGE_PIC_NUM_LEDS),
+        VMSTATE_UINT8_ARRAY(seven_seg, DelugePicState, DELUGE_PIC_SEG_DIGITS),
+        VMSTATE_UINT8_2DARRAY(gold_knob, DelugePicState,
+                              DELUGE_PIC_GOLD_KNOBS, DELUGE_PIC_GOLD_LEDS),
+        VMSTATE_BOOL(oled_enabled, DelugePicState),
+        VMSTATE_BOOL(oled_selected, DelugePicState),
+        VMSTATE_BOOL(oled_dc_high, DelugePicState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 void deluge_pic_set_dma(Chardev *chr, struct RzA1lDmacState *dmac,
                         int rx_dma_channel)
 {
@@ -343,6 +375,15 @@ void deluge_pic_set_dma(Chardev *chr, struct RzA1lDmacState *dmac,
     }
     timer_mod(s->heartbeat,
               qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + DELUGE_PIC_HEARTBEAT_MS);
+
+    /*
+     * Register migration state once the instance is wired up. The PIC is a
+     * Chardev, not a qdev, so it has no DeviceClass.vmsd and must register
+     * itself manually. Only the decoded protocol/display state is saved; the
+     * board re-establishes the device pointers and re-arms the heartbeat on
+     * load via this same setup path.
+     */
+    vmstate_register(NULL, VMSTATE_INSTANCE_ID_ANY, &vmstate_deluge_pic, s);
 }
 
 void deluge_pic_pad_event(Chardev *chr, int x, int y, bool pressed)
