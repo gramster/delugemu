@@ -25,6 +25,7 @@
 #include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/gpio/rza1l_gpio.h"
+#include "hw/intc/arm_gic.h"
 
 static void rza1l_soc_init(Object *obj)
 {
@@ -38,6 +39,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "spibsc", &s->spibsc, TYPE_RZA1L_SPIBSC);
     object_initialize_child(obj, "ostm", &s->ostm, TYPE_RZA1L_OSTM);
     object_initialize_child(obj, "gpio", &s->gpio, TYPE_RZA1L_GPIO);
+    object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
 
     /*
      * The board points this at its system address space before realize. The
@@ -190,6 +192,31 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->gpio), 0),
                                         1);
+
+    /*
+     * INTC interrupt controller, modelled with QEMU's ARM GIC. The RZ/A1 INTC
+     * is a GICv1 whose register layout matches the GIC, so the distributor and
+     * CPU-interface MMIO regions are mapped directly at the INTC addresses
+     * (over the io.mid catch-all). The GIC's IRQ/FIQ outputs drive the CPU.
+     */
+    qdev_prop_set_uint32(DEVICE(&s->gic), "revision", 1);
+    qdev_prop_set_uint32(DEVICE(&s->gic), "num-cpu", 1);
+    qdev_prop_set_uint32(DEVICE(&s->gic), "num-irq", RZA1L_INTC_NUM_IRQ);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->gic), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_INTC_DIST_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->gic), 0),
+                                        1);
+    memory_region_add_subregion_overlap(system_memory, RZA1L_INTC_CPU_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->gic), 1),
+                                        1);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->gic), 0,
+                       qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_IRQ));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->gic), 1,
+                       qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_FIQ));
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)

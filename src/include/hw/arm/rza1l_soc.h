@@ -18,6 +18,7 @@
 #include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/gpio/rza1l_gpio.h"
+#include "hw/intc/arm_gic.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -87,6 +88,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 /* GPIO — general-purpose I/O ports (struct base, per the firmware macro). */
 #define RZA1L_GPIO_BASE     0xFCFE3004
 
+/*
+ * INTC — the RZ/A1 interrupt controller is an ARM GICv1: the GIC distributor
+ * (ICD* registers) sits at 0xE8201000 and the CPU interface (ICC* registers)
+ * at 0xE8202000. The firmware uses interrupt IDs up to ~586, so allocate 608
+ * lines (a multiple of 32 that covers them plus the 32 internal SGI/PPI IDs).
+ */
+#define RZA1L_INTC_DIST_BASE 0xE8201000
+#define RZA1L_INTC_CPU_BASE  0xE8202000
+#define RZA1L_INTC_NUM_IRQ   608
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL
@@ -109,6 +120,7 @@ struct RzA1lSocState {
     RzA1lSpibscState spibsc;
     RzA1lOstmState ostm;
     RzA1lGpioState gpio;
+    GICState gic;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board
