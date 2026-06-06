@@ -291,6 +291,24 @@ static void rza1l_dmac_chctrl_write(RzA1lDmacState *s, int ch, uint32_t val)
                 c->tx_audio_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
                 c->crsa = c->tx_audio_base;
             }
+        } else if (c->rx_audio_ring && c->nxla != 0) {
+            /*
+             * The SSI receive channel uses a self-linking descriptor whose
+             * destination is the audio RX buffer. Latch the destination base
+             * and size and start the capture clock; CRDA is then synthesised
+             * from elapsed virtual time on each read (see rza1l_dmac_read).
+             */
+            uint8_t d[32];
+
+            dma_memory_read(&address_space_memory, c->nxla, d, sizeof(d),
+                            MEMTXATTRS_UNSPECIFIED);
+            if (ldl_le_p(d + 28) == c->nxla) {
+                c->rx_audio_base = ldl_le_p(d + 8);
+                c->rx_audio_size = ldl_le_p(d + 12);
+                c->rx_audio_active = (c->rx_audio_size != 0);
+                c->rx_audio_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+                c->crda = c->rx_audio_base;
+            }
         }
     }
 }
@@ -326,6 +344,30 @@ bool rza1l_dmac_get_tx_audio_ring(RzA1lDmacState *s, int ch,
     return true;
 }
 
+void rza1l_dmac_register_rx_audio_ring(RzA1lDmacState *s, int ch)
+{
+    if (ch >= 0 && ch < RZA1L_DMAC_NUM_CH) {
+        s->ch[ch].rx_audio_ring = true;
+    }
+}
+
+bool rza1l_dmac_get_rx_audio_ring(RzA1lDmacState *s, int ch,
+                                  uint32_t *base, uint32_t *size)
+{
+    RzA1lDmacChannel *c;
+
+    if (ch < 0 || ch >= RZA1L_DMAC_NUM_CH) {
+        return false;
+    }
+    c = &s->ch[ch];
+    if (!c->rx_audio_active || c->rx_audio_size == 0) {
+        return false;
+    }
+    *base = c->rx_audio_base;
+    *size = c->rx_audio_size;
+    return true;
+}
+
 /*
  * Synthesise the SSI transmit channel's current source address from elapsed
  * virtual time, modelling the audio DMA continuously reading the TX buffer at
@@ -342,6 +384,40 @@ static uint32_t rza1l_dmac_tx_audio_crsa(RzA1lDmacChannel *c)
     }
     bytes = ((uint64_t)elapsed * RZA1L_DMAC_AUDIO_BYTES_PER_SEC) / 1000000000u;
     return c->tx_audio_base + (uint32_t)(bytes % c->tx_audio_size);
+}
+
+/*
+ * Synthesise the SSI receive channel's current destination address from
+ * elapsed virtual time, modelling the audio DMA continuously writing captured
+ * samples into the RX buffer at the sample rate. Returns the live CRDA value
+ * within the ring buffer.
+ */
+static uint32_t rza1l_dmac_rx_audio_crda(RzA1lDmacChannel *c)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed = now - c->rx_audio_start_ns;
+    uint64_t bytes;
+
+    if (elapsed < 0) {
+        elapsed = 0;
+    }
+    bytes = ((uint64_t)elapsed * RZA1L_DMAC_AUDIO_BYTES_PER_SEC) / 1000000000u;
+    return c->rx_audio_base + (uint32_t)(bytes % c->rx_audio_size);
+}
+
+bool rza1l_dmac_get_rx_audio_crda(RzA1lDmacState *s, int ch, uint32_t *crda)
+{
+    RzA1lDmacChannel *c;
+
+    if (ch < 0 || ch >= RZA1L_DMAC_NUM_CH) {
+        return false;
+    }
+    c = &s->ch[ch];
+    if (!c->rx_audio_active || c->rx_audio_size == 0) {
+        return false;
+    }
+    *crda = rza1l_dmac_rx_audio_crda(c);
+    return true;
 }
 
 bool rza1l_dmac_peripheral_rx_push(RzA1lDmacState *s, int ch, uint8_t byte)
@@ -381,6 +457,10 @@ static uint64_t rza1l_dmac_read(void *opaque, hwaddr offset, unsigned size)
             /* Live audio playback position (see rza1l_dmac_tx_audio_crsa). */
             s->ch[ch].crsa = rza1l_dmac_tx_audio_crsa(&s->ch[ch]);
             reg = s->ch[ch].crsa;
+        } else if (chreg == DMAC_CRDA && s->ch[ch].rx_audio_active) {
+            /* Live audio capture position (see rza1l_dmac_rx_audio_crda). */
+            s->ch[ch].crda = rza1l_dmac_rx_audio_crda(&s->ch[ch]);
+            reg = s->ch[ch].crda;
         } else {
             uint32_t *p = rza1l_dmac_ch_reg_ptr(&s->ch[ch], chreg);
             reg = p ? *p : 0;
@@ -463,17 +543,18 @@ static void rza1l_dmac_reset(DeviceState *dev)
     RzA1lDmacState *s = RZA1L_DMAC(dev);
     bool rx_ring_peripheral[RZA1L_DMAC_NUM_CH];
     bool tx_audio_ring[RZA1L_DMAC_NUM_CH];
+    bool rx_audio_ring[RZA1L_DMAC_NUM_CH];
 
     /*
-     * rx_ring_peripheral and tx_audio_ring are static wiring properties (set
-     * once at machine construction by rza1l_dmac_register_rx_ring /
-     * rza1l_dmac_register_tx_audio_ring), not transfer state, so they must
-     * survive a device reset. Preserve them across the memset that clears the
-     * per-channel registers.
+     * rx_ring_peripheral, tx_audio_ring and rx_audio_ring are static wiring
+     * properties (set once at machine construction by rza1l_dmac_register_*),
+     * not transfer state, so they must survive a device reset. Preserve them
+     * across the memset that clears the per-channel registers.
      */
     for (int i = 0; i < RZA1L_DMAC_NUM_CH; i++) {
         rx_ring_peripheral[i] = s->ch[i].rx_ring_peripheral;
         tx_audio_ring[i] = s->ch[i].tx_audio_ring;
+        rx_audio_ring[i] = s->ch[i].rx_audio_ring;
     }
 
     memset(s->ch, 0, sizeof(s->ch));
@@ -482,6 +563,7 @@ static void rza1l_dmac_reset(DeviceState *dev)
     for (int i = 0; i < RZA1L_DMAC_NUM_CH; i++) {
         s->ch[i].rx_ring_peripheral = rx_ring_peripheral[i];
         s->ch[i].tx_audio_ring = tx_audio_ring[i];
+        s->ch[i].rx_audio_ring = rx_audio_ring[i];
     }
 
     /*
@@ -518,8 +600,8 @@ static void rza1l_dmac_realize(DeviceState *dev, Error **errp)
 
 static const VMStateDescription vmstate_rza1l_dmac_channel = {
     .name = "rza1l-dmac-channel",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(n0sa, RzA1lDmacChannel),
         VMSTATE_UINT32(n0da, RzA1lDmacChannel),
@@ -545,6 +627,11 @@ static const VMStateDescription vmstate_rza1l_dmac_channel = {
         VMSTATE_UINT32(tx_audio_base, RzA1lDmacChannel),
         VMSTATE_UINT32(tx_audio_size, RzA1lDmacChannel),
         VMSTATE_INT64(tx_audio_start_ns, RzA1lDmacChannel),
+        VMSTATE_BOOL(rx_audio_ring, RzA1lDmacChannel),
+        VMSTATE_BOOL(rx_audio_active, RzA1lDmacChannel),
+        VMSTATE_UINT32(rx_audio_base, RzA1lDmacChannel),
+        VMSTATE_UINT32(rx_audio_size, RzA1lDmacChannel),
+        VMSTATE_INT64(rx_audio_start_ns, RzA1lDmacChannel),
         VMSTATE_END_OF_LIST()
     },
 };

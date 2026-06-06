@@ -223,6 +223,14 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     rza1l_dmac_register_tx_audio_ring(&s->dmac, RZA1L_SSI_TX_DMA_CH);
 
     /*
+     * The SSI receive channel streams captured audio into the RX buffer
+     * continuously; mark it so its CRDA advances from virtual time at the
+     * sample rate, so the firmware's input-latency resync (slowRoutine) tracks
+     * a live write position rather than a stuck one.
+     */
+    rza1l_dmac_register_rx_audio_ring(&s->dmac, RZA1L_SSI_RX_DMA_CH);
+
+    /*
      * SSIF0 (I2S audio). Presents the SSI control/status registers so the
      * firmware's audio bring-up completes, and (with an audio backend) mirrors
      * the transmit DMA ring to QEMU's audio out and feeds the receive ring.

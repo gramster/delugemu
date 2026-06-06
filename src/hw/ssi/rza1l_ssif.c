@@ -209,6 +209,60 @@ static void rza1l_ssif_out_cb(void *opaque, int free_bytes)
     }
 }
 
+/*
+ * Audio input callback. The backend invokes this when captured samples are
+ * available. The firmware receives audio through the SSI receive DMA channel,
+ * so we write captured frames into the RX ring in guest memory at the channel's
+ * live write position (CRDA). With no capture source the read yields silence,
+ * and the firmware's input path simply sees zeroed samples.
+ */
+static void rza1l_ssif_in_cb(void *opaque, int avail)
+{
+    RzA1lSsifState *s = opaque;
+    uint8_t buf[1024];
+    uint32_t base, size, crda, off;
+
+    if (avail <= 0) {
+        return;
+    }
+
+    if (!s->dmac ||
+        !rza1l_dmac_get_rx_audio_ring(s->dmac, s->rx_dma_channel,
+                                      &base, &size) ||
+        !rza1l_dmac_get_rx_audio_crda(s->dmac, s->rx_dma_channel, &crda)) {
+        /* Ring not armed yet: drain and discard the captured samples. */
+        while (avail > 0) {
+            int chunk = MIN(avail, (int)sizeof(buf));
+            size_t got = audio_be_read(s->audio_be, s->voice_in, buf, chunk);
+            if (got == 0) {
+                break;
+            }
+            avail -= got;
+        }
+        return;
+    }
+
+    off = (crda - base) % size;
+    while (avail > 0) {
+        int chunk = MIN(avail, (int)sizeof(buf));
+        uint32_t to_end = size - off;
+        size_t got;
+
+        if ((uint32_t)chunk > to_end) {
+            chunk = to_end;
+        }
+        got = audio_be_read(s->audio_be, s->voice_in, buf, chunk);
+        if (got == 0) {
+            break;
+        }
+        dma_memory_write(&address_space_memory, base + off, buf, got,
+                         MEMTXATTRS_UNSPECIFIED);
+        off = (off + got) % size;
+        s->rec_cursor = off;
+        avail -= got;
+    }
+}
+
 
 static void rza1l_ssif_reset(DeviceState *dev)
 {
@@ -222,6 +276,7 @@ static void rza1l_ssif_reset(DeviceState *dev)
     s->ssifcmr = 0;
     s->ssifcsr = 0;
     s->play_cursor = 0;
+    s->rec_cursor = 0;
 }
 
 static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
@@ -257,13 +312,20 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
         }
         audio_be_set_active_out(s->audio_be, s->voice_out, true);
         s->output_open = true;
+
+        s->voice_in = audio_be_open_in(s->audio_be, s->voice_in, "ssif.in",
+                                       s, rza1l_ssif_in_cb, &as);
+        if (s->voice_in) {
+            audio_be_set_active_in(s->audio_be, s->voice_in, true);
+            s->input_open = true;
+        }
     }
 }
 
 static const VMStateDescription vmstate_rza1l_ssif = {
     .name = TYPE_RZA1L_SSIF,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ssicr, RzA1lSsifState),
         VMSTATE_UINT32(ssisr, RzA1lSsifState),
@@ -273,6 +335,7 @@ static const VMStateDescription vmstate_rza1l_ssif = {
         VMSTATE_UINT32(ssifcmr, RzA1lSsifState),
         VMSTATE_UINT32(ssifcsr, RzA1lSsifState),
         VMSTATE_UINT32(play_cursor, RzA1lSsifState),
+        VMSTATE_UINT32(rec_cursor, RzA1lSsifState),
         VMSTATE_END_OF_LIST()
     },
 };

@@ -148,6 +148,11 @@ e.g. via `run.sh --audio`), the device opens a 44.1 kHz stereo S32 output voice
 and mirrors the transmit DMA ring from guest memory to the host (silence until
 the firmware arms the ring). Without an audiodev the audio path is inactive.
 
+The receive channel is modelled symmetrically: ch7's CRDA advances from virtual
+time at the sample rate (so the firmware's input-latency resync tracks a live
+write pointer), and an input voice writes captured frames into the RX ring at
+CRDA. With no capture source the input is silence.
+
 | Offset | Reg | Coverage | Notes |
 | ------ | --- | -------- | ----- |
 | 0x00 | SSICR | shadow | control (TEN/REN etc.) |

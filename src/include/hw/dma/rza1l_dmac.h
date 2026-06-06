@@ -65,6 +65,21 @@ typedef struct RzA1lDmacChannel {
     uint32_t tx_audio_base;
     uint32_t tx_audio_size;
     int64_t  tx_audio_start_ns;
+
+    /*
+     * Audio capture ring (the SSI receive channel). Symmetric to the transmit
+     * ring above: the SSI continuously writes incoming codec samples into the
+     * firmware's RX buffer, and the firmware reads the channel's current
+     * destination address (CRDA) to track the live input write position and
+     * resynchronise its read latency. CRDA is advanced from virtual time at the
+     * audio sample rate. Only channels registered via
+     * rza1l_dmac_register_rx_audio_ring behave this way.
+     */
+    bool     rx_audio_ring;
+    bool     rx_audio_active;
+    uint32_t rx_audio_base;
+    uint32_t rx_audio_size;
+    int64_t  rx_audio_start_ns;
 } RzA1lDmacChannel;
 
 struct RzA1lDmacState {
@@ -110,6 +125,29 @@ void rza1l_dmac_register_tx_audio_ring(RzA1lDmacState *s, int ch);
  */
 bool rza1l_dmac_get_tx_audio_ring(RzA1lDmacState *s, int ch,
                                   uint32_t *base, uint32_t *size);
+
+/*
+ * Mark a channel as the SSI audio receive ring. When the firmware enables such
+ * a channel with a self-linking descriptor, its destination buffer is latched
+ * and its current destination address (CRDA) is thereafter advanced from
+ * virtual time at the audio sample rate, modelling continuous capture.
+ */
+void rza1l_dmac_register_rx_audio_ring(RzA1lDmacState *s, int ch);
+
+/*
+ * Report the live geometry of an RX audio ring channel. When the channel has
+ * been armed by the firmware, stores the ring's guest base address and byte
+ * size and returns true; otherwise returns false.
+ */
+bool rza1l_dmac_get_rx_audio_ring(RzA1lDmacState *s, int ch,
+                                  uint32_t *base, uint32_t *size);
+
+/*
+ * Return the live current destination address (CRDA) of an RX audio ring,
+ * i.e. the position at which the SSI is currently writing captured samples.
+ * Returns false if the channel is not an armed RX audio ring.
+ */
+bool rza1l_dmac_get_rx_audio_crda(RzA1lDmacState *s, int ch, uint32_t *crda);
 
 /*
  * Deliver one byte from a peripheral into a link-mode receive-ring channel.
