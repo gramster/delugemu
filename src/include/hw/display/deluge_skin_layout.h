@@ -34,14 +34,15 @@
  * Main matrix: 16 columns x 8 rows.
  * Sidebar: 2 columns x 8 rows to the right of the main matrix.
  */
-#define DELUGE_SKIN_PAD_MAIN_X0   158
-#define DELUGE_SKIN_PAD_MAIN_DX    52
-#define DELUGE_SKIN_PAD_ROWS_Y0   705
-#define DELUGE_SKIN_PAD_ROWS_DY    70
+#define DELUGE_SKIN_PAD_MAIN_X0   162
+#define DELUGE_SKIN_PAD_MAIN_DX    98
+#define DELUGE_SKIN_PAD_ROWS_Y0   636
+#define DELUGE_SKIN_PAD_ROWS_DY    84
 
-#define DELUGE_SKIN_PAD_SIDE_X0  1048
-#define DELUGE_SKIN_PAD_SIDE_DX    72
+#define DELUGE_SKIN_PAD_SIDE_X0  1693
+#define DELUGE_SKIN_PAD_SIDE_DX    89
 
-#define DELUGE_SKIN_PAD_RADIUS     24
+#define DELUGE_SKIN_PAD_SIZE       64
+#define DELUGE_SKIN_PAD_ROUND      10
 
 #endif /* HW_DISPLAY_DELUGE_SKIN_LAYOUT_H */

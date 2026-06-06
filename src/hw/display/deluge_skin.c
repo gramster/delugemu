@@ -157,27 +157,50 @@ static inline uint8_t blend_chan(uint8_t dst, uint8_t src, uint8_t a)
     return (uint8_t)(((int)dst * (255 - a) + (int)src * a) / 255);
 }
 
-static void deluge_skin_blend_circle(uint32_t *dst, int stride,
-                                     int cx, int cy, int r,
-                                     uint8_t rr, uint8_t gg, uint8_t bb,
-                                     uint8_t alpha)
+static void deluge_skin_blend_pad(uint32_t *dst, int stride,
+                                  int cx, int cy,
+                                  uint8_t rr, uint8_t gg, uint8_t bb,
+                                  uint8_t alpha)
 {
-    int r2 = r * r;
+    int half = DELUGE_SKIN_PAD_SIZE / 2;
+    int round = DELUGE_SKIN_PAD_ROUND;
+    int x0 = cx - half;
+    int y0 = cy - half;
+    int x1 = cx + half;
+    int y1 = cy + half;
 
-    for (int y = -r; y <= r; y++) {
-        int py = cy + y;
+    for (int py = y0; py < y1; py++) {
         if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
             continue;
         }
-        for (int x = -r; x <= r; x++) {
-            int px = cx + x;
-            int d2 = x * x + y * y;
+        for (int px = x0; px < x1; px++) {
+            int dx = 0, dy = 0;
             uint32_t p;
             uint8_t pr, pg, pb;
-            uint8_t a;
+            uint8_t a = alpha;
 
-            if (px < 0 || px >= DELUGE_SKIN_IMAGE_WIDTH || d2 > r2) {
+            if (px < 0 || px >= DELUGE_SKIN_IMAGE_WIDTH) {
                 continue;
+            }
+
+            /* Rounded corners: fade alpha near corners only. */
+            if (px < x0 + round) {
+                dx = x0 + round - px;
+            } else if (px >= x1 - round) {
+                dx = px - (x1 - round - 1);
+            }
+            if (py < y0 + round) {
+                dy = y0 + round - py;
+            } else if (py >= y1 - round) {
+                dy = py - (y1 - round - 1);
+            }
+            if (dx || dy) {
+                int d2 = dx * dx + dy * dy;
+                int r2 = round * round;
+                if (d2 > r2) {
+                    continue;
+                }
+                a = (uint8_t)((alpha * (r2 - d2)) / MAX(1, r2));
             }
 
             p = dst[py * stride + px];
@@ -185,8 +208,6 @@ static void deluge_skin_blend_circle(uint32_t *dst, int stride,
             pg = (p >> 8) & 0xff;
             pb = p & 0xff;
 
-            /* Soft edge to mimic LED diffusion. */
-            a = (uint8_t)((alpha * (r2 - d2)) / MAX(1, r2));
             pr = blend_chan(pr, rr, a);
             pg = blend_chan(pg, gg, a);
             pb = blend_chan(pb, bb, a);
@@ -217,9 +238,7 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t bb = p->rgb[col][row][2];
 
             if (rr || gg || bb) {
-                deluge_skin_blend_circle(dst, stride, x, y,
-                                         DELUGE_SKIN_PAD_RADIUS,
-                                         rr, gg, bb, 210);
+                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 215);
             }
         }
 
@@ -231,9 +250,7 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t bb = p->rgb[col][row][2];
 
             if (rr || gg || bb) {
-                deluge_skin_blend_circle(dst, stride, x, y,
-                                         DELUGE_SKIN_PAD_RADIUS,
-                                         rr, gg, bb, 210);
+                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 215);
             }
         }
     }
