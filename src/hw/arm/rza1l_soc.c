@@ -28,6 +28,7 @@
 #include "hw/intc/arm_gic.h"
 #include "hw/char/rza1l_scif.h"
 #include "hw/misc/deluge_pic.h"
+#include "hw/sd/rza1l_sdhi.h"
 #include "chardev/char.h"
 
 static void rza1l_soc_init(Object *obj)
@@ -52,6 +53,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "padgrid", &s->padgrid, TYPE_DELUGE_PADGRID);
     object_initialize_child(obj, "segment", &s->segment, TYPE_DELUGE_SEGMENT);
     object_initialize_child(obj, "input", &s->input, TYPE_DELUGE_INPUT);
+    object_initialize_child(obj, "sdhi", &s->sdhi, TYPE_RZA1L_SDHI);
 
     /*
      * The board points this at its system address space before realize. The
@@ -381,6 +383,22 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->bsc), 0),
                                         1);
+
+    /*
+     * SDHI SD host controller (port 1 / IP1). Exposes an SDBus for an sd-card
+     * (attached by the board when an SD drive is provided). The firmware mounts
+     * the card on demand, so this is dormant during boot. Mapped over the
+     * io.mid catch-all; its combined interrupt is wired to the GIC.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->sdhi), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_SDHI_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->sdhi), 0),
+                                        1);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdhi), 0,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SDHI_SPI));
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)

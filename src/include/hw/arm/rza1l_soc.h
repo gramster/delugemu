@@ -27,6 +27,7 @@
 #include "hw/display/deluge_padgrid.h"
 #include "hw/display/deluge_segment.h"
 #include "hw/input/deluge_input.h"
+#include "hw/sd/rza1l_sdhi.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -128,6 +129,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_SCIF0_BASE     0xE8007000
 #define RZA1L_SCIF1_BASE     0xE8007800
 
+/*
+ * SDHI SD host controller. The Deluge uses port 1 (IP1) at 0xE804E800. Its
+ * command/response/access-end interrupts are INTC IDs 305..307; the firmware
+ * routes them all to the same handler, so a single combined line wired to the
+ * command/response ID (305 -> GIC SPI 305 - 32) suffices.
+ */
+#define RZA1L_SDHI_BASE      0xE804E800
+#define RZA1L_SDHI_INTC_ID   305
+#define RZA1L_SDHI_SPI       (RZA1L_SDHI_INTC_ID - 32)
+
 /* DMA channel the firmware reads PIC input from (PIC_RX_DMA_CHANNEL). */
 #define RZA1L_PIC_RX_DMA_CH  12
 /* DMA channel the firmware streams audio to the SSI on (SSI_TX_DMA_CHANNEL). */
@@ -182,6 +193,7 @@ struct RzA1lSocState {
     DelugePadGridState padgrid;
     DelugeSegmentState segment;
     DelugeInputState input;
+    RzA1lSdhiState sdhi;
 
     /* PIC coprocessor on SCIF1 (a character backend, not a sysbus device). */
     Chardev *pic;
