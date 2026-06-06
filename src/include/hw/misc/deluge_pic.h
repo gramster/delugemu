@@ -27,6 +27,8 @@
 
 struct RzA1lDmacState;
 struct DelugeOledState;
+struct DelugePadGridState;
+struct DelugeSegmentState;
 
 #define TYPE_DELUGE_PIC "chardev-deluge-pic"
 typedef struct DelugePicState DelugePicState;
@@ -66,6 +68,14 @@ struct DelugePicState {
      * the control lines are forwarded. Set by the board.
      */
     struct DelugeOledState *oled;
+
+    /*
+     * The RGB pad-grid and 7-segment numeric displays. The PIC forwards its
+     * decoded pad colours / segment bitmasks to these renderers. Set by the
+     * board; either may be NULL.
+     */
+    struct DelugePadGridState *padgrid;
+    struct DelugeSegmentState *segment;
 
     /*
      * Command framing. When a command byte carries a payload, cmd holds it and
@@ -109,5 +119,11 @@ void deluge_pic_set_dma(Chardev *chr, struct RzA1lDmacState *dmac,
 
 /* Bind the OLED panel whose control lines the PIC drives (board setup). */
 void deluge_pic_set_oled(Chardev *chr, struct DelugeOledState *oled);
+
+/* Bind the RGB pad-grid renderer the PIC forwards pad colours to. */
+void deluge_pic_set_padgrid(Chardev *chr, struct DelugePadGridState *padgrid);
+
+/* Bind the 7-segment renderer the PIC forwards numeric updates to. */
+void deluge_pic_set_segment(Chardev *chr, struct DelugeSegmentState *segment);
 
 #endif /* HW_MISC_DELUGE_PIC_H */

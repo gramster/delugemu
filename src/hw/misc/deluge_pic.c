@@ -36,6 +36,8 @@
 #include "qom/object.h"
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/display/deluge_oled.h"
+#include "hw/display/deluge_padgrid.h"
+#include "hw/display/deluge_segment.h"
 #include "hw/misc/deluge_pic.h"
 
 /*
@@ -153,6 +155,9 @@ static void deluge_pic_dispatch(DelugePicState *s)
                 memcpy(s->pad_grid[col][row], &s->payload[i * 3], 3);
             }
         }
+        if (s->padgrid) {
+            deluge_padgrid_update(s->padgrid, s->pad_grid);
+        }
         return;
     }
     if (cmd >= PIC_MSG_SET_LED_OFF_BASE &&
@@ -178,6 +183,9 @@ static void deluge_pic_dispatch(DelugePicState *s)
         break;
     case PIC_MSG_UPDATE_SEVEN_SEGMENT:
         memcpy(s->seven_seg, s->payload, DELUGE_PIC_SEG_DIGITS);
+        if (s->segment) {
+            deluge_segment_update(s->segment, s->seven_seg);
+        }
         break;
     case PIC_MSG_ENABLE_OLED:
         s->oled_enabled = true;
@@ -277,6 +285,20 @@ void deluge_pic_set_oled(Chardev *chr, struct DelugeOledState *oled)
     DelugePicState *s = DELUGE_PIC(chr);
 
     s->oled = oled;
+}
+
+void deluge_pic_set_padgrid(Chardev *chr, struct DelugePadGridState *padgrid)
+{
+    DelugePicState *s = DELUGE_PIC(chr);
+
+    s->padgrid = padgrid;
+}
+
+void deluge_pic_set_segment(Chardev *chr, struct DelugeSegmentState *segment)
+{
+    DelugePicState *s = DELUGE_PIC(chr);
+
+    s->segment = segment;
 }
 
 static void deluge_pic_class_init(ObjectClass *oc, const void *data)

@@ -49,6 +49,8 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "wdt", &s->wdt, TYPE_RZA1L_WDT);
     object_initialize_child(obj, "bsc", &s->bsc, TYPE_RZA1L_BSC);
     object_initialize_child(obj, "oled", &s->oled, TYPE_DELUGE_OLED);
+    object_initialize_child(obj, "padgrid", &s->padgrid, TYPE_DELUGE_PADGRID);
+    object_initialize_child(obj, "segment", &s->segment, TYPE_DELUGE_SEGMENT);
 
     /*
      * The board points this at its system address space before realize. The
@@ -162,6 +164,17 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
         return;
     }
     rza1l_rspi_set_oled(&s->rspi0, &s->oled);
+
+    /*
+     * RGB pad-grid and 7-segment numeric displays. Both are driven entirely by
+     * PIC commands; the PIC forwards its decoded state to them for rendering.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->padgrid), errp)) {
+        return;
+    }
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->segment), errp)) {
+        return;
+    }
 
     /*
      * MTU2 timer. Provides the free-running counters the firmware uses for
@@ -303,6 +316,8 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     s->pic = qemu_chardev_new(NULL, TYPE_DELUGE_PIC, NULL, NULL, &error_abort);
     deluge_pic_set_dma(s->pic, &s->dmac, RZA1L_PIC_RX_DMA_CH);
     deluge_pic_set_oled(s->pic, &s->oled);
+    deluge_pic_set_padgrid(s->pic, &s->padgrid);
+    deluge_pic_set_segment(s->pic, &s->segment);
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
         return;
