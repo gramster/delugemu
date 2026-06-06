@@ -43,6 +43,8 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
     object_initialize_child(obj, "scif0", &s->scif0, TYPE_RZA1L_SCIF);
     object_initialize_child(obj, "scif1", &s->scif1, TYPE_RZA1L_SCIF);
+    object_initialize_child(obj, "cpg", &s->cpg, TYPE_RZA1L_CPG);
+    object_initialize_child(obj, "wdt", &s->wdt, TYPE_RZA1L_WDT);
 
     /*
      * The board points this at its system address space before realize. The
@@ -247,6 +249,28 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         1);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->scif1), 0,
                        qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SCIF_RXI1_SPI));
+
+    /*
+     * CPG (clock pulse generator + module standby) and WDT (watchdog). Both
+     * sit in the io.high region; the firmware programs FRQCR/STBCRn during
+     * clock setup and refreshes the watchdog from its main loop. Mapped over
+     * the io.high catch-all.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->cpg), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_CPG_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->cpg), 0),
+                                        1);
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->wdt), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_WDT_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->wdt), 0),
+                                        1);
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)

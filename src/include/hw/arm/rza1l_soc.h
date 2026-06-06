@@ -20,6 +20,8 @@
 #include "hw/gpio/rza1l_gpio.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/char/rza1l_scif.h"
+#include "hw/misc/rza1l_cpg.h"
+#include "hw/misc/rza1l_wdt.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -89,6 +91,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 /* GPIO — general-purpose I/O ports (struct base, per the firmware macro). */
 #define RZA1L_GPIO_BASE     0xFCFE3004
 
+/* CPG — clock pulse generator + module-standby control (st_cpg base). */
+#define RZA1L_CPG_BASE      0xFCFE0010
+
+/* WDT — watchdog timer. */
+#define RZA1L_WDT_BASE      0xFCFE0000
+
 /*
  * INTC — the RZ/A1 interrupt controller is an ARM GICv1: the GIC distributor
  * (ICD* registers) sits at 0xE8201000 and the CPU interface (ICC* registers)
@@ -134,6 +142,8 @@ struct RzA1lSocState {
     GICState gic;
     RzA1lScifState scif0;
     RzA1lScifState scif1;
+    RzA1lCpgState cpg;
+    RzA1lWdtState wdt;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board
