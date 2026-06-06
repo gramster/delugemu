@@ -44,8 +44,8 @@ smoke test green.
 
 ## M5 — Quality
 
-- [ ] Regression test suite booting firmware and asserting on display/serial.
-- [ ] CI matrix (Linux + macOS) building QEMU and running the suite.
+- [x] Regression test suite booting firmware and asserting on display/serial.
+- [x] CI matrix (Linux + macOS) building QEMU and running the suite.
 - [ ] Snapshot/savestate support for the custom devices (vmstate).
 - [ ] Documentation of each device's register coverage.
 

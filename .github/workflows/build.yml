@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-smoke:
-    name: Build qemu-system-arm + smoke test
+  build-and-test:
+    name: Build qemu-system-arm + smoke + regression
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -49,3 +49,9 @@ jobs:
 
       - name: Smoke test
         run: ./tests/smoke.sh
+
+      - name: Firmware-boot regression test
+        # Firmware is not shipped with the repo, so this skips cleanly (exit 0)
+        # when no image is present. To exercise the full boot in CI, fetch an
+        # image in a prior step and point DELUGE_FIRMWARE at it.
+        run: ./tests/boot.sh
