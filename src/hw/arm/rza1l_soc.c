@@ -351,6 +351,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
      * Mapped over the io.mid catch-all.
      */
     qdev_prop_set_chr(DEVICE(&s->scif0), "chardev", serial_hd(0));
+    rza1l_scif_set_rx_dma(&s->scif0, &s->dmac, RZA1L_MIDI_RX_DMA_CH);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif0), errp)) {
         return;
     }

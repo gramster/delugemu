@@ -26,6 +26,7 @@
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/char/rza1l_scif.h"
+#include "hw/dma/rza1l_dmac.h"
 
 /* Channel register offsets. */
 #define SCIF_SCSMR  0x00 /* serial mode            (16) */
@@ -167,10 +168,29 @@ static void rza1l_scif_receive(void *opaque, const uint8_t *buf, int size)
     if (size < 1) {
         return;
     }
+
+    if (s->dmac) {
+        /*
+         * MIDI input is consumed by the firmware via the receive DMA ring
+         * (it polls the channel's CRDA), so hand the byte straight to the
+         * DMAC rather than latching it into SCFRDR and raising RXI.
+         */
+        rza1l_dmac_peripheral_rx_push(s->dmac, s->rx_dma_channel, buf[0]);
+        return;
+    }
+
     s->rx_fifo = buf[0];
     s->rx_full = true;
     s->scfsr |= SCFSR_RDF | SCFSR_DR;
     rza1l_scif_update_irq(s);
+}
+
+void rza1l_scif_set_rx_dma(RzA1lScifState *s, struct RzA1lDmacState *dmac,
+                           int rx_dma_channel)
+{
+    s->dmac = dmac;
+    s->rx_dma_channel = rx_dma_channel;
+    rza1l_dmac_register_rx_ring(dmac, rx_dma_channel);
 }
 
 static void rza1l_scif_reset(DeviceState *dev)

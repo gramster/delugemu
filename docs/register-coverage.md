@@ -32,6 +32,14 @@ Base `0xE8007000` (SCIF0, MIDI) and `0xE8007800` (SCIF1, PIC) · size `0x100`.
 
 TX is synchronous to the chardev; RX is interrupt-driven (RXI when `SCSCR.RIE`).
 
+SCIF0 (MIDI) additionally has its receive path bound to DMAC channel 13
+(`MIDI_RX_DMA_CHANNEL`): bytes arriving from the host `-serial`/`--midi` chardev
+are pushed straight into the channel's self-linking receive ring (the firmware
+reads MIDI by polling the channel's `CRDA`), mirroring the PIC's DMA receive on
+channel 12. The receive-timing capture path (DMA channel 14, which snapshots the
+SSI sample counter per MIDI byte) is not modelled; MIDI event timestamps are
+therefore approximate.
+
 ### DMAC — `rza1l-dmac`
 
 Base `0xE8200000` · size `0x800` · 16 channels (0x40-byte blocks), group commons at `0x300`/`0x700`.

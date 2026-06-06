@@ -23,6 +23,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lScifState, RZA1L_SCIF)
 /* MMIO register window for one SCIF channel. */
 #define RZA1L_SCIF_MMIO_SIZE 0x100
 
+struct RzA1lDmacState;
+
 struct RzA1lScifState {
     /*< private >*/
     SysBusDevice parent_obj;
@@ -40,7 +42,19 @@ struct RzA1lScifState {
 
     uint8_t  rx_fifo;   /* single receive holding byte    */
     bool     rx_full;   /* receive byte pending           */
+
+    /*
+     * Optional receive-DMA binding. When set, incoming bytes are pushed into
+     * the DMAC's receive ring (the MIDI UART is read via DMA, with the
+     * firmware polling CRDA) instead of latched into the single holding byte.
+     */
+    struct RzA1lDmacState *dmac;
+    int rx_dma_channel;
 };
+
+/* Route received bytes into a DMAC receive ring (MIDI input via DMA). */
+void rza1l_scif_set_rx_dma(RzA1lScifState *s, struct RzA1lDmacState *dmac,
+                           int rx_dma_channel);
 
 #endif /* HW_CHAR_RZA1L_SCIF_H */
 
