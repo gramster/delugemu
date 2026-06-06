@@ -22,6 +22,7 @@
 #include "hw/char/rza1l_scif.h"
 #include "hw/misc/rza1l_cpg.h"
 #include "hw/misc/rza1l_wdt.h"
+#include "hw/misc/rza1l_bsc.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -95,6 +96,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 /* WDT — watchdog timer. */
 #define RZA1L_WDT_BASE      0xFCFE0000
 
+/* BSC — bus state controller (external SDRAM on CS3). */
+#define RZA1L_BSC_BASE      0x3FFFC000
+
 /*
  * PL310 (L2C-310) L2 cache controller. Instantiated from QEMU's built-in
  * "l2x0" model purely to absorb the firmware's cache-init register writes.
@@ -149,6 +153,7 @@ struct RzA1lSocState {
     RzA1lScifState scif1;
     RzA1lCpgState cpg;
     RzA1lWdtState wdt;
+    RzA1lBscState bsc;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board

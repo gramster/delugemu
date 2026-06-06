@@ -27,6 +27,7 @@ arm_common_ss.add(when: 'CONFIG_DELUGE', if_true: files(
   'hw/misc/deluge_pic.c',
   'hw/misc/rza1l_cpg.c',
   'hw/misc/rza1l_wdt.c',
+  'hw/misc/rza1l_bsc.c',
   'hw/gpio/rza1l_gpio.c',
   'hw/ssi/rza1l_rspi.c',
   'hw/ssi/rza1l_spibsc.c',

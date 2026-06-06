@@ -45,6 +45,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "scif1", &s->scif1, TYPE_RZA1L_SCIF);
     object_initialize_child(obj, "cpg", &s->cpg, TYPE_RZA1L_CPG);
     object_initialize_child(obj, "wdt", &s->wdt, TYPE_RZA1L_WDT);
+    object_initialize_child(obj, "bsc", &s->bsc, TYPE_RZA1L_BSC);
 
     /*
      * The board points this at its system address space before realize. The
@@ -279,6 +280,19 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
      * mapped dynamically since the model exports no public state type.
      */
     sysbus_create_simple(RZA1L_PL310_TYPE, RZA1L_PL310_BASE, NULL);
+
+    /*
+     * BSC (bus state controller). The firmware programs it to bring up the
+     * external SDRAM on CS3 (already backed by the sdram RAM region); the
+     * model absorbs the init writes. Mapped over the io.low catch-all.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->bsc), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_BSC_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->bsc), 0),
+                                        1);
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)
