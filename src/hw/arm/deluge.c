@@ -53,18 +53,38 @@ static void deluge_cpu_reset(void *opaque)
 }
 
 /*
+ * Layout of the boot header at the start of a Deluge raw image, emitted by the
+ * firmware's start.S after the 8-entry ARM vector table. The on-chip SPI boot
+ * ROM uses these to validate the image and decide where to copy and run it.
+ */
+#define DELUGE_HDR_CODE_START   0x20  /* .word start   - load address          */
+#define DELUGE_HDR_CODE_END     0x24  /* .word end                             */
+#define DELUGE_HDR_CODE_EXECUTE 0x28  /* .word execute - entry point           */
+#define DELUGE_HDR_SIGNATURE    0x2c  /* validation string                     */
+#define DELUGE_SIGNATURE        ".BootLoad_ValidProgramTest."
+#define DELUGE_HDR_MIN_SIZE     (DELUGE_HDR_SIGNATURE + sizeof(DELUGE_SIGNATURE))
+
+/*
  * Load the firmware passed with -kernel. Accepts either an ELF (firmware built
  * with symbols, loaded by its program headers) or a raw image such as
- * deluge-c1_2_1.bin. On real hardware a small bootloader in SPI flash validates
- * the image, copies it into on-chip SRAM at 0x20000000 and branches to its
- * "start" entry; we emulate the end state by loading the raw image there and
- * starting execution at the SRAM base.
+ * deluge-c1_2_1.bin.
+ *
+ * The raw image is what the device ships: it begins with the ARM vector table
+ * and a boot header carrying the link/entry address (the code is linked to run
+ * from on-chip SRAM at e.g. 0x2007b480, past the NOLOAD bss/stacks/MMU table at
+ * the SRAM base). On hardware a small SPI-flash boot ROM checks the validation
+ * signature, copies the image to its code_start address and branches to
+ * code_execute. We do the same: honour the header's addresses rather than
+ * assuming the bare SRAM base.
  */
 static void deluge_load_firmware(DelugeMachineState *m, MachineState *machine)
 {
     const char *filename = machine->kernel_filename;
     uint64_t entry = 0;
     ssize_t loaded;
+    char *data = NULL;
+    gsize len = 0;
+    uint32_t code_start, code_execute;
 
     if (filename == NULL) {
         warn_report("no firmware image given (-kernel); CPU will idle at the "
@@ -81,14 +101,42 @@ static void deluge_load_firmware(DelugeMachineState *m, MachineState *machine)
         return;
     }
 
-    /* Otherwise treat it as a raw image and load it into on-chip SRAM. */
-    loaded = load_image_targphys(filename, RZA1L_SRAM_BASE, RZA1L_SRAM_SIZE,
-                                 &error_fatal);
-    if (loaded < 0) {
-        error_report("could not load firmware image '%s'", filename);
+    /* Otherwise treat it as a raw image: read it and inspect the boot header. */
+    if (!g_file_get_contents(filename, &data, &len, NULL)) {
+        error_report("could not read firmware image '%s'", filename);
         exit(1);
     }
-    m->firmware_entry = RZA1L_SRAM_BASE;
+
+    if (len >= DELUGE_HDR_MIN_SIZE &&
+        memcmp(data + DELUGE_HDR_SIGNATURE, DELUGE_SIGNATURE,
+               strlen(DELUGE_SIGNATURE)) == 0) {
+        code_start = ldl_le_p(data + DELUGE_HDR_CODE_START);
+        code_execute = ldl_le_p(data + DELUGE_HDR_CODE_EXECUTE);
+
+        if (code_start < RZA1L_SRAM_BASE ||
+            code_start + len > RZA1L_SRAM_BASE + RZA1L_SRAM_SIZE ||
+            code_execute < code_start ||
+            code_execute >= code_start + len) {
+            error_report("firmware boot header addresses out of range "
+                         "(code_start=0x%08x execute=0x%08x len=0x%zx)",
+                         code_start, code_execute, (size_t)len);
+            exit(1);
+        }
+    } else {
+        /* Not a Deluge image with a recognised header; load at the SRAM base. */
+        warn_report("firmware image has no Deluge boot signature; loading at "
+                    "the SRAM base 0x%08x", (unsigned)RZA1L_SRAM_BASE);
+        code_start = RZA1L_SRAM_BASE;
+        code_execute = RZA1L_SRAM_BASE;
+    }
+
+    /*
+     * Register as a ROM blob so it is reloaded on system reset (the SRAM region
+     * itself is not restored automatically).
+     */
+    rom_add_blob_fixed("deluge.firmware", data, len, code_start);
+    m->firmware_entry = code_execute;
+    g_free(data);
 }
 
 static void deluge_machine_init(MachineState *machine)

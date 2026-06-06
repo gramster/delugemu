@@ -12,6 +12,7 @@
 #include "hw/core/sysbus.h"
 #include "target/arm/cpu.h"
 #include "qom/object.h"
+#include "hw/ssi/rza1l_rspi.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -63,6 +64,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_IO_HIGH_BASE  0xFCFE0000
 #define RZA1L_IO_HIGH_SIZE  0x00020000
 
+/* RSPI0 (channel 0) — drives the OLED display and CV/gate DAC. */
+#define RZA1L_RSPI0_BASE    0xE800C800
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL
@@ -78,6 +82,8 @@ struct RzA1lSocState {
     MemoryRegion sdram;
     MemoryRegion sram_mirror;
     MemoryRegion sdram_mirror;
+
+    RzA1lRspiState rspi0;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board

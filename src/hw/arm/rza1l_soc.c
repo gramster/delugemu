@@ -15,15 +15,19 @@
 #include "qemu/module.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/misc/unimp.h"
+#include "hw/core/sysbus.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
 #include "hw/arm/rza1l_soc.h"
+#include "hw/ssi/rza1l_rspi.h"
 
 static void rza1l_soc_init(Object *obj)
 {
     RzA1lSocState *s = RZA1L_SOC(obj);
 
     object_initialize_child(obj, "cpu", &s->cpu, RZA1L_CPU_TYPE);
+
+    object_initialize_child(obj, "rspi0", &s->rspi0, TYPE_RZA1L_RSPI);
 
     /*
      * The board points this at its system address space before realize. The
@@ -103,6 +107,18 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                 RZA1L_IO_MID_BASE, RZA1L_IO_MID_SIZE);
     create_unimplemented_device("rza1l.io.high",
                                 RZA1L_IO_HIGH_BASE, RZA1L_IO_HIGH_SIZE);
+
+    /*
+     * RSPI0 (OLED display + CV/gate DAC). Mapped over the io.mid catch-all with
+     * higher priority so the firmware's SPI status polls complete.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->rspi0), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_RSPI0_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->rspi0), 0),
+                                        1);
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)
