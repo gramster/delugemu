@@ -128,6 +128,40 @@ def print_scale_report(rect: OledRect, target_mult: float) -> None:
         )
 
 
+def centered_target_rect(rect: OledRect, target_mult: float) -> OledRect:
+    target_w = int(round(OLED_W * target_mult))
+    target_h = int(round(OLED_H * target_mult))
+
+    cx = rect.x + rect.w / 2.0
+    cy = rect.y + rect.h / 2.0
+
+    x = int(round(cx - target_w / 2.0))
+    y = int(round(cy - target_h / 2.0))
+
+    return OledRect(x=x, y=y, w=target_w, h=target_h, score=0.0)
+
+
+def print_centered_target_report(rect: OledRect, target_mult: float) -> None:
+    target = centered_target_rect(rect, target_mult)
+
+    left_overhang = rect.x - target.x
+    right_overhang = (target.x + target.w) - (rect.x + rect.w)
+    top_overhang = rect.y - target.y
+    bottom_overhang = (target.y + target.h) - (rect.y + rect.h)
+
+    print()
+    print("Centered fixed viewport (no global image distortion):")
+    print(
+        f"  target x={target.x}, y={target.y}, w={target.w}, h={target.h} "
+        f"(centered on detected OLED)"
+    )
+    print(
+        "  overhang vs detected aperture "
+        f"L={left_overhang:+d}px R={right_overhang:+d}px "
+        f"T={top_overhang:+d}px B={bottom_overhang:+d}px"
+    )
+
+
 def write_preview(img: np.ndarray, rect: OledRect, out_path: Path) -> None:
     preview = img.copy()
     cv2.rectangle(preview, (rect.x, rect.y), (rect.x + rect.w, rect.y + rect.h), (0, 255, 255), 2)
@@ -145,6 +179,51 @@ def write_preview(img: np.ndarray, rect: OledRect, out_path: Path) -> None:
     cv2.imwrite(str(out_path), preview)
 
 
+def write_preview_with_target(
+    img: np.ndarray,
+    rect: OledRect,
+    target_mult: float,
+    out_path: Path,
+) -> None:
+    preview = img.copy()
+    target = centered_target_rect(rect, target_mult)
+
+    # Detected bezel/aperture from photo.
+    cv2.rectangle(preview, (rect.x, rect.y), (rect.x + rect.w, rect.y + rect.h), (0, 255, 255), 2)
+    cv2.putText(
+        preview,
+        f"detected {rect.x},{rect.y} {rect.w}x{rect.h}",
+        (rect.x, max(20, rect.y - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    # Proposed centered fixed OLED viewport.
+    cv2.rectangle(
+        preview,
+        (target.x, target.y),
+        (target.x + target.w, target.y + target.h),
+        (0, 180, 255),
+        2,
+    )
+    cv2.putText(
+        preview,
+        f"target {target.x},{target.y} {target.w}x{target.h}",
+        (target.x, target.y + target.h + 22),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 180, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_path), preview)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True, type=Path)
@@ -158,9 +237,10 @@ def main() -> None:
 
     rect = detect_oled_rect(img)
     print_scale_report(rect, args.target_mult)
+    print_centered_target_report(rect, args.target_mult)
 
     if args.write_preview:
-        write_preview(img, rect, args.write_preview)
+        write_preview_with_target(img, rect, args.target_mult, args.write_preview)
         print(f"Preview written: {args.write_preview}")
 
 
