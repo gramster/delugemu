@@ -58,6 +58,9 @@ struct DelugeOledState {
     bool selected;
     bool enabled;
 
+    /* UI-only scale factor for the standalone OLED console. */
+    uint8_t ui_scale;
+
     bool dirty;
 };
 

@@ -170,6 +170,7 @@ static void deluge_oled_update(void *opaque)
     DisplaySurface *surface = qemu_console_surface(s->con);
     uint32_t *dst;
     int stride;
+    int scale = MAX(1, (int)s->ui_scale);
 
     if (!s->dirty) {
         return;
@@ -197,11 +198,21 @@ static void deluge_oled_update(void *opaque)
             if (s->inverted) {
                 on = !on;
             }
-            dst[y * stride + x] = on ? 0xffffffffu : 0xff000000u;
+            uint32_t argb = on ? 0xffffffffu : 0xff000000u;
+            int x0 = x * scale;
+            int y0 = y * scale;
+
+            for (int yy = 0; yy < scale; yy++) {
+                for (int xx = 0; xx < scale; xx++) {
+                    dst[(y0 + yy) * stride + (x0 + xx)] = argb;
+                }
+            }
         }
     }
 
-    dpy_gfx_update(s->con, 0, 0, DELUGE_OLED_WIDTH, DELUGE_OLED_HEIGHT);
+    dpy_gfx_update(s->con, 0, 0,
+                   DELUGE_OLED_WIDTH * scale,
+                   DELUGE_OLED_HEIGHT * scale);
 }
 
 static const GraphicHwOps deluge_oled_gfx_ops = {
@@ -228,15 +239,21 @@ static void deluge_oled_reset(DeviceState *dev)
     s->dc_high = false;
     s->selected = false;
     s->enabled = false;
+    if (!s->ui_scale) {
+        s->ui_scale = 1;
+    }
     s->dirty = true;
 }
 
 static void deluge_oled_realize(DeviceState *dev, Error **errp)
 {
     DelugeOledState *s = DELUGE_OLED(dev);
+    int scale = MAX(1, (int)s->ui_scale);
 
     s->con = graphic_console_init(dev, 0, &deluge_oled_gfx_ops, s);
-    qemu_console_resize(s->con, DELUGE_OLED_WIDTH, DELUGE_OLED_HEIGHT);
+    qemu_console_resize(s->con,
+                        DELUGE_OLED_WIDTH * scale,
+                        DELUGE_OLED_HEIGHT * scale);
 }
 
 static const VMStateDescription vmstate_deluge_oled = {
@@ -262,8 +279,14 @@ static const VMStateDescription vmstate_deluge_oled = {
         VMSTATE_BOOL(dc_high, DelugeOledState),
         VMSTATE_BOOL(selected, DelugeOledState),
         VMSTATE_BOOL(enabled, DelugeOledState),
+        VMSTATE_UINT8(ui_scale, DelugeOledState),
         VMSTATE_END_OF_LIST()
     },
+};
+
+static const Property deluge_oled_props[] = {
+    /* UI-only zoom for the standalone OLED console. */
+    DEFINE_PROP_UINT8("ui-scale", DelugeOledState, ui_scale, 2),
 };
 
 static void deluge_oled_class_init(ObjectClass *klass, const void *data)
@@ -273,6 +296,7 @@ static void deluge_oled_class_init(ObjectClass *klass, const void *data)
     dc->realize = deluge_oled_realize;
     dc->vmsd = &vmstate_deluge_oled;
     device_class_set_legacy_reset(dc, deluge_oled_reset);
+    device_class_set_props(dc, deluge_oled_props);
     dc->desc = "Synthstrom Deluge OLED display";
 }
 
