@@ -43,6 +43,8 @@ registers are real vs. shadow/stub — is documented in
 | ADC (S12AD)                   | `0xE8005800` | `0x100`  | `rza1l-adc` | battery-sense stub |
 | RTC                           | `0xFCFF1000` | `0x40`   | `rza1l-rtc` | fixed-time stub |
 | SSIF0 (I²S audio)             | `0xE820B000` | `0x800`  | `rza1l-ssif` | Codec link; serviced via DMA ch6/7 |
+| USB200 (USB 2.0)              | `0xE8010000` | `0x200`  | `rza1l-usb` | register stub; idle/disconnected bus |
+| USB201 (USB 2.0)              | `0xE8207000` | `0x200`  | `rza1l-usb` | register stub; idle/disconnected bus |
 
 ## Board-level (Deluge) devices
 

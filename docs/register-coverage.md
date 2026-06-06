@@ -174,6 +174,39 @@ CRDA. With no capture source the input is silence.
 | 0x24 | SSIFCMR | shadow | FIFO clock measure |
 | 0x28 | SSIFCSR | shadow | FIFO clock status |
 
+### USB200 / USB201 — USB 2.0 host/function · `rza1l-usb`
+
+Base `0xE8010000` (USB200, used) and `0xE8207000` (USB201) · size `0x200` ·
+IRQs USBI0/USBI1 (GIC SPI 41/42 ← INTC 73/74), wired but never asserted.
+
+The firmware brings up the Renesas USB stack at start-up (host mode, falling
+back to peripheral/mass-storage when nothing attaches). Full host/function
+emulation is out of scope; the model presents the register window for the
+"no cable connected" case:
+
+- Configuration registers (SYSCFG0, BUSWAIT, DVSTCTR0, the FIFO/pipe selectors,
+  INTENB0/1, …) are shadowed, so the firmware reads back what it wrote and the
+  module-start clock-enable poll completes immediately.
+- Status registers read back zero: SYSSTS0.LNST = 00 is the SE0/disconnected
+  line state and a zero INTSTS0/INTSTS1 means nothing to service.
+- No device is ever attached, so the USBIn interrupt line stays deasserted.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00 | SYSCFG0 | shadow | module/clock enable; reads back written bits |
+| 0x02 | BUSWAIT | shadow | bus wait cycles |
+| 0x04 | SYSSTS0 | stub | reads 0 → SE0/disconnected |
+| 0x08 | DVSTCTR0 | shadow | device-state control |
+| 0x20–0x2E | CFIFOSEL/Dn FIFO sel/ctr | shadow | FIFO port selectors |
+| 0x30/0x32 | INTENB0/1 | shadow | interrupt enables |
+| 0x40/0x42 | INTSTS0/1 | stub | reads 0 → no pending interrupt |
+| 0x44–0x4E | *STS / FRMNUM | stub | reads 0 |
+| others | pipe/DCP regs | shadow | absorbed; no transfers performed |
+
+USB-MIDI and USB mass-storage device emulation (attaching a virtual device so
+the firmware enumerates and exchanges data) is not implemented; see the
+follow-up issue.
+
 ### ADC — S12AD battery sense · `rza1l-adc`
 
 Base `0xE8005800` · size `0x100`.

@@ -58,6 +58,8 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "segment", &s->segment, TYPE_DELUGE_SEGMENT);
     object_initialize_child(obj, "input", &s->input, TYPE_DELUGE_INPUT);
     object_initialize_child(obj, "sdhi", &s->sdhi, TYPE_RZA1L_SDHI);
+    object_initialize_child(obj, "usb0", &s->usb0, TYPE_RZA1L_USB);
+    object_initialize_child(obj, "usb1", &s->usb1, TYPE_RZA1L_USB);
 
     /*
      * The board points this at its system address space before realize. The
@@ -249,6 +251,28 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
 
 
     /*
+     * USB 2.0 controllers (USB200/USB201). The firmware brings up the Renesas
+     * USB stack at start-up; with no cable attached, the register stub reports
+     * an idle, disconnected bus so initialisation completes cleanly. Mapped
+     * over the io.mid catch-all; interrupts wired below after the GIC.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->usb0), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_USB0_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->usb0), 0),
+                                        1);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->usb1), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_USB1_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->usb1), 0),
+                                        1);
+
+
+    /*
      * SPIBSC0 (serial flash controller). Reports transfers complete so the
      * firmware's flash status/command polls succeed. Mapped over the io.low
      * catch-all.
@@ -333,6 +357,16 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                        qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SSIF_RXI0_SPI));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->ssif), 2,
                        qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SSIF_TXI0_SPI));
+
+    /*
+     * USB module interrupts (USBI0/USBI1). Wired for completeness; with no
+     * device attached the controllers never raise an event, so the lines stay
+     * deasserted.
+     */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->usb0), 0,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_USB_USBI0_SPI));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->usb1), 0,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_USB_USBI1_SPI));
 
     /*
      * RSPI0 receive interrupt (SPRI0). The firmware completes each CV/gate word

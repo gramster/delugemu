@@ -31,6 +31,7 @@
 #include "hw/display/deluge_segment.h"
 #include "hw/input/deluge_input.h"
 #include "hw/sd/rza1l_sdhi.h"
+#include "hw/usb/rza1l_usb.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -121,6 +122,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_SSIF_SSII0_SPI  (172 - 32)
 #define RZA1L_SSIF_RXI0_SPI   (173 - 32)
 #define RZA1L_SSIF_TXI0_SPI   (174 - 32)
+
+/* USB 2.0 host/function controllers. The firmware uses USB200 (USB_IP0). */
+#define RZA1L_USB0_BASE     0xE8010000
+#define RZA1L_USB1_BASE     0xE8207000
+/* USBIn module interrupts (USBI0 = 73, USBI1 = 74); GIC SPI line = ID - 32. */
+#define RZA1L_USB_USBI0_SPI   (73 - 32)
+#define RZA1L_USB_USBI1_SPI   (74 - 32)
 
 /* DMA channel the firmware drains SSI receive into (SSI_RX_DMA_CHANNEL). */
 #define RZA1L_SSI_RX_DMA_CH  7
@@ -220,7 +228,8 @@ struct RzA1lSocState {
     DelugeSegmentState segment;
     DelugeInputState input;
     RzA1lSdhiState sdhi;
-
+    RzA1lUsbState usb0;
+    RzA1lUsbState usb1;
     /* PIC coprocessor on SCIF1 (a character backend, not a sysbus device). */
     Chardev *pic;
 

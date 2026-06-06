@@ -40,4 +40,5 @@ arm_common_ss.add(when: 'CONFIG_DELUGE', if_true: files(
   'hw/timer/rza1l_ostm.c',
   'hw/dma/rza1l_dmac.c',
   'hw/sd/rza1l_sdhi.c',
+  'hw/usb/rza1l_usb.c',
 ))
