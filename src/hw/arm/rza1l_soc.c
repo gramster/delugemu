@@ -26,6 +26,7 @@
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/gpio/rza1l_gpio.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/char/rza1l_scif.h"
 
 static void rza1l_soc_init(Object *obj)
 {
@@ -40,6 +41,8 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "ostm", &s->ostm, TYPE_RZA1L_OSTM);
     object_initialize_child(obj, "gpio", &s->gpio, TYPE_RZA1L_GPIO);
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
+    object_initialize_child(obj, "scif0", &s->scif0, TYPE_RZA1L_SCIF);
+    object_initialize_child(obj, "scif1", &s->scif1, TYPE_RZA1L_SCIF);
 
     /*
      * The board points this at its system address space before realize. The
@@ -217,6 +220,33 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                        qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_IRQ));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->gic), 1,
                        qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_FIQ));
+
+    /*
+     * SCIF UART channels 0 (MIDI) and 1 (PIC). Wire each to a host character
+     * backend (-serial) and connect its receive interrupt to the GIC. Mapped
+     * over the io.mid catch-all.
+     */
+    qdev_prop_set_chr(DEVICE(&s->scif0), "chardev", serial_hd(0));
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif0), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_SCIF0_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->scif0), 0),
+                                        1);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->scif0), 0,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SCIF_RXI0_SPI));
+
+    qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", serial_hd(1));
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_SCIF1_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->scif1), 0),
+                                        1);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->scif1), 0,
+                       qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SCIF_RXI1_SPI));
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)

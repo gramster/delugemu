@@ -19,6 +19,7 @@
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/gpio/rza1l_gpio.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/char/rza1l_scif.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -98,6 +99,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_INTC_CPU_BASE  0xE8202000
 #define RZA1L_INTC_NUM_IRQ   608
 
+/*
+ * SCIF UART channels. The firmware uses channel 0 (MIDI) and channel 1 (PIC);
+ * channels are 0x800 apart from SCIF0 at 0xE8007000. Each channel's receive
+ * (RXI) interrupt ID is 223 + 4*ch, i.e. GIC SPI line (ID - 32).
+ */
+#define RZA1L_SCIF0_BASE     0xE8007000
+#define RZA1L_SCIF1_BASE     0xE8007800
+#define RZA1L_SCIF_RXI0_SPI  (223 - 32)
+#define RZA1L_SCIF_RXI1_SPI  (227 - 32)
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL
@@ -121,6 +132,8 @@ struct RzA1lSocState {
     RzA1lOstmState ostm;
     RzA1lGpioState gpio;
     GICState gic;
+    RzA1lScifState scif0;
+    RzA1lScifState scif1;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board

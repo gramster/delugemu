@@ -1,8 +1,9 @@
 /*
  * Renesas RZ/A1 SCIF (serial communication interface with FIFO)
  *
- * Minimal model: enough surface for firmware to push characters out to the
- * host console. Register-accurate behaviour is filled in as needed.
+ * Models one SCIF channel as a UART: synchronous transmit to a character
+ * backend and interrupt-driven receive. Register-accurate enough for the
+ * firmware's serial setup and byte-level I/O.
  *
  * Copyright (c) 2026 delugemu contributors
  *
@@ -19,7 +20,7 @@
 #define TYPE_RZA1L_SCIF "rza1l-scif"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lScifState, RZA1L_SCIF)
 
-/* Size of the MMIO register window for one SCIF channel (placeholder). */
+/* MMIO register window for one SCIF channel. */
 #define RZA1L_SCIF_MMIO_SIZE 0x100
 
 struct RzA1lScifState {
@@ -29,7 +30,17 @@ struct RzA1lScifState {
     /*< public >*/
     MemoryRegion iomem;
     CharFrontend chr;
-    qemu_irq irq;
+    qemu_irq irq;       /* receive (RXI) interrupt to the GIC */
+
+    uint16_t scsmr;     /* serial mode                    */
+    uint8_t  scbrr;     /* bit rate                       */
+    uint16_t scscr;     /* serial control (TIE/RIE/TE/RE) */
+    uint16_t scfsr;     /* serial status (shadow)         */
+    uint16_t scfcr;     /* FIFO control                   */
+
+    uint8_t  rx_fifo;   /* single receive holding byte    */
+    bool     rx_full;   /* receive byte pending           */
 };
 
 #endif /* HW_CHAR_RZA1L_SCIF_H */
+
