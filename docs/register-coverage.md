@@ -1,0 +1,208 @@
+# Register coverage
+
+What each emulated device model actually implements, so you know which firmware
+behaviour is real and which is faked. Keep this in sync with
+[memory-map.md](memory-map.md) and the `RZA1L_*_BASE` defines in
+[`src/include/hw/arm/rza1l_soc.h`](../src/include/hw/arm/rza1l_soc.h).
+
+**Coverage legend**
+
+- **modelled** — read and write have real, firmware-visible behaviour.
+- **shadow** — value is stored and read back but has no side effects.
+- **stub** — returns a fixed/constant value; writes are ignored or only stored.
+- **special** — non-trivial behaviour (FIFO window, DMA-routed, IRQ line, etc.).
+
+## MMIO devices
+
+### SCIF — serial / UART · `rza1l-scif`
+
+Base `0xE8007000` (SCIF0, MIDI) and `0xE8007800` (SCIF1, PIC) · size `0x100`.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00 | SCSMR | shadow | mode |
+| 0x04 | SCBRR | shadow | bit rate |
+| 0x08 | SCSCR | shadow | control; RIE gates RXI |
+| 0x0C | SCFTDR | special | TX byte → chardev (`qemu_chr_fe_write_all`) |
+| 0x10 | SCFSR | modelled | TDFE\|TEND always set; RDF/DR on RX |
+| 0x14 | SCFRDR | special | RX holding byte; clears rx_full |
+| 0x18 | SCFCR | shadow | FIFO control |
+| 0x1C | SCFDR | stub | data count, returns 0 or 1 |
+| 0x20–0x28 | SCSPTR/SCLSR/SCEMR | stub | |
+
+TX is synchronous to the chardev; RX is interrupt-driven (RXI when `SCSCR.RIE`).
+
+### DMAC — `rza1l-dmac`
+
+Base `0xE8200000` · size `0x800` · 16 channels (0x40-byte blocks), group commons at `0x300`/`0x700`.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| +0x00/04/08 | N0SA/N0DA/N0TB | shadow | next-0 src/dst/count |
+| +0x0C–0x14 | N1SA/N1DA/N1TB | shadow | link descriptor |
+| +0x18/1C/20 | CRSA/CRDA/CRTB | special | current regs; CRSA advances at audio rate on the TX ring |
+| +0x24 | CHSTAT | modelled | EN\|TACT\|ER\|END\|TC |
+| +0x28 | CHCTRL | special | write-to-act: SETEN runs the transfer |
+| +0x2C | CHCFG | shadow | SAD/DAD/SDS/DDS/DEM |
+| +0x30–0x3C | CHITVL/CHEXT/NXLA/CRLA | shadow | |
+| 0x300/0x700 | DCTRL_G0/1 | shadow | |
+| 0x310–0x320 | DSTAT_EN/ER/END/TC/SUS | modelled | computed from per-channel state |
+
+On `CHCTRL.SETEN` it synchronously copies `N0TB` bytes `N0SA → N0DA` honouring
+addr modes, then sets `END|TC` and pulses the per-channel DMAINT (if `DEM` clear).
+Channel 6 is a self-advancing audio TX ring; channel 12 is the PIC RX ring.
+
+### SDHI — SD host · `rza1l-sdhi`
+
+Base `0xE804E800` · size `0x100` · IRQ GIC SPI 273 (INTC 305).
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00 | SD_CMD | modelled | issues command on the QEMU SD bus |
+| 0x04/06 | SD_ARG0/1 | modelled | argument |
+| 0x08/0A | SD_STOP/SECCNT | shadow | |
+| 0x0C–0x1A | SD_RESP0–7 | modelled | latched response |
+| 0x1C | SD_INFO1 | modelled | RESP/DATA/card-detect events |
+| 0x1E | SD_INFO2 | modelled | error/busy status |
+| 0x20/22 | SD_INFO1/2_MASK | modelled | inverted-logic masks |
+| 0x24–0x2E | CLK_CTRL/SIZE/OPTION/ERR_STS | shadow | |
+| 0x30 | SD_BUF0 | special | data FIFO |
+| 0x00–0x3F | (DMA window) | special | when `CC_EXT_MODE.DMASDRW`, the FIFO is mirrored over the low 64 bytes |
+| 0xD8 | CC_EXT_MODE | shadow | bit 1 = DMASDRW |
+| 0xE0 | SOFT_RST | special | write-to-act |
+| 0xE2 | SD_VERSION | stub | 0xB001 |
+| 0xF0 | EXT_SWAP | shadow | endian |
+
+### OSTM — OS timer · `rza1l-ostm`
+
+Base `0xFCFEC000` · size `0x800` · two channels (OSTM0 @ +0x000, OSTM1 @ +0x400) · 33.33 MHz.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| +0x00 | CMP | shadow | compare/period |
+| +0x04 | CNT | modelled | free-running counter off the virtual clock |
+| +0x10 | TE | modelled | enable status |
+| +0x14 | TS | special | write starts / re-bases the counter |
+| +0x18 | TT | special | write stops / freezes the counter |
+| +0x20 | CTL | shadow | bit 1 = free-run vs interval |
+
+### MTU2 — multi-function timer · `rza1l-mtu2`
+
+Base `0xFCFF0000` · size `0x400` · 33.33 MHz.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x006/0x306/0x386 | TCNT_2/0/1 | modelled | free-running counters |
+| 0x210/0x212/0x220 | TCNT_3/4/S | modelled | free-running counters |
+| (others) | TCR/TMDR/TIOR… | shadow | no compare-match or interrupts |
+
+Reads return the current value; writes re-base the counter. No prescaler / compare / interrupt modelling.
+
+### GPIO — `rza1l-gpio`
+
+Base `0xFCFE3004` · size `0x4F00` · shadow byte array, no symbolic register defines.
+
+| Offset range | Reg | Coverage | Notes |
+| ------------ | --- | -------- | ----- |
+| 0x000–0x04C | P_n | shadow | output latch |
+| 0x100–0x12C | PSR_n | shadow | |
+| 0x200–0x22C | PPR_n | special | read-only; loops back the P_n latch (undriven = 0) |
+| 0x300–0x54C | PM/PMC/PFC_n | shadow | |
+| 0x4000–0x424B | PIBC/PBDC/PIPC | shadow | |
+
+Pure register shadow with loopback. No pin multiplexing, edge detection, or bidirectional buffers.
+
+### RSPI0 — SPI · `rza1l-rspi`
+
+Base `0xE800C800` · size `0x100` · SPRI IRQ GIC SPI 239 (INTC 271).
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00 | SPCR | shadow | bit 7 = SPRIE |
+| 0x03 | SPSR | stub | always SPTEF\|TEND (0x60) |
+| 0x04 | SPDR | special | TX low byte → OLED panel; RX reads 0; write raises level-sensitive SPRI if SPRIE |
+
+### SPIBSC — SPI multi-I/O flash controller · `rza1l-spibsc`
+
+Base `0x3FEFA000` · size `0x100` · shadow array with special status.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00–0x34 | CMNCR/SSLDR/SPBCR/DRCR/DR*…/SMCR/SM* | shadow | DRCR.SSLN negates SSL; SMCR.SPIE starts, SSLKP keeps SSL |
+| 0x38/0x3C | SMRDR0/1 | stub | read 0 (flash not busy / WIP clear) |
+| 0x40/0x44 | SMWDR0/1 | shadow | |
+| 0x48 | CMNSR | special | TEND always 1; SSLF tracks the SSL line |
+| 0x50–0x68 | CKDLY/DR*/SM*/SPODLY | shadow | |
+
+Manual-mode transfers complete instantly; no backing flash.
+
+### ADC — S12AD battery sense · `rza1l-adc`
+
+Base `0xE8005800` · size `0x100`.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x0A | ADDRF | stub | channel-5 result; fixed `0x9000` (~3.7 V) |
+| 0x60 | ADCSR | stub | bit 15 (ADST) always reads set ⇒ "conversion ready" |
+
+### RTC — `rza1l-rtc`
+
+Base `0xFCFF1000` · size `0x40` · shadow array seeded with a fixed time.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x02–0x0F | RSECCNT…RYRCNT | stub | fixed BCD 2024-01-01 00:00:00 Monday; does not advance |
+| 0x00, 0x10–0x26 | R64CNT / alarms / RCR* | shadow | accept writes |
+
+### CPG — clock pulse generator · `rza1l-cpg`
+
+Base `0xFCFE0010` · size `0x1000` · shadow array.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00/0x04 | FRQCR/FRQCR2 | shadow | PLL/divider config |
+| 0x08 | CPUSTS | stub | always 0 ("running") |
+| 0x10–0x2C | STBCR1–10 | shadow | module standby |
+
+### BSC — bus state controller · `rza1l-bsc`
+
+Base `0x3FFFC000` · size `0x3000` (incl. SDRAM mode-set windows at +0x1040/+0x2040) · shadow array.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00–0x58 | CMNCR/CSnBCR/CSnWCR/SDCR/RTCSR/RTCNT/RTCOR | shadow | SDRAM bring-up sequence accepted |
+| 0x1040, 0x2040 | mode-set windows | shadow | |
+
+Backing SDRAM is created separately by the SoC; this only absorbs the init writes.
+
+### WDT — watchdog · `rza1l-wdt`
+
+Base `0xFCFE0000` · size `0x10`.
+
+| Offset | Reg | Coverage | Notes |
+| ------ | --- | -------- | ----- |
+| 0x00 | WTCSR | special | keyed write (0xA5 prefix); low byte stored |
+| 0x02 | WTCNT | special | keyed write (0x5A prefix); low byte stored |
+| 0x04 | WRCSR | shadow | |
+
+Never expires — the firmware's periodic kick is absorbed.
+
+### Built-in QEMU models
+
+| Device | Base | Model | Notes |
+| ------ | ---- | ----- | ----- |
+| INTC → GIC | dist `0xE8201000`, cpu `0xE8202000` | `arm_gic` (rev 1) | RZ/A1 INTC register layout matches the GICv1, mapped directly |
+| PL310 L2 | `0x3FFFF000` | `l2x0` | cache ops report complete (no-op) |
+
+## Board-level devices (no MMIO)
+
+These attach via a chardev, GPIO, or graphic console rather than a physical
+window, so they have no register map.
+
+| Device | Type | Attaches via | Role |
+| ------ | ---- | ------------ | ---- |
+| Input PIC | `chardev-deluge-pic` | SCIF1 chardev + DMA ch10/12 | pad/button/encoder ↔ LED/OLED command protocol |
+| OLED | `deluge-oled` | RSPI0 SPI + PIC control lines | SSD130x decoder, 128×48 framebuffer |
+| Pad grid | `deluge-padgrid` | PIC colour messages | 18×8 RGB pads |
+| 7-segment | `deluge-segment` | PIC command 224 | 4-digit numeric display |
+| Host input | `deluge-input` | QEMU keyboard handler | maps host keys to PIC pad/button events |

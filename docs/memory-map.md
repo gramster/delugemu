@@ -16,24 +16,33 @@ implemented.
 
 ## SoC peripherals (RZ/A1L) — to confirm
 
-The following are the standard Renesas RZ/A1 peripheral groupings. Concrete
-register bases will be filled in (and split into per-channel rows) as the SoC
-model gains each block. Until then the SoC model installs an "unimplemented
-device" catch-all over the peripheral region so firmware accesses are logged
-rather than aborting.
+## SoC peripherals (RZ/A1L) — modelled
 
-| Block                         | Base   | Notes                                | Source |
-| ----------------------------- | ------ | ------------------------------------ | ------ |
-| Cortex-A9 private peripherals | (TBD)  | GIC distributor/CPU interface, timers| (TBD)  |
-| PL310 L2 cache controller     | (TBD)  | Modelled as no-op cache              | (TBD)  |
-| Clock pulse generator (CPG)   | (TBD)  | Clock/standby control                | (TBD)  |
-| Bus state controller (BSC)    | (TBD)  | CS configuration, SDRAM timing       | (TBD)  |
-| Interrupt controller (INTC)   | (TBD)  | Maps peripheral IRQs to the GIC      | (TBD)  |
-| SCIF (serial, UART)           | (TBD)  | Debug/console serial                 | (TBD)  |
-| SSI (I²S audio)               | (TBD)  | Audio codec link                     | (TBD)  |
-| SD host interface             | (TBD)  | SD card                              | (TBD)  |
-| GPIO ports                    | (TBD)  | Misc board signals                   | (TBD)  |
-| RSPI / SPIBSC                 | (TBD)  | SPI, incl. mapped flash              | (TBD)  |
+These are the device models the SoC currently installs over the peripheral
+windows (each mapped as an overlay above the "unimplemented device" catch-all,
+which still logs any unmodelled access). Per-register coverage — and which
+registers are real vs. shadow/stub — is documented in
+[register-coverage.md](register-coverage.md).
+
+| Block                         | Base         | Size     | Model | Notes |
+| ----------------------------- | ------------ | -------- | ----- | ----- |
+| Interrupt controller (INTC)   | `0xE8201000` (dist), `0xE8202000` (cpu) | — | `arm_gic` (rev 1) | RZ/A1 INTC layout matches GICv1 |
+| PL310 L2 cache controller     | `0x3FFFF000` | —        | `l2x0` | no-op cache |
+| Clock pulse generator (CPG)   | `0xFCFE0010` | `0x1000` | `rza1l-cpg` | clock/standby shadow; CPUSTS=0 |
+| Watchdog (WDT)                | `0xFCFE0000` | `0x10`   | `rza1l-wdt` | keyed kicks; never expires |
+| Bus state controller (BSC)    | `0x3FFFC000` | `0x3000` | `rza1l-bsc` | CS/SDRAM init shadow |
+| SCIF0 (serial, UART)          | `0xE8007000` | `0x100`  | `rza1l-scif` | MIDI UART, chardev-backed |
+| SCIF1 (serial, UART)          | `0xE8007800` | `0x100`  | `rza1l-scif` | wired to the input PIC |
+| DMAC                          | `0xE8200000` | `0x800`  | `rza1l-dmac` | 16 channels, synchronous |
+| OSTM (OS timer)               | `0xFCFEC000` | `0x800`  | `rza1l-ostm` | 2 free-running channels |
+| MTU2 (timer)                  | `0xFCFF0000` | `0x400`  | `rza1l-mtu2` | free-running counters |
+| GPIO ports                    | `0xFCFE3004` | `0x4F00` | `rza1l-gpio` | shadow + PPR loopback |
+| RSPI0 (SPI)                   | `0xE800C800` | `0x100`  | `rza1l-rspi` | OLED + CV/gate DAC link |
+| SPIBSC (SPI flash)            | `0x3FEFA000` | `0x100`  | `rza1l-spibsc` | stub; no backing flash |
+| SD host interface (SDHI)      | `0xE804E800` | `0x100`  | `rza1l-sdhi` | full SD host controller |
+| ADC (S12AD)                   | `0xE8005800` | `0x100`  | `rza1l-adc` | battery-sense stub |
+| RTC                           | `0xFCFF1000` | `0x40`   | `rza1l-rtc` | fixed-time stub |
+| SSI (I²S audio)               | (TBD)        | —        | (TBD)  | M5 audio milestone |
 
 ## Board-level (Deluge) devices
 

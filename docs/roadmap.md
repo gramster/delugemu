@@ -47,7 +47,7 @@ smoke test green.
 - [x] Regression test suite booting firmware and asserting on display/serial.
 - [x] CI matrix (Linux + macOS) building QEMU and running the suite.
 - [ ] Snapshot/savestate support for the custom devices (vmstate).
-- [ ] Documentation of each device's register coverage.
+- [x] Documentation of each device's register coverage.
 
 ## Open questions
 
