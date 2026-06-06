@@ -37,14 +37,31 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_SPI_ROM_SIZE (32 * 1024 * 1024)
 
 /*
- * Peripheral region catch-all. The RZ/A1 maps its on-chip peripherals in the
- * upper part of the address space; until individual blocks are modelled the SoC
- * installs an "unimplemented device" over this window so firmware accesses are
- * logged (-d unimp) instead of aborting. Base/size are intentionally broad and
- * will be narrowed as real devices claim their sub-regions.
+ * The RZ/A1 exposes the on-chip RAM and the external memories a second time at
+ * a +0x40000000 offset; the firmware maps this alias as non-cacheable (the
+ * "mirror" / uncached view, UNCACHED_MIRROR_OFFSET in the firmware). Model the
+ * mirrors as aliases of the backing RAM so accesses through either view work
+ * regardless of the guest MMU attributes.
  */
-#define RZA1L_PERIPH_BASE 0xE8000000
-#define RZA1L_PERIPH_SIZE 0x10000000
+#define RZA1L_UNCACHED_MIRROR_OFFSET 0x40000000
+
+/*
+ * On-chip peripheral I/O windows. The RZ/A1 scatters its peripherals across
+ * three regions; until each block is modelled the SoC installs logging
+ * "unimplemented device" catch-alls over them (-d unimp) so firmware accesses
+ * are observed instead of aborting. Real devices are mapped over the top with
+ * higher priority as they are added.
+ *
+ *  - LOW  0x3FE00000..0x3FFFFFFF: SPIBSC, BSC (SDRAM ctrl), PL310 L2 cache.
+ *  - MID  0xE8000000..0xE8FFFFFF: INTC/GIC, DMAC, SCIF, RSPI, SSIF, ADC, USB.
+ *  - HIGH 0xFCFE0000..0xFCFFFFFF: CPG, STB, WDT, GPIO, OSTM, MTU2, RIIC, RTC.
+ */
+#define RZA1L_IO_LOW_BASE   0x3FE00000
+#define RZA1L_IO_LOW_SIZE   0x00200000
+#define RZA1L_IO_MID_BASE   0xE8000000
+#define RZA1L_IO_MID_SIZE   0x01000000
+#define RZA1L_IO_HIGH_BASE  0xFCFE0000
+#define RZA1L_IO_HIGH_SIZE  0x00020000
 
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
@@ -59,7 +76,8 @@ struct RzA1lSocState {
 
     MemoryRegion sram;
     MemoryRegion sdram;
-    MemoryRegion periph_unimp;
+    MemoryRegion sram_mirror;
+    MemoryRegion sdram_mirror;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board

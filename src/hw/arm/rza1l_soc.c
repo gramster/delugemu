@@ -74,13 +74,35 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(system_memory, RZA1L_SDRAM_BASE, &s->sdram);
 
     /*
-     * Catch-all for the peripheral region. Logs unimplemented accesses
-     * (-d unimp) so we can see what the firmware touches and prioritise which
-     * device to model next. Real peripherals will be mapped over the top of
-     * this with higher priority as they are added.
+     * Uncached mirrors at +0x40000000. The firmware accesses RAM through these
+     * aliases for non-cacheable buffers (DMA, etc.); back them with the same
+     * RAM so either view sees the same bytes.
      */
-    create_unimplemented_device("rza1l.peripherals",
-                                RZA1L_PERIPH_BASE, RZA1L_PERIPH_SIZE);
+    memory_region_init_alias(&s->sram_mirror, OBJECT(dev), "rza1l.sram.mirror",
+                             &s->sram, 0, RZA1L_SRAM_SIZE);
+    memory_region_add_subregion(system_memory,
+                                RZA1L_SRAM_BASE + RZA1L_UNCACHED_MIRROR_OFFSET,
+                                &s->sram_mirror);
+
+    memory_region_init_alias(&s->sdram_mirror, OBJECT(dev),
+                             "rza1l.sdram.mirror", &s->sdram, 0,
+                             RZA1L_SDRAM_SIZE);
+    memory_region_add_subregion(system_memory,
+                                RZA1L_SDRAM_BASE + RZA1L_UNCACHED_MIRROR_OFFSET,
+                                &s->sdram_mirror);
+
+    /*
+     * Catch-alls for the three peripheral windows. They log unimplemented
+     * accesses (-d unimp) so we can see what the firmware touches and decide
+     * which device to model next. Real peripherals are mapped over the top of
+     * these with higher priority as they are added.
+     */
+    create_unimplemented_device("rza1l.io.low",
+                                RZA1L_IO_LOW_BASE, RZA1L_IO_LOW_SIZE);
+    create_unimplemented_device("rza1l.io.mid",
+                                RZA1L_IO_MID_BASE, RZA1L_IO_MID_SIZE);
+    create_unimplemented_device("rza1l.io.high",
+                                RZA1L_IO_HIGH_BASE, RZA1L_IO_HIGH_SIZE);
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)
