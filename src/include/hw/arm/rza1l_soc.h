@@ -14,6 +14,7 @@
 #include "qom/object.h"
 #include "hw/ssi/rza1l_rspi.h"
 #include "hw/timer/rza1l_mtu2.h"
+#include "hw/dma/rza1l_dmac.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -71,6 +72,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 /* MTU2 multi-function timer pulse unit (free-running time base). */
 #define RZA1L_MTU2_BASE     0xFCFF0000
 
+/* DMAC — 16-channel direct memory access controller. */
+#define RZA1L_DMAC_BASE     0xE8200000
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL
@@ -89,6 +93,7 @@ struct RzA1lSocState {
 
     RzA1lRspiState rspi0;
     RzA1lMtu2State mtu2;
+    RzA1lDmacState dmac;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board
