@@ -45,6 +45,27 @@ Firmware is not shipped with the repo, so the test looks for
 the SDHI path. Observed healthy counts: 19 IRQs without an SD image, 183 with
 one, and 0 aborts in both cases.
 
+## `usb-midi.sh`
+
+The USB host-MIDI enumeration regression test. It boots a firmware image with a
+synthetic full-speed USB-MIDI device attached on the host port
+(`-global rza1l-usb.midi=on`) and asserts that the firmware's USB host stack
+enumerates it:
+
+1. the control-transfer state machine reaches **SET_CONFIGURATION**
+   (`RZA1L_USB_DEBUG` traces `SET_CONFIGURATION 1 -> configured=1`),
+2. **zero** Data Abort / Prefetch Abort exceptions, and
+3. the USBI interrupt actually fires (a non-trivial IRQ stream).
+
+```sh
+./tests/usb-midi.sh
+DELUGE_FIRMWARE=path ./tests/usb-midi.sh
+RUN_SECONDS=15 ./tests/usb-midi.sh
+```
+
+Like `boot.sh`, it **skips cleanly** (exit 0) when no firmware image is present.
+Observed healthy counts: 44 IRQs, 0 aborts, 1 SET_CONFIGURATION.
+
 ## Adding tests
 
 Keep tests runnable standalone and CI-friendly: exit non-zero on failure, avoid

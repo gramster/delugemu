@@ -36,9 +36,10 @@ SCIF0 (MIDI) additionally has its receive path bound to DMAC channel 13
 (`MIDI_RX_DMA_CHANNEL`): bytes arriving from the host `-serial`/`--midi` chardev
 are pushed straight into the channel's self-linking receive ring (the firmware
 reads MIDI by polling the channel's `CRDA`), mirroring the PIC's DMA receive on
-channel 12. The receive-timing capture path (DMA channel 14, which snapshots the
-SSI sample counter per MIDI byte) is not modelled; MIDI event timestamps are
-therefore approximate.
+channel 12. Each received MIDI byte also triggers the receive-timing capture
+path (DMA channel 14, `MIDI_RX_TIMING_DMA_CHANNEL`), which snapshots the SSI
+sample counter into its own self-linking ring so the firmware can timestamp
+incoming MIDI events.
 
 ### DMAC — `rza1l-dmac`
 
@@ -177,35 +178,60 @@ CRDA. With no capture source the input is silence.
 ### USB200 / USB201 — USB 2.0 host/function · `rza1l-usb`
 
 Base `0xE8010000` (USB200, used) and `0xE8207000` (USB201) · size `0x200` ·
-IRQs USBI0/USBI1 (GIC SPI 41/42 ← INTC 73/74), wired but never asserted.
+IRQs USBI0/USBI1 (GIC SPI 41/42 ← INTC 73/74).
 
-The firmware brings up the Renesas USB stack at start-up (host mode, falling
-back to peripheral/mass-storage when nothing attaches). Full host/function
-emulation is out of scope; the model presents the register window for the
-"no cable connected" case:
+The firmware brings up the Renesas USB stack at start-up in host mode. Two
+modes are modelled, selected by the `midi` property (default off):
 
+**Disconnected (default).** No device is attached, mirroring an unplugged
+cable:
+
+- SYSSTS0.LNST = 00 (SE0). The firmware's synchronous attach probe in
+  `hw_usb_hmodule_init` sees no device and falls back to peripheral mode.
 - Configuration registers (SYSCFG0, BUSWAIT, DVSTCTR0, the FIFO/pipe selectors,
-  INTENB0/1, …) are shadowed, so the firmware reads back what it wrote and the
-  module-start clock-enable poll completes immediately.
-- Status registers read back zero: SYSSTS0.LNST = 00 is the SE0/disconnected
-  line state and a zero INTSTS0/INTSTS1 means nothing to service.
-- No device is ever attached, so the USBIn interrupt line stays deasserted.
+  INTENB0/1, …) are shadowed; status registers read back zero, so the USBIn
+  line stays deasserted.
+
+**Attached USB-MIDI device** (`-global rza1l-usb.midi=on`). The controller
+presents a permanently-attached full-speed USB-MIDI device on the host port and
+drives the firmware's host enumeration to completion:
+
+- SYSSTS0.LNST reports FS-J from boot, so the firmware's synchronous attach
+  probe detects the device, performs the inline bus reset (USBRST→UACT, HSPROC
+  poll), and stays in host mode.
+- Writing INTENB1.ATTCH with a device present raises a one-shot ATTCH interrupt,
+  which kicks the MGR task into enumeration.
+- Control transfers over the DCP (pipe 0) are answered with synthetic
+  descriptors: an 18-byte device descriptor, a 101-byte configuration
+  descriptor describing an AudioControl + MIDIStreaming interface pair (one
+  MIDI IN jack, one MIDI OUT jack, bulk IN/OUT endpoints 0x81/0x01), and the
+  LANGID string. The model generates the SACK / BRDY / BEMP interrupts the
+  firmware's control-transfer state machine expects, including the multi-packet
+  BRDY re-arm for the 101-byte read and the IN/OUT status-stage handshakes.
+- The firmware completes GET_DESCRIPTOR → SET_ADDRESS → GET_DESCRIPTOR(full
+  config) → SET_CONFIGURATION, recognises the audio-class interface as a
+  USB-MIDI device, and sets up its bulk MIDI pipes.
 
 | Offset | Reg | Coverage | Notes |
 | ------ | --- | -------- | ----- |
 | 0x00 | SYSCFG0 | shadow | module/clock enable; reads back written bits |
 | 0x02 | BUSWAIT | shadow | bus wait cycles |
-| 0x04 | SYSSTS0 | stub | reads 0 → SE0/disconnected |
-| 0x08 | DVSTCTR0 | shadow | device-state control |
-| 0x20–0x2E | CFIFOSEL/Dn FIFO sel/ctr | shadow | FIFO port selectors |
-| 0x30/0x32 | INTENB0/1 | shadow | interrupt enables |
-| 0x40/0x42 | INTSTS0/1 | stub | reads 0 → no pending interrupt |
-| 0x44–0x4E | *STS / FRMNUM | stub | reads 0 |
-| others | pipe/DCP regs | shadow | absorbed; no transfers performed |
+| 0x04 | SYSSTS0 | model | LNST = SE0 (disconnected) or FS-J (midi attached) |
+| 0x08 | DVSTCTR0 | model | bus reset / UACT / speed; RHST reports FS after reset |
+| 0x14 | CFIFO | model | DCP control-transfer data port (descriptor reads) |
+| 0x20–0x22 | CFIFOSEL/CTR | model | DCP FIFO selector + FRDY/DTLN |
+| 0x30/0x32 | INTENB0/1 | model | interrupt enables; INTENB1.ATTCH arms attach |
+| 0x36–0x3A | BRDY/NRDY/BEMPENB | model | per-pipe interrupt enables |
+| 0x40/0x42 | INTSTS0/1 | model | INTSTS0 BRDY/NRDY/BEMP are live summaries |
+| 0x46–0x4A | BRDY/NRDY/BEMPSTS | model | write-0-to-clear pipe status |
+| 0x54–0x5A | USBREQ/VAL/INDX/LENG | model | latched control SETUP packet |
+| 0x5C–0x60 | DCPCFG/MAXP/CTR | model | SUREQ triggers SETUP; CCPL/PID handshakes |
+| 0x64/0x68 | PIPESEL/PIPECFG | shadow | bulk-pipe setup absorbed |
+| others | pipe/DCP regs | shadow | absorbed |
 
-USB-MIDI and USB mass-storage device emulation (attaching a virtual device so
-the firmware enumerates and exchanges data) is not implemented; see the
-follow-up issue.
+Bulk MIDI data transfer over the configured pipes (bridging the D0/D1 FIFOs to a
+host MIDI chardev as 32-bit USB-MIDI event packets) is not yet implemented; see
+the follow-up issue. USB mass-storage device emulation is likewise out of scope.
 
 ### ADC — S12AD battery sense · `rza1l-adc`
 
