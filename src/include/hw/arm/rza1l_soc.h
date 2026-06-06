@@ -13,6 +13,7 @@
 #include "target/arm/cpu.h"
 #include "qom/object.h"
 #include "hw/ssi/rza1l_rspi.h"
+#include "hw/ssi/rza1l_spibsc.h"
 #include "hw/timer/rza1l_mtu2.h"
 #include "hw/dma/rza1l_dmac.h"
 
@@ -75,6 +76,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 /* DMAC — 16-channel direct memory access controller. */
 #define RZA1L_DMAC_BASE     0xE8200000
 
+/* SPIBSC0 — SPI multi-I/O bus controller (serial flash). */
+#define RZA1L_SPIBSC_BASE   0x3FEFA000
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL
@@ -94,6 +98,7 @@ struct RzA1lSocState {
     RzA1lRspiState rspi0;
     RzA1lMtu2State mtu2;
     RzA1lDmacState dmac;
+    RzA1lSpibscState spibsc;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board
