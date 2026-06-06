@@ -26,6 +26,7 @@
 #include "hw/display/deluge_oled.h"
 #include "hw/display/deluge_padgrid.h"
 #include "hw/display/deluge_segment.h"
+#include "hw/input/deluge_input.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -180,6 +181,7 @@ struct RzA1lSocState {
     DelugeOledState oled;
     DelugePadGridState padgrid;
     DelugeSegmentState segment;
+    DelugeInputState input;
 
     /* PIC coprocessor on SCIF1 (a character backend, not a sysbus device). */
     Chardev *pic;

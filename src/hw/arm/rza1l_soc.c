@@ -51,6 +51,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "oled", &s->oled, TYPE_DELUGE_OLED);
     object_initialize_child(obj, "padgrid", &s->padgrid, TYPE_DELUGE_PADGRID);
     object_initialize_child(obj, "segment", &s->segment, TYPE_DELUGE_SEGMENT);
+    object_initialize_child(obj, "input", &s->input, TYPE_DELUGE_INPUT);
 
     /*
      * The board points this at its system address space before realize. The
@@ -173,6 +174,14 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->segment), errp)) {
+        return;
+    }
+
+    /*
+     * Host-input mapping. Carries no MMIO; it registers a keyboard handler that
+     * feeds pad/button events into the PIC (bound below, once the PIC exists).
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->input), errp)) {
         return;
     }
 
@@ -318,6 +327,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     deluge_pic_set_oled(s->pic, &s->oled);
     deluge_pic_set_padgrid(s->pic, &s->padgrid);
     deluge_pic_set_segment(s->pic, &s->segment);
+    deluge_input_set_pic(DEVICE(&s->input), s->pic);
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
         return;

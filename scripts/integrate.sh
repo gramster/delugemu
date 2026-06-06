@@ -44,7 +44,7 @@ MARKER_END="# <<< delugemu integration end >>>"
 
 # Header sub-directories we expose under qemu/include/hw (must match the
 # directories present in src/include/hw).
-HEADER_DIRS=(arm char display dma gpio misc ssi timer)
+HEADER_DIRS=(arm char display dma gpio input misc ssi timer)
 
 undo() {
     log "Removing delugemu integration from the QEMU tree..."

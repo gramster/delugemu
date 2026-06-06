@@ -25,6 +25,7 @@ arm_common_ss.add(when: 'CONFIG_DELUGE', if_true: files(
   'hw/display/deluge_oled.c',
   'hw/display/deluge_padgrid.c',
   'hw/display/deluge_segment.c',
+  'hw/input/deluge_input.c',
   'hw/misc/deluge_pic.c',
   'hw/misc/rza1l_cpg.c',
   'hw/misc/rza1l_wdt.c',
