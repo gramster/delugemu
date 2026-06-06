@@ -16,9 +16,34 @@ The M0 acceptance check. After building (`scripts/build.sh`) it verifies that:
 ./tests/smoke.sh
 ```
 
-It deliberately does **not** boot firmware yet — that arrives with M1 in
-[../docs/roadmap.md](../docs/roadmap.md), at which point firmware-boot and
-output-assertion tests will be added here.
+It deliberately does **not** boot firmware — see `boot.sh` for that.
+
+## `boot.sh`
+
+The firmware-boot regression test. It boots a Deluge firmware image headless and
+asserts that the boot reaches a healthy steady state:
+
+1. **zero** Data Abort exceptions (a bad/unmapped MMIO access would raise one),
+2. **zero** Prefetch Abort exceptions (a bad instruction fetch), and
+3. a stream of IRQ exceptions (proves we reached the timer-driven main loop
+   instead of spinning at the vector table).
+
+Unimplemented-device-access warnings are **not** failures: several regions
+(`rza1l.boot.mirror`, `rza1l.io.mid/high`) are deliberate catch-alls the
+firmware probes constantly.
+
+```sh
+./tests/boot.sh                      # auto-locate firmware + SD image
+DELUGE_FIRMWARE=path ./tests/boot.sh # explicit firmware
+BOOT_SECONDS=15 ./tests/boot.sh      # widen the run window
+```
+
+Firmware is not shipped with the repo, so the test looks for
+`firmware2/deluge.elf` then `firmware/deluge.elf` (override with
+`DELUGE_FIRMWARE`) and **skips cleanly** (exit 0) when none is present. If
+`build/deluge_sd.img` exists it also boots with the card attached, exercising
+the SDHI path. Observed healthy counts: 19 IRQs without an SD image, 183 with
+one, and 0 aborts in both cases.
 
 ## Adding tests
 
