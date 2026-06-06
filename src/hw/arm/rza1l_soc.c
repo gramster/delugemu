@@ -20,6 +20,7 @@
 #include "system/system.h"
 #include "hw/arm/rza1l_soc.h"
 #include "hw/ssi/rza1l_rspi.h"
+#include "hw/timer/rza1l_mtu2.h"
 
 static void rza1l_soc_init(Object *obj)
 {
@@ -28,6 +29,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "cpu", &s->cpu, RZA1L_CPU_TYPE);
 
     object_initialize_child(obj, "rspi0", &s->rspi0, TYPE_RZA1L_RSPI);
+    object_initialize_child(obj, "mtu2", &s->mtu2, TYPE_RZA1L_MTU2);
 
     /*
      * The board points this at its system address space before realize. The
@@ -118,6 +120,18 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(system_memory, RZA1L_RSPI0_BASE,
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->rspi0), 0),
+                                        1);
+
+    /*
+     * MTU2 timer. Provides the free-running counters the firmware uses for
+     * busy-wait delays. Mapped over the io.high catch-all.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->mtu2), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_MTU2_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->mtu2), 0),
                                         1);
 }
 
