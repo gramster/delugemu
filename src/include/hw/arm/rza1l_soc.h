@@ -172,6 +172,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 #define RZA1L_PIC_RX_DMA_CH  12
 /* DMA channel the firmware reads MIDI input from (MIDI_RX_DMA_CHANNEL). */
 #define RZA1L_MIDI_RX_DMA_CH 13
+/* DMA channel that timestamps each MIDI byte (MIDI_RX_TIMING_DMA_CHANNEL). */
+#define RZA1L_MIDI_RX_TIMING_DMA_CH 14
 /* DMA channel the firmware streams audio to the SSI on (SSI_TX_DMA_CHANNEL). */
 #define RZA1L_SSI_TX_DMA_CH  6
 #define RZA1L_SCIF_RXI0_SPI  (223 - 32)

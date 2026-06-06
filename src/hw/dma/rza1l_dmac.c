@@ -309,6 +309,23 @@ static void rza1l_dmac_chctrl_write(RzA1lDmacState *s, int ch, uint32_t val)
                 c->rx_audio_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
                 c->crda = c->rx_audio_base;
             }
+        } else if (c->timing_ring && c->nxla != 0) {
+            /*
+             * The MIDI timing-capture channel uses a self-linking descriptor
+             * whose destination is the small timing ring. Latch its base and
+             * size; entries are written one per received MIDI byte (see
+             * rza1l_dmac_peripheral_rx_push / rza1l_dmac_timing_capture).
+             */
+            uint8_t d[32];
+
+            dma_memory_read(&address_space_memory, c->nxla, d, sizeof(d),
+                            MEMTXATTRS_UNSPECIFIED);
+            if (ldl_le_p(d + 28) == c->nxla) {
+                c->timing_base = ldl_le_p(d + 8);
+                c->timing_size = ldl_le_p(d + 12);
+                c->timing_active = (c->timing_size != 0);
+                c->timing_cursor = c->timing_base;
+            }
         }
     }
 }
@@ -348,6 +365,19 @@ void rza1l_dmac_register_rx_audio_ring(RzA1lDmacState *s, int ch)
 {
     if (ch >= 0 && ch < RZA1L_DMAC_NUM_CH) {
         s->ch[ch].rx_audio_ring = true;
+    }
+}
+
+void rza1l_dmac_register_timing_capture(RzA1lDmacState *s, int timing_ch,
+                                        int rx_ch, int src_ch)
+{
+    if (timing_ch >= 0 && timing_ch < RZA1L_DMAC_NUM_CH) {
+        s->ch[timing_ch].timing_ring = true;
+    }
+    if (rx_ch >= 0 && rx_ch < RZA1L_DMAC_NUM_CH) {
+        s->ch[rx_ch].timing_capture_link = true;
+        s->ch[rx_ch].timing_capture_ch = timing_ch;
+        s->ch[rx_ch].timing_capture_src_ch = src_ch;
     }
 }
 
@@ -420,6 +450,40 @@ bool rza1l_dmac_get_rx_audio_crda(RzA1lDmacState *s, int ch, uint32_t *crda)
     return true;
 }
 
+/*
+ * Write one timing-capture entry: snapshot the audio source channel's current
+ * source address (its live SSI TX sample position) into the timing channel's
+ * ring and advance the ring cursor by one 32-bit entry.
+ */
+static void rza1l_dmac_timing_capture(RzA1lDmacState *s, int timing_ch,
+                                      int src_ch)
+{
+    RzA1lDmacChannel *t;
+    uint32_t value;
+    uint8_t buf[4];
+
+    if (timing_ch < 0 || timing_ch >= RZA1L_DMAC_NUM_CH ||
+        src_ch < 0 || src_ch >= RZA1L_DMAC_NUM_CH) {
+        return;
+    }
+    t = &s->ch[timing_ch];
+    if (!t->timing_active || t->timing_size == 0) {
+        return;
+    }
+
+    if (s->ch[src_ch].tx_audio_active) {
+        value = rza1l_dmac_tx_audio_crsa(&s->ch[src_ch]);
+    } else {
+        value = s->ch[src_ch].crsa;
+    }
+
+    stl_le_p(buf, value);
+    dma_memory_write(&address_space_memory, t->timing_cursor, buf, sizeof(buf),
+                     MEMTXATTRS_UNSPECIFIED);
+    t->timing_cursor = t->timing_base +
+        ((t->timing_cursor - t->timing_base + 4) % t->timing_size);
+}
+
 bool rza1l_dmac_peripheral_rx_push(RzA1lDmacState *s, int ch, uint8_t byte)
 {
     RzA1lDmacChannel *c;
@@ -438,6 +502,17 @@ bool rza1l_dmac_peripheral_rx_push(RzA1lDmacState *s, int ch, uint8_t byte)
 
     off = (c->crda - c->rx_ring_base + 1) % c->rx_ring_size;
     c->crda = c->rx_ring_base + off;
+
+    /*
+     * If this receive ring has an associated timing-capture channel, snapshot
+     * the audio source channel's current source address (the SSI TX sample
+     * position) into the timing ring in lockstep, so the firmware can timestamp
+     * the byte just delivered against the audio clock.
+     */
+    if (c->timing_capture_link) {
+        rza1l_dmac_timing_capture(s, c->timing_capture_ch,
+                                  c->timing_capture_src_ch);
+    }
     return true;
 }
 
@@ -544,17 +619,26 @@ static void rza1l_dmac_reset(DeviceState *dev)
     bool rx_ring_peripheral[RZA1L_DMAC_NUM_CH];
     bool tx_audio_ring[RZA1L_DMAC_NUM_CH];
     bool rx_audio_ring[RZA1L_DMAC_NUM_CH];
+    bool timing_ring[RZA1L_DMAC_NUM_CH];
+    bool timing_capture_link[RZA1L_DMAC_NUM_CH];
+    int timing_capture_ch[RZA1L_DMAC_NUM_CH];
+    int timing_capture_src_ch[RZA1L_DMAC_NUM_CH];
 
     /*
-     * rx_ring_peripheral, tx_audio_ring and rx_audio_ring are static wiring
-     * properties (set once at machine construction by rza1l_dmac_register_*),
-     * not transfer state, so they must survive a device reset. Preserve them
-     * across the memset that clears the per-channel registers.
+     * rx_ring_peripheral, tx_audio_ring, rx_audio_ring and the timing-capture
+     * wiring are static wiring properties (set once at machine construction by
+     * rza1l_dmac_register_*), not transfer state, so they must survive a device
+     * reset. Preserve them across the memset that clears the per-channel
+     * registers.
      */
     for (int i = 0; i < RZA1L_DMAC_NUM_CH; i++) {
         rx_ring_peripheral[i] = s->ch[i].rx_ring_peripheral;
         tx_audio_ring[i] = s->ch[i].tx_audio_ring;
         rx_audio_ring[i] = s->ch[i].rx_audio_ring;
+        timing_ring[i] = s->ch[i].timing_ring;
+        timing_capture_link[i] = s->ch[i].timing_capture_link;
+        timing_capture_ch[i] = s->ch[i].timing_capture_ch;
+        timing_capture_src_ch[i] = s->ch[i].timing_capture_src_ch;
     }
 
     memset(s->ch, 0, sizeof(s->ch));
@@ -564,6 +648,10 @@ static void rza1l_dmac_reset(DeviceState *dev)
         s->ch[i].rx_ring_peripheral = rx_ring_peripheral[i];
         s->ch[i].tx_audio_ring = tx_audio_ring[i];
         s->ch[i].rx_audio_ring = rx_audio_ring[i];
+        s->ch[i].timing_ring = timing_ring[i];
+        s->ch[i].timing_capture_link = timing_capture_link[i];
+        s->ch[i].timing_capture_ch = timing_capture_ch[i];
+        s->ch[i].timing_capture_src_ch = timing_capture_src_ch[i];
     }
 
     /*
@@ -600,8 +688,8 @@ static void rza1l_dmac_realize(DeviceState *dev, Error **errp)
 
 static const VMStateDescription vmstate_rza1l_dmac_channel = {
     .name = "rza1l-dmac-channel",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(n0sa, RzA1lDmacChannel),
         VMSTATE_UINT32(n0da, RzA1lDmacChannel),
@@ -632,6 +720,10 @@ static const VMStateDescription vmstate_rza1l_dmac_channel = {
         VMSTATE_UINT32(rx_audio_base, RzA1lDmacChannel),
         VMSTATE_UINT32(rx_audio_size, RzA1lDmacChannel),
         VMSTATE_INT64(rx_audio_start_ns, RzA1lDmacChannel),
+        VMSTATE_BOOL(timing_active, RzA1lDmacChannel),
+        VMSTATE_UINT32(timing_base, RzA1lDmacChannel),
+        VMSTATE_UINT32(timing_size, RzA1lDmacChannel),
+        VMSTATE_UINT32(timing_cursor, RzA1lDmacChannel),
         VMSTATE_END_OF_LIST()
     },
 };

@@ -80,6 +80,32 @@ typedef struct RzA1lDmacChannel {
     uint32_t rx_audio_base;
     uint32_t rx_audio_size;
     int64_t  rx_audio_start_ns;
+
+    /*
+     * MIDI receive timing-capture ring (the SCIF MIDI timing channel, ch14).
+     * On real hardware the same SCIF receive request that copies a MIDI byte
+     * into the RX ring also triggers this channel, which snapshots the SSI
+     * transmit DMA's current source address (CRSA, the audio sample position)
+     * into a small ring so each received byte gets an audio-clock timestamp.
+     * Latched from the self-linking descriptor like the rings above; advanced
+     * one entry per MIDI byte (see rza1l_dmac_peripheral_rx_push). Only the
+     * channel registered via rza1l_dmac_register_timing_capture behaves so.
+     */
+    bool     timing_ring;
+    bool     timing_active;
+    uint32_t timing_base;
+    uint32_t timing_size;
+    uint32_t timing_cursor;
+
+    /*
+     * On a receive-ring channel: link to the timing-capture channel that runs
+     * in lockstep with it, and the audio source channel whose CRSA provides the
+     * timestamp. Set by rza1l_dmac_register_timing_capture; timing_capture_link
+     * is false when the channel has no associated timing capture.
+     */
+    bool     timing_capture_link;
+    int      timing_capture_ch;
+    int      timing_capture_src_ch;
 } RzA1lDmacChannel;
 
 struct RzA1lDmacState {
@@ -156,5 +182,16 @@ bool rza1l_dmac_get_rx_audio_crda(RzA1lDmacState *s, int ch, uint32_t *crda);
  * destination buffer. Returns true if the channel was an armed receive ring.
  */
 bool rza1l_dmac_peripheral_rx_push(RzA1lDmacState *s, int ch, uint8_t byte);
+
+/*
+ * Register the MIDI receive timing-capture channel. timing_ch is slaved to the
+ * receive-ring channel rx_ch: each byte pushed into rx_ch's ring also snapshots
+ * audio source channel src_ch's current source address (CRSA) into timing_ch's
+ * ring, giving every MIDI byte an audio-clock timestamp (the firmware reads
+ * these back via uartGetCharWithTiming). timing_ch is latched from its own
+ * self-linking descriptor when the firmware enables it.
+ */
+void rza1l_dmac_register_timing_capture(RzA1lDmacState *s, int timing_ch,
+                                        int rx_ch, int src_ch);
 
 #endif /* HW_DMA_RZA1L_DMAC_H */

@@ -386,6 +386,9 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
      */
     qdev_prop_set_chr(DEVICE(&s->scif0), "chardev", serial_hd(0));
     rza1l_scif_set_rx_dma(&s->scif0, &s->dmac, RZA1L_MIDI_RX_DMA_CH);
+    rza1l_dmac_register_timing_capture(&s->dmac, RZA1L_MIDI_RX_TIMING_DMA_CH,
+                                       RZA1L_MIDI_RX_DMA_CH,
+                                       RZA1L_SSI_TX_DMA_CH);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif0), errp)) {
         return;
     }
