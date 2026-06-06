@@ -22,6 +22,7 @@
 #include "hw/ssi/rza1l_rspi.h"
 #include "hw/ssi/rza1l_spibsc.h"
 #include "hw/timer/rza1l_mtu2.h"
+#include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
 
 static void rza1l_soc_init(Object *obj)
@@ -34,6 +35,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "mtu2", &s->mtu2, TYPE_RZA1L_MTU2);
     object_initialize_child(obj, "dmac", &s->dmac, TYPE_RZA1L_DMAC);
     object_initialize_child(obj, "spibsc", &s->spibsc, TYPE_RZA1L_SPIBSC);
+    object_initialize_child(obj, "ostm", &s->ostm, TYPE_RZA1L_OSTM);
 
     /*
      * The board points this at its system address space before realize. The
@@ -161,6 +163,18 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(system_memory, RZA1L_SPIBSC_BASE,
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->spibsc), 0),
+                                        1);
+
+    /*
+     * OSTM OS timer. The firmware's scheduler uses OSTM0 as a free-running
+     * time base. Mapped over the io.high catch-all.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->ostm), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_OSTM_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->ostm), 0),
                                         1);
 }
 

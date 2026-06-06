@@ -15,6 +15,7 @@
 #include "hw/ssi/rza1l_rspi.h"
 #include "hw/ssi/rza1l_spibsc.h"
 #include "hw/timer/rza1l_mtu2.h"
+#include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
@@ -79,6 +80,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 /* SPIBSC0 — SPI multi-I/O bus controller (serial flash). */
 #define RZA1L_SPIBSC_BASE   0x3FEFA000
 
+/* OSTM — OS timer (two free-running 32-bit channels). */
+#define RZA1L_OSTM_BASE     0xFCFEC000
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL
@@ -99,6 +103,7 @@ struct RzA1lSocState {
     RzA1lMtu2State mtu2;
     RzA1lDmacState dmac;
     RzA1lSpibscState spibsc;
+    RzA1lOstmState ostm;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board
