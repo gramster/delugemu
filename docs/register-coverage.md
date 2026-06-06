@@ -226,3 +226,13 @@ window, so they have no register map.
 | Pad grid | `deluge-padgrid` | PIC colour messages | 18×8 RGB pads |
 | 7-segment | `deluge-segment` | PIC command 224 | 4-digit numeric display |
 | Host input | `deluge-input` | QEMU keyboard handler | maps host keys to PIC pad/button events |
+
+## Intentionally unmodelled peripherals
+
+These on-chip blocks fall inside the logging catch-all windows and need no
+device model because the firmware never clocks them out of module-standby:
+
+| Block | Window | Why unmodelled |
+| ----- | ------ | -------------- |
+| SCUX (sample-rate converter) | `0xE8208000` | Held in standby (`STBCR8`); the firmware resamples in software and streams I²S directly via SSIF0/DMA |
+| RIIC0–3 (I²C) | `0xFCFEE000`–`0xFCFEEFFF` | Held in standby (`STBCR9`); the codec is hardware-strapped and enabled by a GPIO pin, with no I²C configuration |

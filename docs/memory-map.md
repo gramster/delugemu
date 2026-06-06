@@ -54,7 +54,15 @@ physical window, so they appear here as connections rather than addresses.
 | Input PIC      | Serial channel       | Pads, buttons, encoders ↔ LED/PWM   |
 | OLED display   | Serial/parallel bus  | 128×48 monochrome                   |
 | 7-seg display  | GPIO/serial          | Digit + indicator LEDs              |
-| Audio codec    | SSI                  | Stereo in/out                       |
+| Audio codec    | SSI + GPIO enable    | Stereo I²S; enabled by a GPIO pin (no I²C config) |
+
+> **Audio codec, SCUX and RIIC.** The Deluge codec is a hardware-strapped I²S
+> DAC/ADC: the firmware drives it purely as an I²S stream over SSIF0 and toggles
+> a single GPIO enable/reset line (`CODEC` pin), so there is **no I²C codec
+> configuration** at runtime. The on-chip sampling-rate converter (SCUX,
+> `0xE8208000`) and all RIIC/I²C controllers (`0xFCFEE000`+) are held in
+> module-standby by `CPG.STBCR8`/`STBCR9` and never accessed, so they need no
+> device model — the logging catch-all over their windows is sufficient.
 
 ## Conventions
 
