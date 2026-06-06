@@ -143,6 +143,11 @@ Base `0xE820B000` · size `0x800` · IRQs SSII0/SSIRXI0/SSITXI0 (GIC SPI 140/141
 The firmware streams audio through DMA (ch6 TX → SSIFTDR, ch7 RX ← SSIFRDR) and
 tracks playback from the DMA source address, so the FIFOs are never CPU-serviced.
 
+With an audio backend bound (`-audiodev …,id=deluge0 -global rza1l-ssif.audiodev=deluge0`,
+e.g. via `run.sh --audio`), the device opens a 44.1 kHz stereo S32 output voice
+and mirrors the transmit DMA ring from guest memory to the host (silence until
+the firmware arms the ring). Without an audiodev the audio path is inactive.
+
 | Offset | Reg | Coverage | Notes |
 | ------ | --- | -------- | ----- |
 | 0x00 | SSICR | shadow | control (TEN/REN etc.) |

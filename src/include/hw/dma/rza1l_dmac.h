@@ -103,6 +103,15 @@ void rza1l_dmac_register_rx_ring(RzA1lDmacState *s, int ch);
 void rza1l_dmac_register_tx_audio_ring(RzA1lDmacState *s, int ch);
 
 /*
+ * Report the live geometry of a TX audio ring channel. When the channel has
+ * been armed by the firmware (a self-linking audio descriptor), stores the
+ * ring's guest base address and byte size and returns true; otherwise returns
+ * false. Used by the SSI model to mirror the transmit buffer to host audio.
+ */
+bool rza1l_dmac_get_tx_audio_ring(RzA1lDmacState *s, int ch,
+                                  uint32_t *base, uint32_t *size);
+
+/*
  * Deliver one byte from a peripheral into a link-mode receive-ring channel.
  * Writes the byte at the channel's current destination address (CRDA) in
  * guest memory and advances CRDA by one, wrapping within the descriptor's

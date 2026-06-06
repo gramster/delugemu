@@ -25,7 +25,10 @@
 #include "qemu/log.h"
 #include "qapi/error.h"
 #include "hw/core/irq.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
+#include "system/address-spaces.h"
+#include "system/dma.h"
 #include "hw/ssi/rza1l_ssif.h"
 #include "hw/dma/rza1l_dmac.h"
 
@@ -152,6 +155,61 @@ void rza1l_ssif_set_dma(RzA1lSsifState *s, struct RzA1lDmacState *dmac,
     s->rx_dma_channel = rx_channel;
 }
 
+/*
+ * Audio output callback. QEMU's audio backend invokes this when its output
+ * buffer can accept up to free_bytes more bytes. The firmware streams the I2S
+ * transmit buffer through DMA (the SSI transmit channel), so we mirror that
+ * ring from guest memory to the host: read samples at play_cursor, wrapping at
+ * the ring size, and feed them to the voice. Until the firmware arms the
+ * transmit DMA the ring is unknown, so we output silence to keep the backend's
+ * clock running.
+ */
+static void rza1l_ssif_out_cb(void *opaque, int free_bytes)
+{
+    RzA1lSsifState *s = opaque;
+    uint8_t buf[1024];
+    uint32_t base = 0, size = 0;
+    bool have_ring;
+
+    if (free_bytes <= 0) {
+        return;
+    }
+
+    have_ring = s->dmac &&
+        rza1l_dmac_get_tx_audio_ring(s->dmac, s->tx_dma_channel, &base, &size);
+
+    while (free_bytes > 0) {
+        int chunk = MIN(free_bytes, (int)sizeof(buf));
+        size_t written;
+
+        if (have_ring) {
+            uint32_t avail = size - s->play_cursor;
+            if ((uint32_t)chunk > avail) {
+                chunk = avail;
+            }
+            if (dma_memory_read(&address_space_memory, base + s->play_cursor,
+                                buf, chunk, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                memset(buf, 0, chunk);
+            }
+        } else {
+            memset(buf, 0, chunk);
+        }
+
+        written = audio_be_write(s->audio_be, s->voice_out, buf, chunk);
+        if (have_ring) {
+            s->play_cursor += written;
+            if (s->play_cursor >= size) {
+                s->play_cursor -= size;
+            }
+        }
+        free_bytes -= written;
+        if (written < (size_t)chunk) {
+            break; /* backend buffer full for now */
+        }
+    }
+}
+
+
 static void rza1l_ssif_reset(DeviceState *dev)
 {
     RzA1lSsifState *s = RZA1L_SSIF(dev);
@@ -177,6 +235,29 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(sbd, &s->irq_ssii);
     sysbus_init_irq(sbd, &s->irq_rxi);
     sysbus_init_irq(sbd, &s->irq_txi);
+
+    /*
+     * Audio output is optional: only when the board binds an audio backend
+     * (audiodev= property) do we open a host voice. The voice runs continuously
+     * and pulls samples from the transmit DMA ring (or silence until armed).
+     */
+    if (s->audio_be) {
+        struct audsettings as = {
+            .freq = RZA1L_SSIF_SAMPLE_RATE,
+            .nchannels = RZA1L_SSIF_NUM_CHANNELS,
+            .fmt = AUDIO_FORMAT_S32,
+            .big_endian = false,
+        };
+
+        s->voice_out = audio_be_open_out(s->audio_be, s->voice_out, "ssif.out",
+                                         s, rza1l_ssif_out_cb, &as);
+        if (!s->voice_out) {
+            error_setg(errp, "rza1l-ssif: failed to open audio output");
+            return;
+        }
+        audio_be_set_active_out(s->audio_be, s->voice_out, true);
+        s->output_open = true;
+    }
 }
 
 static const VMStateDescription vmstate_rza1l_ssif = {
@@ -196,12 +277,17 @@ static const VMStateDescription vmstate_rza1l_ssif = {
     },
 };
 
+static const Property rza1l_ssif_properties[] = {
+    DEFINE_AUDIO_PROPERTIES(RzA1lSsifState, audio_be),
+};
+
 static void rza1l_ssif_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = rza1l_ssif_realize;
     dc->vmsd = &vmstate_rza1l_ssif;
+    device_class_set_props(dc, rza1l_ssif_properties);
     device_class_set_legacy_reset(dc, rza1l_ssif_reset);
 }
 

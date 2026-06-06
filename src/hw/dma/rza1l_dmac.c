@@ -309,6 +309,23 @@ void rza1l_dmac_register_tx_audio_ring(RzA1lDmacState *s, int ch)
     }
 }
 
+bool rza1l_dmac_get_tx_audio_ring(RzA1lDmacState *s, int ch,
+                                  uint32_t *base, uint32_t *size)
+{
+    RzA1lDmacChannel *c;
+
+    if (ch < 0 || ch >= RZA1L_DMAC_NUM_CH) {
+        return false;
+    }
+    c = &s->ch[ch];
+    if (!c->tx_audio_active || c->tx_audio_size == 0) {
+        return false;
+    }
+    *base = c->tx_audio_base;
+    *size = c->tx_audio_size;
+    return true;
+}
+
 /*
  * Synthesise the SSI transmit channel's current source address from elapsed
  * virtual time, modelling the audio DMA continuously reading the TX buffer at

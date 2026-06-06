@@ -112,10 +112,12 @@ case "${DISPLAY_MODE}" in
     *) die "unknown --display mode '${DISPLAY_MODE}' (headless|console|none)" ;;
 esac
 
-# Optional audio backend (no consumer device yet; reserved for the SSI sink).
+# Optional audio backend, routed to the SSIF (I2S) sink. The SoC builds the
+# SSIF internally, so -global binds the audiodev to the device's property.
 AUDIO_ARGS=()
 if [ -n "${AUDIO}" ]; then
-    AUDIO_ARGS=(-audiodev "${AUDIO},id=deluge0")
+    AUDIO_ARGS=(-audiodev "${AUDIO},id=deluge0"
+                -global "rza1l-ssif.audiodev=deluge0")
     log "Adding audio backend: ${AUDIO}"
 fi
 
