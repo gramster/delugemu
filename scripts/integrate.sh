@@ -28,6 +28,22 @@
 #
 # Keeping the QEMU-side edits to two appended, marker-guarded lines makes
 # rebasing the submodule onto a newer QEMU painless.
+#
+# Git hygiene (keeping the submodule's working tree "clean")
+# ---------------------------------------------------------
+# QEMU has no out-of-tree device build, so the four steps above necessarily
+# touch the submodule working tree. To stop that from showing up as a dirty
+# submodule (`m qemu`) -- which is easy to stage/commit by accident -- we make
+# the changes invisible to git, locally and reversibly:
+#
+#   a. The untracked symlinks (steps 1-2) are added to the submodule's
+#      .git/info/exclude, so `git status` never lists them and they cannot be
+#      `git add`ed into the QEMU repo by mistake.
+#   b. The two edited tracked files (steps 3-4) are marked `--skip-worktree`,
+#      so git ignores our local appends and the submodule reports clean.
+#
+# Both are local to this checkout (never committed anywhere) and are undone by
+# `--undo`. The recorded submodule commit is never changed.
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
@@ -46,8 +62,68 @@ MARKER_END="# <<< delugemu integration end >>>"
 # directories present in src/include/hw).
 HEADER_DIRS=(arm char display dma gpio input misc sd ssi timer usb)
 
+# Tracked upstream files we append our build hooks to. They are kept out of
+# `git status` with --skip-worktree (see header comment).
+TRACKED_HOOK_FILES=(hw/meson.build hw/Kconfig)
+
+# Absolute path to the submodule's local exclude file (handles the gitdir
+# indirection of a submodule, whose .git is a file pointing into .git/modules).
+GIT_EXCLUDE="$(cd "${QEMU_DIR}" && git rev-parse --git-path info/exclude 2>/dev/null || true)"
+case "${GIT_EXCLUDE}" in
+    "") ;;
+    /*) ;;
+    *) GIT_EXCLUDE="${QEMU_DIR}/${GIT_EXCLUDE}" ;;
+esac
+
+# Mark / unmark the appended tracked files skip-worktree so git ignores our
+# local edits to them (best-effort; never fatal).
+set_skip_worktree() {
+    local f
+    for f in "${TRACKED_HOOK_FILES[@]}"; do
+        git -C "${QEMU_DIR}" update-index --skip-worktree "${f}" 2>/dev/null || true
+    done
+}
+clear_skip_worktree() {
+    local f
+    for f in "${TRACKED_HOOK_FILES[@]}"; do
+        git -C "${QEMU_DIR}" update-index --no-skip-worktree "${f}" 2>/dev/null || true
+    done
+}
+
+# Add / remove a marker-guarded block in the submodule's .git/info/exclude so
+# our injected symlinks never appear as untracked files in the QEMU repo.
+write_git_exclude() {
+    [ -n "${GIT_EXCLUDE}" ] || return 0
+    mkdir -p "$(dirname "${GIT_EXCLUDE}")"
+    if grep -qF "${MARKER}" "${GIT_EXCLUDE}" 2>/dev/null; then
+        return 0
+    fi
+    {
+        printf '%s\n' "${MARKER}"
+        printf '/hw/deluge\n'
+        printf '/include/hw/*/rza1l_*.h\n'
+        printf '/include/hw/*/deluge_*.h\n'
+        printf '%s\n' "${MARKER_END}"
+    } >> "${GIT_EXCLUDE}"
+    log "Registered injected paths in qemu/.git/info/exclude"
+}
+strip_git_exclude() {
+    [ -n "${GIT_EXCLUDE}" ] && [ -f "${GIT_EXCLUDE}" ] || return 0
+    grep -qF "${MARKER}" "${GIT_EXCLUDE}" || return 0
+    local tmp="${GIT_EXCLUDE}.delugemu.tmp"
+    awk -v start="${MARKER}" -v end="${MARKER_END}" '
+        index($0, start) { skip = 1 }
+        skip && index($0, end) { skip = 0; next }
+        !skip { print }
+    ' "${GIT_EXCLUDE}" > "${tmp}" && mv "${tmp}" "${GIT_EXCLUDE}"
+}
+
 undo() {
     log "Removing delugemu integration from the QEMU tree..."
+
+    # 0. Let git track our hook files again before we revert their contents,
+    #    so the reverted (== upstream) files show up as clean.
+    clear_skip_worktree
 
     # 1. Source tree symlink.
     [ -L "${LINK_PATH}" ] && rm -f "${LINK_PATH}"
@@ -69,13 +145,25 @@ undo() {
     for f in "${HW_MESON}" "${HW_KCONFIG}"; do
         if [ -f "${f}" ] && grep -qF "${MARKER}" "${f}"; then
             tmp="${f}.delugemu.tmp"
+            # Strip the marker block AND the single blank line our append
+            # prepended before it, so the file is byte-identical to upstream.
+            # Blank lines are buffered and only emitted once a non-blank,
+            # non-marker line follows; the buffer is discarded at the start
+            # marker (dropping our separator) and flushed at EOF (preserving
+            # any legitimate trailing blanks).
             awk -v start="${MARKER}" -v end="${MARKER_END}" '
-                index($0, start) { skip = 1 }
+                index($0, start) { hold = ""; skip = 1; next }
                 skip && index($0, end) { skip = 0; next }
-                !skip { print }
+                skip { next }
+                $0 == "" { hold = hold $0 ORS; next }
+                { printf "%s", hold; hold = ""; print }
+                END { printf "%s", hold }
             ' "${f}" > "${tmp}" && mv "${tmp}" "${f}"
         fi
     done
+
+    # 5. Drop the .git/info/exclude block for our injected symlinks.
+    strip_git_exclude
 
     log "Integration removed."
 }
@@ -137,4 +225,13 @@ else
     } >> "${HW_KCONFIG}"
 fi
 
+# 5. Keep the injected symlinks out of the submodule's `git status`.
+write_git_exclude
+
+# 6. Hide our appends to the tracked hook files so the submodule stays clean
+#    and the edits can never be staged/committed by accident.
+set_skip_worktree
+
 log "Integration complete. Next: ./scripts/build.sh"
+log "The qemu submodule now reports clean (git status -C qemu); run"
+log "  ./scripts/integrate.sh --undo  to fully revert these local changes."
