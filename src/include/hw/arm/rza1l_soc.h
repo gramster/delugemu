@@ -17,6 +17,7 @@
 #include "hw/timer/rza1l_mtu2.h"
 #include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
+#include "hw/gpio/rza1l_gpio.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
@@ -83,6 +84,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 /* OSTM — OS timer (two free-running 32-bit channels). */
 #define RZA1L_OSTM_BASE     0xFCFEC000
 
+/* GPIO — general-purpose I/O ports (struct base, per the firmware macro). */
+#define RZA1L_GPIO_BASE     0xFCFE3004
+
 /* CPU */
 #define RZA1L_CPU_TYPE        ARM_CPU_TYPE_NAME("cortex-a9")
 #define RZA1L_CPU_CLK_HZ      400000000ULL
@@ -104,6 +108,7 @@ struct RzA1lSocState {
     RzA1lDmacState dmac;
     RzA1lSpibscState spibsc;
     RzA1lOstmState ostm;
+    RzA1lGpioState gpio;
 
     /*
      * Link to the system memory region the SoC maps into. Set by the board

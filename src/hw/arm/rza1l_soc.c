@@ -24,6 +24,7 @@
 #include "hw/timer/rza1l_mtu2.h"
 #include "hw/timer/rza1l_ostm.h"
 #include "hw/dma/rza1l_dmac.h"
+#include "hw/gpio/rza1l_gpio.h"
 
 static void rza1l_soc_init(Object *obj)
 {
@@ -36,6 +37,7 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "dmac", &s->dmac, TYPE_RZA1L_DMAC);
     object_initialize_child(obj, "spibsc", &s->spibsc, TYPE_RZA1L_SPIBSC);
     object_initialize_child(obj, "ostm", &s->ostm, TYPE_RZA1L_OSTM);
+    object_initialize_child(obj, "gpio", &s->gpio, TYPE_RZA1L_GPIO);
 
     /*
      * The board points this at its system address space before realize. The
@@ -175,6 +177,18 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(system_memory, RZA1L_OSTM_BASE,
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->ostm), 0),
+                                        1);
+
+    /*
+     * GPIO ports. The firmware polls port pin registers for encoders, buttons
+     * and detect lines. Mapped over the io.high catch-all.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->gpio), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_GPIO_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->gpio), 0),
                                         1);
 }
 
