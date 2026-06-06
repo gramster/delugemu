@@ -12,11 +12,12 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/units.h"
-#include "hw/boards.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/boards.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/boot.h"
-#include "exec/address-spaces.h"
-#include "sysemu/sysemu.h"
+#include "hw/arm/machines-qom.h"
+#include "system/address-spaces.h"
+#include "system/system.h"
 
 #include "hw/arm/rza1l_soc.h"
 
@@ -65,7 +66,7 @@ static void deluge_machine_init(MachineState *machine)
     arm_load_kernel(&m->soc.cpu, machine, &deluge_boot_info);
 }
 
-static void deluge_machine_class_init(ObjectClass *oc, void *data)
+static void deluge_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -87,6 +88,11 @@ static const TypeInfo deluge_machine_info = {
     .parent     = TYPE_MACHINE,
     .instance_size = sizeof(DelugeMachineState),
     .class_init = deluge_machine_class_init,
+    /*
+     * Required for boards built into the shared arm/aarch64 source set so the
+     * machine is exposed in qemu-system-arm (see hw/arm/machines-qom.h).
+     */
+    .interfaces = arm_machine_interfaces,
 };
 
 static void deluge_machine_register_types(void)

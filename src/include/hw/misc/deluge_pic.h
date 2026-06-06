@@ -14,7 +14,7 @@
 #ifndef HW_MISC_DELUGE_PIC_H
 #define HW_MISC_DELUGE_PIC_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "chardev/char-fe.h"
 #include "qom/object.h"
 
@@ -27,7 +27,7 @@ struct DelugePicState {
 
     /*< public >*/
     /* Serial link to the SoC (firmware side). */
-    CharBackend chr;
+    CharFrontend chr;
 
     /* IRQ raised when input data is available for the firmware to read. */
     qemu_irq irq;

@@ -13,9 +13,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "hw/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/char/rza1l_scif.h"
 
@@ -67,7 +67,7 @@ static const VMStateDescription vmstate_rza1l_scif = {
     },
 };
 
-static void rza1l_scif_class_init(ObjectClass *klass, void *data)
+static void rza1l_scif_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

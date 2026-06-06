@@ -9,8 +9,8 @@
 #ifndef HW_ARM_RZA1L_SOC_H
 #define HW_ARM_RZA1L_SOC_H
 
-#include "hw/sysbus.h"
-#include "target/arm/cpu-qom.h"
+#include "hw/core/sysbus.h"
+#include "target/arm/cpu.h"
 #include "qom/object.h"
 
 #define TYPE_RZA1L_SOC "rza1l-soc"

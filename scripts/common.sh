@@ -20,6 +20,10 @@ DELUGE_MACHINE="deluge"
 # We only build the 32-bit Arm system emulator; the RZ/A1L is a Cortex-A9.
 QEMU_TARGETS="arm-softmmu"
 
+# Pinned QEMU release. The build is developed and tested against this tag; bump
+# it deliberately and re-test rather than tracking master (whose APIs churn).
+QEMU_PINNED_REF="v11.0.1"
+
 # Pretty logging.
 log()  { printf '\033[1;34m[delugemu]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[delugemu]\033[0m %s\n' "$*" >&2; }

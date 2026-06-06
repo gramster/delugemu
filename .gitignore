@@ -24,3 +24,5 @@ __pycache__/
 # Local config overrides
 /.env
 /local.mk
+firmware/
+sdcard/

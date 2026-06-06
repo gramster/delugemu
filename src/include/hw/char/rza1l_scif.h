@@ -12,7 +12,7 @@
 #ifndef HW_CHAR_RZA1L_SCIF_H
 #define HW_CHAR_RZA1L_SCIF_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "chardev/char-fe.h"
 #include "qom/object.h"
 
@@ -28,7 +28,7 @@ struct RzA1lScifState {
 
     /*< public >*/
     MemoryRegion iomem;
-    CharBackend chr;
+    CharFrontend chr;
     qemu_irq irq;
 };
 

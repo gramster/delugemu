@@ -9,7 +9,7 @@
 #ifndef HW_DISPLAY_DELUGE_OLED_H
 #define HW_DISPLAY_DELUGE_OLED_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "ui/console.h"
 #include "qom/object.h"
 

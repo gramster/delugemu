@@ -19,6 +19,8 @@ if [ ! -L "${QEMU_DIR}/hw/deluge" ]; then
 fi
 
 RECONFIGURE=0
+# Initialised empty; under `set -u` on bash 3.2 (macOS) an empty array must be
+# expanded with the `${arr[@]+...}` guard, used below.
 EXTRA_CONFIGURE_ARGS=()
 
 for arg in "$@"; do
@@ -41,7 +43,7 @@ if [ "${RECONFIGURE}" -eq 1 ] || [ ! -f "${QEMU_BUILD_DIR}/build.ninja" ]; then
     ../configure \
         --target-list="${QEMU_TARGETS}" \
         --disable-werror \
-        "${EXTRA_CONFIGURE_ARGS[@]}"
+        ${EXTRA_CONFIGURE_ARGS[@]+"${EXTRA_CONFIGURE_ARGS[@]}"}
     cd "${QEMU_DIR}"
 fi
 

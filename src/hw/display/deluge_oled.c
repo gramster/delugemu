@@ -11,7 +11,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "ui/console.h"
 #include "hw/display/deluge_oled.h"
 
@@ -55,7 +55,7 @@ static void deluge_oled_realize(DeviceState *dev, Error **errp)
     qemu_console_resize(s->con, DELUGE_OLED_WIDTH, DELUGE_OLED_HEIGHT);
 }
 
-static void deluge_oled_class_init(ObjectClass *klass, void *data)
+static void deluge_oled_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

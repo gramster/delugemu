@@ -25,7 +25,7 @@ static void deluge_segment_realize(DeviceState *dev, Error **errp)
     /* Nothing to allocate yet; state lives inline. */
 }
 
-static void deluge_segment_class_init(ObjectClass *klass, void *data)
+static void deluge_segment_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

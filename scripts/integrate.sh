@@ -39,7 +39,7 @@ HW_KCONFIG="${QEMU_DIR}/hw/Kconfig"
 QEMU_INC_HW="${QEMU_DIR}/include/hw"
 SRC_INC_HW="${SRC_DIR}/include/hw"
 
-MARKER="# >>> delugemu integration (managed by scripts/integrate.sh) <<<"
+MARKER="# >>> delugemu integration (managed by integrate script) <<<"
 MARKER_END="# <<< delugemu integration end >>>"
 
 # Header sub-directories we expose under qemu/include/hw (must match the
@@ -63,12 +63,17 @@ undo() {
         done
     done
 
-    # 3 + 4. Remove appended hooks.
-    local f
+    # 3 + 4. Remove appended hooks. Use awk (not sed) so marker text containing
+    #        regex/delimiter characters is matched literally.
+    local f tmp
     for f in "${HW_MESON}" "${HW_KCONFIG}"; do
         if [ -f "${f}" ] && grep -qF "${MARKER}" "${f}"; then
-            sed -i.bak "/${MARKER}/,/${MARKER_END}/d" "${f}"
-            rm -f "${f}.bak"
+            tmp="${f}.delugemu.tmp"
+            awk -v start="${MARKER}" -v end="${MARKER_END}" '
+                index($0, start) { skip = 1 }
+                skip && index($0, end) { skip = 0; next }
+                !skip { print }
+            ' "${f}" > "${tmp}" && mv "${tmp}" "${f}"
         fi
     done
 

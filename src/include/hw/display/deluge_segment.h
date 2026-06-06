@@ -9,7 +9,7 @@
 #ifndef HW_DISPLAY_DELUGE_SEGMENT_H
 #define HW_DISPLAY_DELUGE_SEGMENT_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 #define TYPE_DELUGE_SEGMENT "deluge-segment"

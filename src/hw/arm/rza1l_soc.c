@@ -13,10 +13,10 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/misc/unimp.h"
-#include "exec/address-spaces.h"
-#include "sysemu/sysemu.h"
+#include "system/address-spaces.h"
+#include "system/system.h"
 #include "hw/arm/rza1l_soc.h"
 
 static void rza1l_soc_init(Object *obj)
@@ -83,7 +83,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                 RZA1L_PERIPH_BASE, RZA1L_PERIPH_SIZE);
 }
 
-static void rza1l_soc_class_init(ObjectClass *klass, void *data)
+static void rza1l_soc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

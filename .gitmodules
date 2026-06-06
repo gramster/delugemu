@@ -2,3 +2,6 @@
 	path = qemu
 	url = https://gitlab.com/qemu-project/qemu.git
 	shallow = true
+	# Pinned to a stable QEMU release for a reproducible build. Bump
+	# deliberately (and re-test) rather than tracking master.
+	branch = v11.0.1
