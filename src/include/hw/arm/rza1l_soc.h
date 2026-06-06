@@ -27,8 +27,8 @@
 #include "hw/misc/rza1l_adc.h"
 #include "hw/misc/rza1l_rtc.h"
 #include "hw/display/deluge_oled.h"
+#include "hw/display/deluge_skin.h"
 #include "hw/display/deluge_padgrid.h"
-#include "hw/display/deluge_segment.h"
 #include "hw/input/deluge_input.h"
 #include "hw/sd/rza1l_sdhi.h"
 #include "hw/usb/rza1l_usb.h"
@@ -226,8 +226,8 @@ struct RzA1lSocState {
     RzA1lAdcState adc;
     RzA1lRtcState rtc;
     DelugeOledState oled;
+    DelugeSkinState skin;
     DelugePadGridState padgrid;
-    DelugeSegmentState segment;
     DelugeInputState input;
     RzA1lSdhiState sdhi;
     RzA1lUsbState usb0;

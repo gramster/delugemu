@@ -45,7 +45,6 @@
 #include "hw/dma/rza1l_dmac.h"
 #include "hw/display/deluge_oled.h"
 #include "hw/display/deluge_padgrid.h"
-#include "hw/display/deluge_segment.h"
 #include "hw/misc/deluge_pic.h"
 
 /*
@@ -237,9 +236,6 @@ static void deluge_pic_dispatch(DelugePicState *s)
         break;
     case PIC_MSG_UPDATE_SEVEN_SEGMENT:
         memcpy(s->seven_seg, s->payload, DELUGE_PIC_SEG_DIGITS);
-        if (s->segment) {
-            deluge_segment_update(s->segment, s->seven_seg);
-        }
         break;
     case PIC_MSG_ENABLE_OLED:
         s->oled_enabled = true;
@@ -441,13 +437,6 @@ void deluge_pic_set_padgrid(Chardev *chr, struct DelugePadGridState *padgrid)
     DelugePicState *s = DELUGE_PIC(chr);
 
     s->padgrid = padgrid;
-}
-
-void deluge_pic_set_segment(Chardev *chr, struct DelugeSegmentState *segment)
-{
-    DelugePicState *s = DELUGE_PIC(chr);
-
-    s->segment = segment;
 }
 
 static void deluge_pic_class_init(ObjectClass *oc, const void *data)

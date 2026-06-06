@@ -54,8 +54,8 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "adc", &s->adc, TYPE_RZA1L_ADC);
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_RZA1L_RTC);
     object_initialize_child(obj, "oled", &s->oled, TYPE_DELUGE_OLED);
+    object_initialize_child(obj, "skin", &s->skin, TYPE_DELUGE_SKIN);
     object_initialize_child(obj, "padgrid", &s->padgrid, TYPE_DELUGE_PADGRID);
-    object_initialize_child(obj, "segment", &s->segment, TYPE_DELUGE_SEGMENT);
     object_initialize_child(obj, "input", &s->input, TYPE_DELUGE_INPUT);
     object_initialize_child(obj, "sdhi", &s->sdhi, TYPE_RZA1L_SDHI);
     object_initialize_child(obj, "usb0", &s->usb0, TYPE_RZA1L_USB);
@@ -175,13 +175,19 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     rza1l_rspi_set_oled(&s->rspi0, &s->oled);
 
     /*
-     * RGB pad-grid and 7-segment numeric displays. Both are driven entirely by
-     * PIC commands; the PIC forwards its decoded state to them for rendering.
+     * Composited front-panel skin (photo background + live overlays).
+     * This is a pure UI device: no MMIO, no guest-visible wiring.
      */
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->padgrid), errp)) {
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->skin), errp)) {
         return;
     }
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->segment), errp)) {
+    deluge_skin_set_oled(DEVICE(&s->skin), &s->oled);
+
+    /*
+     * RGB pad-grid display. Driven entirely by PIC commands; the PIC forwards
+     * its decoded pad state to this renderer.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->padgrid), errp)) {
         return;
     }
 
@@ -416,7 +422,6 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     deluge_pic_set_dma(s->pic, &s->dmac, RZA1L_PIC_RX_DMA_CH);
     deluge_pic_set_oled(s->pic, &s->oled);
     deluge_pic_set_padgrid(s->pic, &s->padgrid);
-    deluge_pic_set_segment(s->pic, &s->segment);
     deluge_input_set_pic(DEVICE(&s->input), s->pic);
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
