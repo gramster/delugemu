@@ -23,6 +23,8 @@
 #include "hw/misc/rza1l_cpg.h"
 #include "hw/misc/rza1l_wdt.h"
 #include "hw/misc/rza1l_bsc.h"
+#include "hw/misc/rza1l_adc.h"
+#include "hw/misc/rza1l_rtc.h"
 #include "hw/display/deluge_oled.h"
 #include "hw/display/deluge_padgrid.h"
 #include "hw/display/deluge_segment.h"
@@ -103,6 +105,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSocState, RZA1L_SOC)
 
 /* BSC — bus state controller (external SDRAM on CS3). */
 #define RZA1L_BSC_BASE      0x3FFFC000
+
+/* ADC (S12AD) — supply-voltage sense; RTC — wall clock. Both stubbed. */
+#define RZA1L_ADC_BASE      0xE8005800
+#define RZA1L_RTC_BASE      0xFCFF1000
 
 /*
  * PL310 (L2C-310) L2 cache controller. Instantiated from QEMU's built-in
@@ -189,6 +195,8 @@ struct RzA1lSocState {
     RzA1lCpgState cpg;
     RzA1lWdtState wdt;
     RzA1lBscState bsc;
+    RzA1lAdcState adc;
+    RzA1lRtcState rtc;
     DelugeOledState oled;
     DelugePadGridState padgrid;
     DelugeSegmentState segment;

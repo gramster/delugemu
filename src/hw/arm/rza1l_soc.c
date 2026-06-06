@@ -49,6 +49,8 @@ static void rza1l_soc_init(Object *obj)
     object_initialize_child(obj, "cpg", &s->cpg, TYPE_RZA1L_CPG);
     object_initialize_child(obj, "wdt", &s->wdt, TYPE_RZA1L_WDT);
     object_initialize_child(obj, "bsc", &s->bsc, TYPE_RZA1L_BSC);
+    object_initialize_child(obj, "adc", &s->adc, TYPE_RZA1L_ADC);
+    object_initialize_child(obj, "rtc", &s->rtc, TYPE_RZA1L_RTC);
     object_initialize_child(obj, "oled", &s->oled, TYPE_DELUGE_OLED);
     object_initialize_child(obj, "padgrid", &s->padgrid, TYPE_DELUGE_PADGRID);
     object_initialize_child(obj, "segment", &s->segment, TYPE_DELUGE_SEGMENT);
@@ -399,6 +401,28 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         1);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdhi), 0,
                        qdev_get_gpio_in(DEVICE(&s->gic), RZA1L_SDHI_SPI));
+
+    /*
+     * ADC (supply-voltage sense) and RTC (wall clock) stubs. The firmware
+     * polls the ADC for the battery LED; the RTC is presented for completeness.
+     * Both overlay their respective I/O catch-all so accesses get plausible
+     * values instead of the unimplemented-region default.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->adc), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_ADC_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->adc), 0),
+                                        1);
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->rtc), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(system_memory, RZA1L_RTC_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->rtc), 0),
+                                        1);
 }
 
 static void rza1l_soc_class_init(ObjectClass *klass, const void *data)
