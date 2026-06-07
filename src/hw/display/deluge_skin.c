@@ -16,6 +16,7 @@
 #include "ui/console.h"
 #include "qemu/timer.h"
 #include "png.h"
+#include <math.h>
 
 #include "hw/display/deluge_skin.h"
 #include "hw/display/deluge_oled.h"
@@ -161,15 +162,72 @@ static inline uint8_t blend_chan(uint8_t dst, uint8_t src, uint8_t a)
 }
 
 /*
- * The firmware sends conservative RGB values; real RGB pad LEDs read much
- * brighter than those bytes suggest. Scale each channel up (preserving hue)
- * and clamp so lit pads glow like the hardware.
+ * Tone-map a firmware pad colour for the desktop display.
+ *
+ * The firmware drives the RGB pad LEDs over a very wide brightness range. The
+ * velocity-keyboard layout, for example, steps a single hue from ~1.5% to 100%
+ * intensity across a 4x4 group (velocity_drums.cpp: colour_intensity ramps from
+ * initial_intensity 0.015 up to 1.0). On the real LEDs even the dimmest step is
+ * a clearly recognisable colour, but copying those raw bytes to the screen
+ * lands the bottom third of the gradient at near-black: e.g. the dimmest pad's
+ * brightest channel is ~255*0.015 = 4, which the old linear x1.75 boost only
+ * lifted to ~7.
+ *
+ * Lift each pad's overall brightness with a gamma curve plus a small floor.
+ * The curve is applied to the pad's brightest channel (its "value"), then all
+ * three channels are scaled by the same factor, so the channel ratio - and
+ * therefore the hue - is preserved exactly. A fully-on channel (255) still maps
+ * to 255; the dimmest lit step maps to a clearly visible level well above
+ * black. Values are precomputed into a 256-entry lookup keyed by the brightest
+ * channel.
+ *
+ * LED_TONE_FLOOR is the normalised output for an infinitesimally-lit pad (the
+ * y-intercept of the curve); LED_TONE_GAMMA < 1 lifts the low end.
  */
-static inline uint8_t led_boost(uint8_t c)
-{
-    int v = (c * 7) / 4; /* x1.75 */
+#define LED_TONE_FLOOR 0.18
+#define LED_TONE_GAMMA 0.5
 
-    return v > 255 ? 255 : (uint8_t)v;
+static uint8_t led_tone_lut[256];
+static bool led_tone_lut_ready;
+
+static void led_tone_init_lut(void)
+{
+    led_tone_lut[0] = 0;
+    for (int m = 1; m < 256; m++) {
+        double n = m / 255.0;
+        double lifted = LED_TONE_FLOOR +
+                        (1.0 - LED_TONE_FLOOR) * pow(n, LED_TONE_GAMMA);
+        int v = (int)(lifted * 255.0 + 0.5);
+
+        led_tone_lut[m] = v > 255 ? 255 : (uint8_t)v;
+    }
+    led_tone_lut_ready = true;
+}
+
+/* Brighten a pad colour while preserving its hue (see led_tone_init_lut). */
+static void led_tone_map(uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    int m = *r;
+    int m_out;
+
+    if (!led_tone_lut_ready) {
+        led_tone_init_lut();
+    }
+
+    if (*g > m) {
+        m = *g;
+    }
+    if (*b > m) {
+        m = *b;
+    }
+    if (m == 0) {
+        return;
+    }
+
+    m_out = led_tone_lut[m];
+    *r = (uint8_t)((*r * m_out) / m);
+    *g = (uint8_t)((*g * m_out) / m);
+    *b = (uint8_t)((*b * m_out) / m);
 }
 
 static void deluge_skin_fill_pad_slot(uint32_t *img, int stride,
@@ -327,9 +385,8 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
 
             /* Unlit pads stay black (the prepared slot); only draw lit ones. */
             if (rr || gg || bb) {
-                deluge_skin_blend_pad(dst, stride, x, y,
-                                      led_boost(rr), led_boost(gg),
-                                      led_boost(bb), 235);
+                led_tone_map(&rr, &gg, &bb);
+                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 235);
             }
         }
 
@@ -342,9 +399,8 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t bb = p->rgb[col][row][2];
 
             if (rr || gg || bb) {
-                deluge_skin_blend_pad(dst, stride, x, side_y,
-                                      led_boost(rr), led_boost(gg),
-                                      led_boost(bb), 235);
+                led_tone_map(&rr, &gg, &bb);
+                deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, 235);
             }
         }
     }
