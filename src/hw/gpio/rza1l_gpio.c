@@ -56,7 +56,7 @@ static const RzA1lEncoderMap rza1l_encoder_map[DELUGE_ENC_COUNT] = {
     [DELUGE_ENC_SCROLL_Y] = { .irq_pin = 8,  .comp_pin = 10, .irq_num = 0, .invert = false },
     [DELUGE_ENC_SCROLL_X] = { .irq_pin = 11, .comp_pin = 12, .irq_num = 3, .invert = false },
     [DELUGE_ENC_TEMPO]    = { .irq_pin = 6,  .comp_pin = 7,  .irq_num = 2, .invert = true  },
-    [DELUGE_ENC_SELECT]   = { .irq_pin = 3,  .comp_pin = 2,  .irq_num = 7, .invert = true  },
+    [DELUGE_ENC_SELECT]   = { .irq_pin = 3,  .comp_pin = 2,  .irq_num = 7, .invert = false },
     [DELUGE_ENC_MOD_1]    = { .irq_pin = 5,  .comp_pin = 4,  .irq_num = 1, .invert = false },
     [DELUGE_ENC_MOD_0]    = { .irq_pin = 0,  .comp_pin = 15, .irq_num = 4, .invert = false },
 };
