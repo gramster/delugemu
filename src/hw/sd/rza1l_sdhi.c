@@ -217,6 +217,20 @@ static void rza1l_sdhi_data_block_done(RzA1lSdhiState *s, uint16_t ready_bit)
         s->info2 &= ~ready_bit;
         s->info1 |= INFO1_DATA_TRNS;
         s->data_dir = 0;
+        /*
+         * A block-count-enabled (SD_STOP.SEC) transfer is an open-ended
+         * CMD18/CMD25 sequence: the card keeps streaming until it is told to
+         * stop. The hardware automatically issues CMD12 once SD_SECCNT blocks
+         * have moved, returning the card to the transfer state. Mirror that so
+         * the subsequent CMD13 status poll sees STATE_TRAN rather than a card
+         * still stuck in the data state (which the driver reports as an error).
+         */
+        if (s->stop & SD_STOP_SEC_ENABLE) {
+            SDRequest stop = { .cmd = 12, .arg = 0, .crc = 0 };
+            uint8_t rsp[16];
+
+            sdbus_do_command(&s->sdbus, &stop, rsp, sizeof(rsp));
+        }
     }
     rza1l_sdhi_update_irq(s);
 }
