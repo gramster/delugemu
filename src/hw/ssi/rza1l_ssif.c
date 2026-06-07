@@ -23,6 +23,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/audio.h"
 #include "qapi/error.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties-system.h"
@@ -292,11 +293,17 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(sbd, &s->irq_txi);
 
     /*
-     * Audio output is optional: only when the board binds an audio backend
-     * (audiodev= property) do we open a host voice. The voice runs continuously
-     * and pulls samples from the transmit DMA ring (or silence until armed).
+     * The Deluge is fundamentally an audio device, so we always open a host
+     * voice. With no -audiodev on the command line, audio_be_check() resolves
+     * the OS default backend (coreaudio/pa/dsound/...); pass -audiodev only to
+     * select a non-default backend. The voice runs continuously and pulls
+     * samples from the transmit DMA ring (or silence until armed).
      */
-    if (s->audio_be) {
+    if (!audio_be_check(&s->audio_be, errp)) {
+        return;
+    }
+
+    {
         struct audsettings as = {
             .freq = RZA1L_SSIF_SAMPLE_RATE,
             .nchannels = RZA1L_SSIF_NUM_CHANNELS,

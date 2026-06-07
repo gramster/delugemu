@@ -16,12 +16,14 @@
 #                           chardev spec, e.g. --usb-midi udp:127.0.0.1:1998 or
 #                           --usb-midi pty. Bridges the firmware's bulk USB-MIDI
 #                           pipes to that backend (routed to serial slot 1).
-#   --audio <driver>        Route the SSIF (I2S) output to a host audio backend
-#                           (-audiodev <driver>). Use 'auto' to pick the OS
-#                           default (coreaudio on macOS, pa on Linux, dsound on
-#                           Windows); or name one explicitly, e.g. --audio
-#                           coreaudio / pa / sdl / wav / none. Play a note in an
-#                           instrument clip to hear 44.1 kHz stereo output.
+#   --audio <driver>        Select a non-default host audio backend for the
+#                           SSIF (I2S) output (-audiodev <driver>). Audio is on
+#                           by default using the OS default backend (coreaudio
+#                           on macOS, pa on Linux, dsound on Windows), so this
+#                           flag is only needed to override it, e.g. --audio
+#                           sdl / wav / none. Use 'auto' to force the OS
+#                           default explicitly. Play a note in an instrument
+#                           clip to hear 44.1 kHz stereo output.
 #   --display <mode>        Display mode:
 #                             headless  no GUI; serial+monitor on stdio (default)
 #                             console   open a window with the modelled OLED /
@@ -142,9 +144,11 @@ case "${DISPLAY_MODE}" in
     *) die "unknown --display mode '${DISPLAY_MODE}' (headless|console|none)" ;;
 esac
 
-# Optional audio backend, routed to the SSIF (I2S) sink. The SoC builds the
-# SSIF internally, so -global binds the audiodev to the device's property.
-# 'auto' resolves to the recommended host driver for this OS.
+# Optional audio backend override, routed to the SSIF (I2S) sink. The device
+# opens the OS default backend on its own, so this is only needed to select a
+# non-default driver. The SoC builds the SSIF internally, so -global binds the
+# audiodev to the device's property. 'auto' resolves to the recommended host
+# driver for this OS.
 AUDIO_ARGS=()
 if [ -n "${AUDIO}" ]; then
     if [ "${AUDIO}" = "auto" ]; then
