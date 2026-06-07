@@ -57,6 +57,7 @@ static const DelugeSkinControl deluge_skin_controls[] = {
     { "AFFECT_ENTIRE", 3, 0,  684, 468, 24, true,  DELUGE_LED_AMBER },
     { "SESSION_VIEW",  3, 1,  865, 424, 24, true,  DELUGE_LED_AMBER },
     { "CLIP_VIEW",     3, 2,  865, 515, 24, true,  DELUGE_LED_AMBER },
+    { "KEYBOARD",      3, 3, 1045, 516, 24, true,  DELUGE_LED_AMBER },
     { "SYNTH",         5, 0, 1187, 424, 24, true,  DELUGE_LED_AMBER },
     { "KIT",           5, 1, 1268, 424, 24, true,  DELUGE_LED_AMBER },
     { "MIDI",          5, 2, 1350, 424, 24, true,  DELUGE_LED_AMBER },

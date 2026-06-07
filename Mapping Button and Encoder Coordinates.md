@@ -26,6 +26,7 @@ These have a white shade with black border .
 685,468 - Affect Entire
 867,420 - Song
 868,516 - Clip
+1045,516 - Keyboard
 
 1534,242 - Back/Undo / Redo
 1534,330 - Load / New
