@@ -94,7 +94,13 @@ static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
     int half_y = DELUGE_SKIN_PAD_SIDE_DY / 2;
 
     for (int row = 0; row < DELUGE_PIC_GRID_ROWS; row++) {
-        int cy = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
+        /*
+         * Firmware row 0 is the bottom of the grid; screen y grows downward, so
+         * row 0 lives at the largest y. Mirror the renderer's mapping here so a
+         * click reports the same row index the firmware drew.
+         */
+        int scr = DELUGE_PIC_GRID_ROWS - 1 - row;
+        int cy = DELUGE_SKIN_PAD_SIDE_Y0 + scr * DELUGE_SKIN_PAD_SIDE_DY;
 
         for (int col = 0; col < 16; col++) {
             int cx = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;

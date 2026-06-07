@@ -159,6 +159,18 @@ static inline uint8_t blend_chan(uint8_t dst, uint8_t src, uint8_t a)
     return (uint8_t)(((int)dst * (255 - a) + (int)src * a) / 255);
 }
 
+/*
+ * The firmware sends conservative RGB values; real RGB pad LEDs read much
+ * brighter than those bytes suggest. Scale each channel up (preserving hue)
+ * and clamp so lit pads glow like the hardware.
+ */
+static inline uint8_t led_boost(uint8_t c)
+{
+    int v = (c * 7) / 4; /* x1.75 */
+
+    return v > 255 ? 255 : (uint8_t)v;
+}
+
 static void deluge_skin_fill_pad_slot(uint32_t *img, int stride,
                                       int cx, int cy, uint32_t bg)
 {
@@ -299,8 +311,12 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
     }
 
     for (int row = 0; row < DELUGE_PADGRID_ROWS; row++) {
-        /* Keep main grid rows on the exact same vertical lattice as sidebar. */
-        int y = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
+        /*
+         * Firmware row 0 is the bottom of the grid (lowest notes), but screen
+         * y grows downward, so draw row 0 at the bottom and count upward.
+         */
+        int scr = DELUGE_PADGRID_ROWS - 1 - row;
+        int y = DELUGE_SKIN_PAD_SIDE_Y0 + scr * DELUGE_SKIN_PAD_SIDE_DY;
 
         for (int col = 0; col < 16; col++) {
             int x = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;
@@ -310,20 +326,24 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
 
             /* Unlit pads stay black (the prepared slot); only draw lit ones. */
             if (rr || gg || bb) {
-                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 215);
+                deluge_skin_blend_pad(dst, stride, x, y,
+                                      led_boost(rr), led_boost(gg),
+                                      led_boost(bb), 235);
             }
         }
 
         for (int side = 0; side < 2; side++) {
             int x = DELUGE_SKIN_PAD_SIDE_X0 + side * DELUGE_SKIN_PAD_SIDE_DX;
-            int side_y = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
+            int side_y = DELUGE_SKIN_PAD_SIDE_Y0 + scr * DELUGE_SKIN_PAD_SIDE_DY;
             int col = 16 + side;
             uint8_t rr = p->rgb[col][row][0];
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
 
             if (rr || gg || bb) {
-                deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, 215);
+                deluge_skin_blend_pad(dst, stride, x, side_y,
+                                      led_boost(rr), led_boost(gg),
+                                      led_boost(bb), 235);
             }
         }
     }
@@ -333,12 +353,15 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
  * Gold-knob level LEDs: two vertical stacks of 4 square LEDs beside the gold
  * modal encoders, driven by PIC SET_GOLD_KNOB0/1 brightness. The table lives
  * here (only the renderer needs it).
+ *
+ * The firmware's level meter fills from the bottom up: gold_knob[which][0] is
+ * the first LED to light, so cy[] is ordered bottom -> top to match.
  */
 static const DelugeSkinKnobLeds deluge_skin_knob_leds[] = {
-    /* Beside the upper gold encoder (MOD_ENCODER_1). */
-    { 1, 676, { 144, 179, 217, 252 }, 11 },
-    /* Beside the lower gold encoder (MOD_ENCODER_0). */
-    { 0, 448, { 452, 487, 512, 524 }, 11 },
+    /* Beside the upper gold encoder (MOD_ENCODER_1); cy bottom -> top. */
+    { 1, 671, { 251, 214, 177, 140 }, 9 },
+    /* Beside the lower gold encoder (MOD_ENCODER_0); cy bottom -> top. */
+    { 0, 446, { 523, 486, 449, 412 }, 9 },
 };
 
 /* Blend a solid colour into a filled circle, fading the last pixel of radius. */

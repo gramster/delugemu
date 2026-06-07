@@ -86,13 +86,14 @@ static const DelugeSkinControl deluge_skin_controls[] = {
 /*
  * Gold-knob level LEDs (the two vertical stacks of 4 square LEDs beside the
  * gold modal encoders). Driven by PIC SET_GOLD_KNOB0/1; brightness per LED is
- * gold_knob[which][0..3], top LED first.
+ * gold_knob[which][0..3]. The meter fills from the bottom up, so index 0 is the
+ * bottom LED and cy[] is ordered bottom -> top to match.
  */
 typedef struct DelugeSkinKnobLeds {
-    int which;      /* PIC gold_knob[] index */
-    int cx;         /* common centre x       */
-    int cy[4];      /* centre y, top..bottom */
-    int half;       /* half square size      */
+    int which;      /* PIC gold_knob[] index    */
+    int cx;         /* common centre x          */
+    int cy[4];      /* centre y, bottom..top    */
+    int half;       /* half square size         */
 } DelugeSkinKnobLeds;
 
 /* The gold-knob LED table itself lives in the renderer (deluge_skin.c). */
