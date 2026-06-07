@@ -127,6 +127,12 @@ delugemu/
 └── qemu/                Upstream QEMU (git submodule)
 ```
 
+## Debugging & profiling
+
+Firmware developers can attach GDB, capture exception/IO logs, run TCG
+profiling plugins (hot blocks, hot pages, cache simulation), and drive the
+panel over QMP. See [DEBUGGING.md](DEBUGGING.md) for verified commands.
+
 ## License
 
 GPL-2.0-or-later, matching QEMU so the device models can link against it. See
