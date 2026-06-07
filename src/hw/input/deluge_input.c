@@ -23,7 +23,22 @@
 #include "hw/misc/deluge_pic.h"
 #include "hw/gpio/rza1l_gpio.h"
 
-#define DELUGE_INPUT_MIN_PRESS_MS 120
+/*
+ * Minimum time a pointer (mouse) press is held before its release is
+ * delivered. A host click can deliver button-down and button-up within a
+ * single frame, which is too fast for the firmware to register a visible
+ * press, so we defer the release until at least this long has elapsed.
+ *
+ * The floor must stay below the firmware's short-press threshold
+ * (FlashStorage::holdTime, 100 ms at the default "hold time" setting of 2).
+ * Buttons with press/hold semantics — e.g. SCALE, which toggles scale mode on
+ * a short press but shows the current scale on a hold — classify a press as a
+ * hold once it exceeds holdTime. A floor at or above holdTime would make every
+ * click read as a hold, so a quick click could never toggle. 60 ms is long
+ * enough for the firmware to see and render the press, yet comfortably short
+ * enough to count as a short press.
+ */
+#define DELUGE_INPUT_MIN_PRESS_MS 60
 
 /*
  * One host-key binding. A binding addresses either the button matrix (9 cols x
