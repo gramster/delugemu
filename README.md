@@ -81,12 +81,35 @@ See [docs/architecture.md](docs/architecture.md) for details.
 # backend, or pick a display mode (headless/console/none). See --help.
 ./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
 
-# Hear the Deluge on your speakers: route the SSIF (I2S) output to a host
-# audio backend. 'auto' picks coreaudio on macOS, pa on Linux, dsound on
-# Windows; or name one explicitly (coreaudio / pa / sdl / wav). Play a note in
-# an instrument clip to get 44.1 kHz stereo output.
-./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console --audio auto
+# Audio plays on your speakers by default (the SSIF/I2S output opens the OS
+# default backend: coreaudio on macOS, pa on Linux, dsound on Windows). Play a
+# note in an instrument clip to get 44.1 kHz stereo. Pass --audio <driver> only
+# to select a non-default backend (e.g. sdl / wav / none).
+./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
 ```
+
+## Controls
+
+With the interactive skin window (`--display console`), the front panel is
+driven by mouse and keyboard:
+
+- **Click** a pad or button to press it (a momentary press/release). Clicking
+  the silkscreen circle of an encoder presses it in.
+- **Encoder rotation**: each of the six encoders has a small ▽ (left) and △
+  (right) triangle inside its circle. Click ▽ to turn one detent CCW or △ to
+  turn one detent CW; press and hold a triangle to repeat. The **mouse wheel**
+  over an encoder also turns it.
+- **Multi-press latch**: hold the **Left Alt/Option** key to latch clicks. While
+  Alt is held, clicking a pad or button presses and *holds* it; clicking the
+  same control again releases it. Releasing Alt drops every still-latched
+  control at once. This lets a single mouse build chord-style combinations —
+  e.g. hold several pads, or a pad together with a function button — that one
+  pointer otherwise could not hold simultaneously.
+- **Keyboard**: common controls are bound to keys — Space = PLAY, R = RECORD,
+  Shift = SHIFT, Backspace = BACK, Enter = SELECT-encoder click, Tab =
+  SESSION, C = CLIP, K = KEYBOARD, Q/W/E/T = SYNTH/KIT/MIDI/CV, and the number
+  keys 1–8 trigger the sidebar audition column. See
+  [src/hw/input/deluge_input.c](src/hw/input/deluge_input.c) for the full map.
 
 ## Repository layout
 
