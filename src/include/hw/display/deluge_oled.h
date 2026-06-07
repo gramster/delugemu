@@ -61,6 +61,9 @@ struct DelugeOledState {
     /* UI-only scale factor for the standalone OLED console. */
     uint8_t ui_scale;
 
+    /* Whether to create the standalone OLED QEMU console. */
+    bool standalone_ui;
+
     bool dirty;
 };
 

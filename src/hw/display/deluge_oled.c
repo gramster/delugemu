@@ -242,6 +242,7 @@ static void deluge_oled_reset(DeviceState *dev)
     if (!s->ui_scale) {
         s->ui_scale = 1;
     }
+    s->standalone_ui = true;
     s->dirty = true;
 }
 
@@ -249,6 +250,10 @@ static void deluge_oled_realize(DeviceState *dev, Error **errp)
 {
     DelugeOledState *s = DELUGE_OLED(dev);
     int scale = MAX(1, (int)s->ui_scale);
+
+    if (!s->standalone_ui) {
+        return;
+    }
 
     s->con = graphic_console_init(dev, 0, &deluge_oled_gfx_ops, s);
     qemu_console_resize(s->con,
@@ -287,6 +292,7 @@ static const VMStateDescription vmstate_deluge_oled = {
 static const Property deluge_oled_props[] = {
     /* UI-only zoom for the standalone OLED console. */
     DEFINE_PROP_UINT8("ui-scale", DelugeOledState, ui_scale, 2),
+    DEFINE_PROP_BOOL("standalone-ui", DelugeOledState, standalone_ui, true),
 };
 
 static void deluge_oled_class_init(ObjectClass *klass, const void *data)

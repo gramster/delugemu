@@ -44,6 +44,9 @@ struct DelugePadGridState {
     /* RGB colour per pad, [column][row]; columns include the sidebar. */
     uint8_t rgb[DELUGE_PADGRID_COLS][DELUGE_PADGRID_ROWS][3];
 
+    /* Whether to create the standalone pad-grid QEMU console. */
+    bool standalone_ui;
+
     bool dirty;
 };
 

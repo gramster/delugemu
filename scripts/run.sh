@@ -125,7 +125,16 @@ fi
 DISPLAY_ARGS=()
 case "${DISPLAY_MODE}" in
     headless) DISPLAY_ARGS=(-nographic) ;;
-    console)  DISPLAY_ARGS=() ;;                 # let QEMU open its default GUI
+    console)
+        case "$(uname -s)" in
+            Darwin)
+                DISPLAY_ARGS=(-display cocoa,zoom-to-fit=off,show-cursor=on)
+                ;;
+            *)
+                DISPLAY_ARGS=()    # let QEMU open its default GUI
+                ;;
+        esac
+        ;;
     none)     DISPLAY_ARGS=(-display none) ;;
     *) die "unknown --display mode '${DISPLAY_MODE}' (headless|console|none)" ;;
 esac

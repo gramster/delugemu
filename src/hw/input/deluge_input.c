@@ -1,12 +1,10 @@
 /*
  * Deluge host-input mapping — keyboard to PIC pad/button events
  *
- * Translates host key events into Deluge pad/button matrix events and injects
- * them through the PIC's input-synthesis API. This makes the firmware usable
- * headlessly: the named control buttons (transport, view selection, shift,
- * etc.) map to dedicated keys, and the eight audition pads of the sidebar map
- * to the number row. The full 16x8 main pad grid is intentionally left to the
- * future graphical skin, where pointer hit-testing is the natural fit.
+ * Translates host key and pointer events into Deluge pad/button matrix events
+ * and injects them through the PIC's input-synthesis API. Named controls map
+ * to dedicated keys, while pointer hit-testing over the composited skin maps
+ * clicks onto the pad matrix.
  *
  * Copyright (c) 2026 delugemu contributors
  *
@@ -18,6 +16,7 @@
 #include "ui/console.h"
 #include "ui/input.h"
 #include "hw/core/sysbus.h"
+#include "hw/display/deluge_skin_layout.h"
 #include "hw/input/deluge_input.h"
 #include "hw/misc/deluge_pic.h"
 
@@ -79,35 +78,126 @@ static const DelugeInputBinding deluge_input_bindings[] = {
     { Q_KEY_CODE_8,         true, 17, 7 },
 };
 
+static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
+{
+    int half = DELUGE_SKIN_PAD_SIZE / 2;
+
+    for (int row = 0; row < DELUGE_PIC_GRID_ROWS; row++) {
+        int cy = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
+
+        for (int col = 0; col < 16; col++) {
+            int cx = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;
+
+            if (abs(px - cx) <= half && abs(py - cy) <= half) {
+                *grid_x = col;
+                *grid_y = row;
+                return true;
+            }
+        }
+
+        for (int side = 0; side < 2; side++) {
+            int col = 16 + side;
+            int cx = DELUGE_SKIN_PAD_SIDE_X0 + side * DELUGE_SKIN_PAD_SIDE_DX;
+
+            if (abs(px - cx) <= half && abs(py - cy) <= half) {
+                *grid_x = col;
+                *grid_y = row;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static void deluge_input_pointer_tap(DelugeInputState *s)
+{
+    int pad_x, pad_y;
+
+    fprintf(stderr, "deluge_input: pointer tap at (%d,%d)\n",
+            s->pointer_x, s->pointer_y);
+
+    if (!deluge_input_hit_test_pad(s->pointer_x, s->pointer_y, &pad_x, &pad_y)) {
+        fprintf(stderr, "deluge_input: tap miss (no pad hit)\n");
+        return;
+    }
+
+    fprintf(stderr, "deluge_input: tap hit pad (%d,%d)\n", pad_x, pad_y);
+
+    /* Send press then immediate release: clean tap regardless of BTN_UP. */
+    deluge_pic_pad_event(s->pic, pad_x, pad_y, true);
+    deluge_pic_pad_event(s->pic, pad_x, pad_y, false);
+}
+
 static void deluge_input_event(DeviceState *dev, QemuConsole *src,
                                InputEvent *evt)
 {
     DelugeInputState *s = DELUGE_INPUT(dev);
-    InputKeyEvent *key = evt->u.key.data;
-    int qcode = qemu_input_key_value_to_qcode(key->key);
 
     if (!s->pic) {
         return;
     }
 
-    for (size_t i = 0; i < ARRAY_SIZE(deluge_input_bindings); i++) {
-        const DelugeInputBinding *b = &deluge_input_bindings[i];
+    switch (evt->type) {
+    case INPUT_EVENT_KIND_KEY: {
+        InputKeyEvent *key = evt->u.key.data;
+        int qcode = qemu_input_key_value_to_qcode(key->key);
 
-        if (b->qcode != qcode) {
-            continue;
+        for (size_t i = 0; i < ARRAY_SIZE(deluge_input_bindings); i++) {
+            const DelugeInputBinding *b = &deluge_input_bindings[i];
+
+            if (b->qcode != qcode) {
+                continue;
+            }
+            if (b->is_pad) {
+                deluge_pic_pad_event(s->pic, b->x, b->y, key->down);
+            } else {
+                deluge_pic_button_event(s->pic, b->x, b->y, key->down);
+            }
+            return;
         }
-        if (b->is_pad) {
-            deluge_pic_pad_event(s->pic, b->x, b->y, key->down);
-        } else {
-            deluge_pic_button_event(s->pic, b->x, b->y, key->down);
+
+        break;
+    }
+    case INPUT_EVENT_KIND_ABS: {
+        InputMoveEvent *move = evt->u.abs.data;
+
+        if (move->axis == INPUT_AXIS_X) {
+            s->pointer_x = qemu_input_scale_axis(move->value,
+                                                 INPUT_EVENT_ABS_MIN,
+                                                 INPUT_EVENT_ABS_MAX,
+                                                 0,
+                                                 DELUGE_SKIN_IMAGE_WIDTH - 1);
+        } else if (move->axis == INPUT_AXIS_Y) {
+            s->pointer_y = qemu_input_scale_axis(move->value,
+                                                 INPUT_EVENT_ABS_MIN,
+                                                 INPUT_EVENT_ABS_MAX,
+                                                 0,
+                                                 DELUGE_SKIN_IMAGE_HEIGHT - 1);
         }
-        return;
+
+        break;
+    }
+    case INPUT_EVENT_KIND_BTN: {
+        InputBtnEvent *btn = evt->u.btn.data;
+
+        if (btn->button != INPUT_BUTTON_LEFT) {
+            break;
+        }
+        if (btn->down) {
+            deluge_input_pointer_tap(s);
+        }
+
+        break;
+    }
+    default:
+        break;
     }
 }
 
 static const QemuInputHandler deluge_input_handler = {
-    .name  = "Deluge keyboard",
-    .mask  = INPUT_EVENT_MASK_KEY,
+    .name  = "Deluge keyboard/pointer",
+    .mask  = INPUT_EVENT_MASK_KEY | INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_ABS,
     .event = deluge_input_event,
 };
 
@@ -122,7 +212,11 @@ static void deluge_input_realize(DeviceState *dev, Error **errp)
 {
     DelugeInputState *s = DELUGE_INPUT(dev);
 
+    s->pointer_x = 0;
+    s->pointer_y = 0;
+
     s->handler = qemu_input_handler_register(dev, &deluge_input_handler);
+    qemu_input_handler_activate(s->handler);
 }
 
 static void deluge_input_unrealize(DeviceState *dev)

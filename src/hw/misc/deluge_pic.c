@@ -137,6 +137,8 @@ static void deluge_pic_heartbeat(void *opaque)
  */
 static void deluge_pic_send_event(DelugePicState *s, uint8_t index, bool pressed)
 {
+    fprintf(stderr, "deluge_pic: send_event index=%u pressed=%d held=%u\n",
+            index, pressed, s->held_count);
     if (!pressed) {
         deluge_pic_respond(s, PIC_RESP_NEXT_PAD_OFF);
     }
@@ -144,8 +146,11 @@ static void deluge_pic_send_event(DelugePicState *s, uint8_t index, bool pressed
 
     if (pressed) {
         s->held_count++;
-    } else if (s->held_count > 0) {
-        s->held_count--;
+    } else {
+        /* Always decrement on release so held_count stays at zero after a tap. */
+        if (s->held_count > 0) {
+            s->held_count--;
+        }
     }
 }
 
@@ -193,12 +198,11 @@ static void deluge_pic_dispatch(DelugePicState *s)
     uint8_t cmd = s->cmd;
 
     if (cmd >= PIC_MSG_SET_COLOUR_BASE && cmd <= PIC_MSG_SET_COLOUR_LAST) {
-        /*
-         * Column-pair RGB block: 2*kDisplayHeight colours filling the two
-         * columns 2*idx and 2*idx+1, eight rows each (column-major).
-         */
         unsigned idx = cmd - PIC_MSG_SET_COLOUR_BASE;
         unsigned col0 = idx * 2;
+
+        fprintf(stderr, "deluge_pic: SET_COLOUR cmd=%u cols=%u,%u\n",
+                cmd, col0, col0 + 1);
 
         for (unsigned i = 0; i < DELUGE_PIC_GRID_ROWS * 2; i++) {
             unsigned col = col0 + (i / DELUGE_PIC_GRID_ROWS);

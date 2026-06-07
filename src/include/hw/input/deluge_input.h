@@ -36,8 +36,12 @@ struct DelugeInputState {
     /* The PIC the synthesised pad/button events are fed into (set by board). */
     struct Chardev *pic;
 
-    /* The registered QEMU keyboard handler. */
+    /* The registered QEMU keyboard/pointer handler. */
     struct QemuInputHandlerState *handler;
+
+    /* Last tracked pointer position, in skin-image pixel coordinates. */
+    int pointer_x;
+    int pointer_y;
 };
 
 /* Bind the PIC whose input stream this device drives (board setup). */

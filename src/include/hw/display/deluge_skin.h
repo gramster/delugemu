@@ -33,11 +33,8 @@ struct DelugeSkinState {
     uint32_t *bg_argb;
     bool bg_loaded;
 
-    /* Optional image path; defaults to Synthstrom_Deluge_Skin.png in cwd. */
+    /* Optional image path; defaults to Deluge_Plain.png in cwd. */
     char *image_path;
-
-    /* Developer test mode: force-highlight first row/column of pad grid. */
-    bool test_grid;
 
     bool dirty;
     QEMUTimer *refresh_timer;

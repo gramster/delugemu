@@ -96,6 +96,7 @@ static void deluge_padgrid_reset(DeviceState *dev)
     DelugePadGridState *s = DELUGE_PADGRID(dev);
 
     memset(s->rgb, 0, sizeof(s->rgb));
+    s->standalone_ui = true;
     s->dirty = true;
 }
 
@@ -103,9 +104,17 @@ static void deluge_padgrid_realize(DeviceState *dev, Error **errp)
 {
     DelugePadGridState *s = DELUGE_PADGRID(dev);
 
+    if (!s->standalone_ui) {
+        return;
+    }
+
     s->con = graphic_console_init(dev, 0, &deluge_padgrid_gfx_ops, s);
     qemu_console_resize(s->con, DELUGE_PADGRID_WIDTH, DELUGE_PADGRID_HEIGHT);
 }
+
+static const Property deluge_padgrid_props[] = {
+    DEFINE_PROP_BOOL("standalone-ui", DelugePadGridState, standalone_ui, true),
+};
 
 static const VMStateDescription vmstate_deluge_padgrid = {
     .name = TYPE_DELUGE_PADGRID,
@@ -125,6 +134,7 @@ static void deluge_padgrid_class_init(ObjectClass *klass, const void *data)
     dc->realize = deluge_padgrid_realize;
     dc->vmsd = &vmstate_deluge_padgrid;
     device_class_set_legacy_reset(dc, deluge_padgrid_reset);
+    device_class_set_props(dc, deluge_padgrid_props);
     dc->desc = "Synthstrom Deluge RGB pad grid";
 }
 

@@ -169,6 +169,8 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
      * OLED panel. The firmware streams its command/pixel bytes through RSPI0's
      * data register, so bind it to RSPI0; the PIC drives its control lines.
      */
+    object_property_set_bool(OBJECT(&s->oled), "standalone-ui", false,
+                             &error_abort);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->oled), errp)) {
         return;
     }
@@ -188,6 +190,8 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
      * RGB pad-grid display. Driven entirely by PIC commands; the PIC forwards
      * its decoded pad state to this renderer.
      */
+    object_property_set_bool(OBJECT(&s->padgrid), "standalone-ui", false,
+                             &error_abort);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->padgrid), errp)) {
         return;
     }
