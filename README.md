@@ -86,6 +86,13 @@ See [docs/architecture.md](docs/architecture.md) for details.
 # note in an instrument clip to get 44.1 kHz stereo. Pass --audio <driver> only
 # to select a non-default backend (e.g. sdl / wav / none).
 ./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
+
+# MIDI: on macOS, pass 'coremidi' to either MIDI flag to expose the Deluge as a
+# real host MIDI in/out device (it appears in your DAW as "DelugEmu DIN" and/or
+# "DelugEmu USB"). --midi is the DIN ports, --usb-midi is the USB-MIDI port. A
+# small helper (scripts/midi_bridge.c, built automatically) bridges the byte
+# stream to CoreMIDI virtual ports.
+./scripts/run.sh path/to/deluge_firmware.elf --usb-midi coremidi --midi coremidi --display console
 ```
 
 ## Controls

@@ -66,6 +66,28 @@ RUN_SECONDS=15 ./tests/usb-midi.sh
 Like `boot.sh`, it **skips cleanly** (exit 0) when no firmware image is present.
 Observed healthy counts: 44 IRQs, 0 aborts, 1 SET_CONFIGURATION.
 
+## `midi-coremidi.sh`
+
+Validates the host CoreMIDI bridge (`scripts/midi_bridge.c`) end to end on
+macOS, **without** QEMU or firmware. The test plays both roles around the
+bridge: it is the UNIX-socket server the bridge connects to (the same
+`-chardev socket,...,server=on,wait=off` contract `run.sh` uses for a `coremidi`
+transport), and it is the "DAW" opening the bridge's virtual CoreMIDI ports via
+`python-rtmidi`. It checks both directions and the platform-agnostic stream
+parser:
+
+1. a CC sent to the virtual **output** port arrives on the socket as raw MIDI,
+2. raw bytes written to the socket — using **running status**, an interleaved
+   **real-time** byte and a **SysEx** — are framed into the correct discrete
+   messages on the virtual **input** port.
+
+```sh
+./tests/midi-coremidi.sh
+```
+
+It **skips cleanly** (exit 0) when not on macOS or when `python-rtmidi` is not
+installed.
+
 ## Adding tests
 
 Keep tests runnable standalone and CI-friendly: exit non-zero on failure, avoid
