@@ -71,3 +71,54 @@ Observed healthy counts: 44 IRQs, 0 aborts, 1 SET_CONFIGURATION.
 Keep tests runnable standalone and CI-friendly: exit non-zero on failure, avoid
 interactive prompts, and don't depend on a real Deluge firmware image unless the
 test explicitly fetches/locates one and skips cleanly when it is absent.
+
+## Driving the panel over QMP
+
+QMP (the **QEMU Machine Protocol**) is QEMU's JSON control channel: a socket on
+which you send commands to and query a running instance. We use it to drive the
+emulated front panel programmatically — injecting mouse/keyboard input and
+capturing the framebuffer — so panel behaviour can be exercised without a human
+at the window.
+
+**Expose the socket.** Pass a `-qmp` chardev through `run.sh` (anything after
+`--` goes straight to QEMU). A Unix socket under `/tmp` is convenient and is
+what the helper scripts expect:
+
+```sh
+./scripts/run.sh firmware2/deluge.elf --sd build/deluge_sd.img \
+    --display console -- -qmp unix:/tmp/dz_qmp.sock,server,nowait
+```
+
+The socket is **single-client** (`nowait`): only one tool may be attached at a
+time, so close one connection before opening the next.
+
+**Talk to it.** Connect to the socket and exchange newline-delimited JSON. After
+the greeting you must send `qmp_capabilities` once to leave negotiation, then
+issue commands:
+
+```sh
+printf '%s\r\n' \
+  '{"execute":"qmp_capabilities"}' \
+  '{"execute":"human-monitor-command","arguments":{"command-line":"screendump /tmp/x.ppm"}}' \
+  | nc -U -w1 /tmp/dz_qmp.sock
+sips -s format png /tmp/x.ppm --out /tmp/x.png    # PPM -> PNG (macOS)
+```
+
+The two commands that matter for panel testing are:
+
+- **`input-send-event`** — inject synthetic input. An `abs` x/y event moves the
+  pointer (axis values are scaled `0..0x7fff` across the 2256×1584 skin), a
+  `btn` `left` down/up pair is a click, `wheel-up`/`wheel-down` turn an encoder,
+  and a `key` event with a `qcode` presses a bound key. To latch multiple
+  controls, send a `key` `alt` down, click several pads/buttons, then `alt` up.
+- **`screendump`** (via `human-monitor-command`, or the QMP `screendump`
+  command) — write the current framebuffer to a PPM you can inspect or diff.
+
+**Helper scripts.** Two ready-made drivers live in `scripts/` and assume the
+socket at `/tmp/dz_qmp.sock`:
+
+```sh
+./scripts/press_key.py <qcode> <name>          # press a key, then screendump
+./scripts/enc_test.py  <x> <y> <label> [up] [dn] # wheel an encoder at (x,y), screendump
+```
+
