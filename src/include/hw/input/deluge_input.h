@@ -60,6 +60,15 @@ struct DelugeInputState {
     struct QEMUTimer *release_timer;
     int64_t press_time_ms;
     bool release_armed;
+
+    /*
+     * Rotary-encoder triangle affordance press-and-hold repeat. enc_repeat_id
+     * is the DelugeEncoder currently being stepped while a triangle is held
+     * (-1 when idle); enc_repeat_dir is its direction (+1 CW / -1 CCW).
+     */
+    struct QEMUTimer *enc_repeat_timer;
+    int enc_repeat_id;
+    int enc_repeat_dir;
 };
 
 /* Bind the PIC whose input stream this device drives (board setup). */

@@ -85,6 +85,46 @@ static const DelugeSkinControl deluge_skin_controls[] = {
 };
 
 /*
+ * Rotary-encoder rotation affordances.
+ *
+ * Each turnable encoder shows two clickable triangles centred inside its
+ * circle - a down-pointing triangle on the left (turn one detent CCW / "down")
+ * and an up-pointing triangle on the right (turn one detent CW / "up"),
+ * modelled on the pair of triangle glyphs already printed on the panel near
+ * (198,469)/(225,469). The renderer (deluge_skin.c) draws them; the input
+ * layer (deluge_input.c) hit-tests them so a click steps the encoder while a
+ * click inside the circle but outside both triangles depresses it.
+ *
+ * Encoders are exactly the controls with no indicator LED (has_led == false).
+ */
+#define DELUGE_ENC_TRI_HALF 13   /* half base width / height of each triangle  */
+#define DELUGE_ENC_TRI_OFFX 22   /* triangle centre offset from encoder centre */
+
+typedef enum {
+    DELUGE_ENC_HIT_NONE = 0, /* not on a triangle: depress the encoder      */
+    DELUGE_ENC_HIT_DOWN,     /* down/CCW triangle (left): step one detent -1 */
+    DELUGE_ENC_HIT_UP,       /* up/CW triangle (right): step one detent +1   */
+} DelugeEncTriHit;
+
+/* Classify a point against an encoder control's two triangle affordances. */
+static inline DelugeEncTriHit deluge_enc_tri_hit(const DelugeSkinControl *c,
+                                                 int px, int py)
+{
+    int dy = py - c->cy;
+
+    if (dy < -DELUGE_ENC_TRI_HALF || dy > DELUGE_ENC_TRI_HALF) {
+        return DELUGE_ENC_HIT_NONE;
+    }
+    if (abs(px - (c->cx - DELUGE_ENC_TRI_OFFX)) <= DELUGE_ENC_TRI_HALF) {
+        return DELUGE_ENC_HIT_DOWN;
+    }
+    if (abs(px - (c->cx + DELUGE_ENC_TRI_OFFX)) <= DELUGE_ENC_TRI_HALF) {
+        return DELUGE_ENC_HIT_UP;
+    }
+    return DELUGE_ENC_HIT_NONE;
+}
+
+/*
  * Gold-knob level LEDs (the two vertical stacks of 4 square LEDs beside the
  * gold modal encoders). Driven by PIC SET_GOLD_KNOB0/1; brightness per LED is
  * gold_knob[which][0..3]. The meter fills from the bottom up, so index 0 is the

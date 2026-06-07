@@ -493,6 +493,74 @@ static void deluge_skin_fill_led_square(uint32_t *dst, int stride,
     }
 }
 
+/*
+ * Fill a small up- or down-pointing triangle, blending toward (rr,gg,bb). The
+ * base width and height are both 2*half; an up triangle has its apex at the top
+ * (base at the bottom), a down triangle has its apex at the bottom.
+ */
+static void deluge_skin_blend_triangle(uint32_t *dst, int stride,
+                                       int cx, int cy, int half, bool up,
+                                       uint8_t rr, uint8_t gg, uint8_t bb,
+                                       uint8_t alpha)
+{
+    int span = 2 * half;
+
+    for (int py = cy - half; py <= cy + half; py++) {
+        int t = py - (cy - half);              /* 0 at top row .. span at bottom */
+        int w = up ? (t * half) / span         /* widens downward (apex on top) */
+                   : ((span - t) * half) / span; /* widens upward (apex on bottom) */
+
+        if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
+            continue;
+        }
+        for (int px = cx - w; px <= cx + w; px++) {
+            uint32_t p;
+            uint8_t pr, pg, pb;
+
+            if (px < 0 || px >= DELUGE_SKIN_IMAGE_WIDTH) {
+                continue;
+            }
+            p = dst[py * stride + px];
+            pr = (p >> 16) & 0xff;
+            pg = (p >> 8) & 0xff;
+            pb = p & 0xff;
+            pr = blend_chan(pr, rr, alpha);
+            pg = blend_chan(pg, gg, alpha);
+            pb = blend_chan(pb, bb, alpha);
+            dst[py * stride + px] = 0xff000000u |
+                                    ((uint32_t)pr << 16) |
+                                    ((uint32_t)pg << 8) | (uint32_t)pb;
+        }
+    }
+}
+
+/*
+ * Draw the rotary-encoder rotation affordances: inside every encoder circle (a
+ * control with no indicator LED) place a down-pointing triangle on the left and
+ * an up-pointing triangle on the right, so the user can click to turn the
+ * encoder either direction. Geometry is shared with the input layer through
+ * deluge_skin_controls.h (DELUGE_ENC_TRI_OFFX / DELUGE_ENC_TRI_HALF).
+ */
+static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
+                                      int stride)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
+        const DelugeSkinControl *c = &deluge_skin_controls[i];
+
+        if (c->has_led) {
+            continue; /* only the six rotary encoders lack an indicator LED */
+        }
+        deluge_skin_blend_triangle(dst, stride,
+                                   c->cx - DELUGE_ENC_TRI_OFFX, c->cy,
+                                   DELUGE_ENC_TRI_HALF, false,
+                                   40, 40, 40, 190);
+        deluge_skin_blend_triangle(dst, stride,
+                                   c->cx + DELUGE_ENC_TRI_OFFX, c->cy,
+                                   DELUGE_ENC_TRI_HALF, true,
+                                   40, 40, 40, 190);
+    }
+}
+
 static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
 {
     /*
@@ -579,6 +647,7 @@ static void deluge_skin_render(DelugeSkinState *s)
     deluge_skin_draw_oled(s, dst, stride);
     deluge_skin_draw_pads(s, dst, stride);
     deluge_skin_draw_leds(s, dst, stride);
+    deluge_skin_draw_encoders(s, dst, stride);
 
     dpy_gfx_update(s->con, 0, 0,
                    DELUGE_SKIN_IMAGE_WIDTH,

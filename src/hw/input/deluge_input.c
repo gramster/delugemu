@@ -209,6 +209,54 @@ static void deluge_input_wheel(DelugeInputState *s, int dir)
     rza1l_gpio_encoder_step(s->gpio, enc, dir);
 }
 
+/*
+ * Press-and-hold repeat rate for the encoder triangle affordances: the first
+ * extra step fires DELAY ms after the initial click, then every INTERVAL ms
+ * while the triangle stays held.
+ */
+#define DELUGE_ENC_REPEAT_DELAY_MS    350
+#define DELUGE_ENC_REPEAT_INTERVAL_MS 90
+
+static void deluge_input_encoder_repeat_cb(void *opaque)
+{
+    DelugeInputState *s = opaque;
+
+    if (s->enc_repeat_id < 0 || !s->gpio) {
+        return;
+    }
+    rza1l_gpio_encoder_step(s->gpio, s->enc_repeat_id, s->enc_repeat_dir);
+    timer_mod(s->enc_repeat_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                  DELUGE_ENC_REPEAT_INTERVAL_MS);
+}
+
+/* Step an encoder once for a triangle click and arm the hold-repeat timer. */
+static void deluge_input_encoder_begin_repeat(DelugeInputState *s, int enc,
+                                              int dir)
+{
+    if (!s->gpio) {
+        return;
+    }
+    fprintf(stderr, "deluge_input: encoder %d triangle -> step %+d (hold-repeat)\n",
+            enc, dir);
+    rza1l_gpio_encoder_step(s->gpio, enc, dir);
+    s->enc_repeat_id = enc;
+    s->enc_repeat_dir = dir;
+    timer_mod(s->enc_repeat_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                  DELUGE_ENC_REPEAT_DELAY_MS);
+}
+
+/* Stop any in-progress encoder hold-repeat (mouse released or new press). */
+static void deluge_input_encoder_stop_repeat(DelugeInputState *s)
+{
+    if (s->enc_repeat_id >= 0) {
+        timer_del(s->enc_repeat_timer);
+        s->enc_repeat_id = -1;
+        s->enc_repeat_dir = 0;
+    }
+}
+
 static void deluge_input_pointer_press(DelugeInputState *s)
 {
     const DelugeSkinControl *ctrl;
@@ -225,6 +273,25 @@ static void deluge_input_pointer_press(DelugeInputState *s)
     /* Buttons/encoders sit above the pad grid; test them first. */
     ctrl = deluge_input_hit_test_control(s->pointer_x, s->pointer_y);
     if (ctrl) {
+        int enc = deluge_input_encoder_for_control(ctrl);
+
+        if (enc >= 0) {
+            DelugeEncTriHit hit = deluge_enc_tri_hit(ctrl, s->pointer_x,
+                                                     s->pointer_y);
+
+            /*
+             * A click on either triangle turns the encoder rather than
+             * depressing it; a click inside the circle but outside both
+             * triangles falls through to the normal button (depress) path.
+             */
+            if (hit != DELUGE_ENC_HIT_NONE) {
+                int dir = (hit == DELUGE_ENC_HIT_UP) ? +1 : -1;
+
+                deluge_input_encoder_begin_repeat(s, enc, dir);
+                return;
+            }
+        }
+
         fprintf(stderr, "deluge_input: press hit %s button (%d,%d)\n",
                 ctrl->name, ctrl->col, ctrl->row);
         deluge_pic_button_event(s->pic, ctrl->col, ctrl->row, true);
@@ -378,9 +445,11 @@ static void deluge_input_event(DeviceState *dev, QemuConsole *src,
         }
         if (btn->down) {
             /* Guard against missing BTN_UP by releasing previous held pad. */
+            deluge_input_encoder_stop_repeat(s);
             deluge_input_pointer_release_now(s);
             deluge_input_pointer_press(s);
         } else {
+            deluge_input_encoder_stop_repeat(s);
             deluge_input_pointer_release(s);
         }
 
@@ -425,6 +494,11 @@ static void deluge_input_realize(DeviceState *dev, Error **errp)
     s->release_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                     deluge_input_pointer_release_cb, s);
 
+    s->enc_repeat_id = -1;
+    s->enc_repeat_dir = 0;
+    s->enc_repeat_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                       deluge_input_encoder_repeat_cb, s);
+
     s->handler = qemu_input_handler_register(dev, &deluge_input_handler);
     qemu_input_handler_activate(s->handler);
 }
@@ -442,6 +516,12 @@ static void deluge_input_unrealize(DeviceState *dev)
         timer_del(s->release_timer);
         timer_free(s->release_timer);
         s->release_timer = NULL;
+    }
+
+    if (s->enc_repeat_timer) {
+        timer_del(s->enc_repeat_timer);
+        timer_free(s->enc_repeat_timer);
+        s->enc_repeat_timer = NULL;
     }
 }
 
