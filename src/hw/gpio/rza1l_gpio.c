@@ -28,6 +28,8 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/gpio/rza1l_gpio.h"
 
@@ -37,6 +39,31 @@
 /* Port output data registers: P1 at 0x000, same stride. */
 #define GPIO_P_BASE   0x000
 
+/*
+ * One rotary encoder's wiring, mirroring the firmware's kEncoderIrqMap
+ * (hid/encoders.cpp). All pins are on port 1. The A-side pin is routed to the
+ * external IRQn (both edges); the companion B-side pin is read as GPIO inside
+ * the ISR to determine direction. invert flips the direction sense.
+ */
+typedef struct RzA1lEncoderMap {
+    uint8_t irq_pin;
+    uint8_t comp_pin;
+    uint8_t irq_num;
+    bool invert;
+} RzA1lEncoderMap;
+
+static const RzA1lEncoderMap rza1l_encoder_map[DELUGE_ENC_COUNT] = {
+    [DELUGE_ENC_SCROLL_Y] = { .irq_pin = 8,  .comp_pin = 10, .irq_num = 0, .invert = false },
+    [DELUGE_ENC_SCROLL_X] = { .irq_pin = 11, .comp_pin = 12, .irq_num = 3, .invert = false },
+    [DELUGE_ENC_TEMPO]    = { .irq_pin = 6,  .comp_pin = 7,  .irq_num = 2, .invert = true  },
+    [DELUGE_ENC_SELECT]   = { .irq_pin = 3,  .comp_pin = 2,  .irq_num = 7, .invert = true  },
+    [DELUGE_ENC_MOD_1]    = { .irq_pin = 5,  .comp_pin = 4,  .irq_num = 1, .invert = false },
+    [DELUGE_ENC_MOD_0]    = { .irq_pin = 0,  .comp_pin = 15, .irq_num = 4, .invert = false },
+};
+
+/* Spacing between successive quadrature edges (virtual time). */
+#define RZA1L_GPIO_EDGE_SPACING_NS 50000 /* 50us: ISR runs between edges */
+
 static uint64_t rza1l_gpio_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lGpioState *s = opaque;
@@ -45,6 +72,7 @@ static uint64_t rza1l_gpio_read(void *opaque, hwaddr offset, unsigned size)
     for (unsigned i = 0; i < size; i++) {
         hwaddr boff = offset + i;
         hwaddr src = boff;
+        uint8_t byte;
 
         /*
          * Reading a port pin register reflects the output latch of the same
@@ -54,9 +82,25 @@ static uint64_t rza1l_gpio_read(void *opaque, hwaddr offset, unsigned size)
             src = GPIO_P_BASE + (boff - GPIO_PPR_BASE);
         }
 
-        if (src < RZA1L_GPIO_MMIO_SIZE) {
-            val |= (uint64_t)s->regs[src] << (8 * i);
+        byte = (src < RZA1L_GPIO_MMIO_SIZE) ? s->regs[src] : 0;
+
+        /*
+         * For port pin registers, overlay any host-injected input bits (rotary
+         * encoders) on top of the latch loopback.
+         */
+        if (boff >= GPIO_PPR_BASE && boff < GPIO_PPR_END) {
+            hwaddr rel = boff - GPIO_PPR_BASE;
+            unsigned port = rel / 4 + 1;
+            unsigned byte_in_word = rel % 4;
+
+            if (port < RZA1L_GPIO_NUM_PORTS && byte_in_word < 2) {
+                uint8_t mask = (s->in_mask[port] >> (8 * byte_in_word)) & 0xff;
+                uint8_t drive = (s->in_drive[port] >> (8 * byte_in_word)) & 0xff;
+                byte = (byte & ~mask) | (drive & mask);
+            }
         }
+
+        val |= (uint64_t)byte << (8 * i);
     }
 
     return val;
@@ -80,9 +124,195 @@ static void rza1l_gpio_write(void *opaque, hwaddr offset, uint64_t value,
     }
 }
 
+/* Drive a host-controlled input pin level on a given port (1-based). */
+static void rza1l_gpio_set_input_pin(RzA1lGpioState *s, unsigned port,
+                                     unsigned pin, bool level)
+{
+    if (port >= RZA1L_GPIO_NUM_PORTS || pin >= 16) {
+        return;
+    }
+    s->in_mask[port] |= (uint16_t)(1u << pin);
+    if (level) {
+        s->in_drive[port] |= (uint16_t)(1u << pin);
+    } else {
+        s->in_drive[port] &= (uint16_t)~(1u << pin);
+    }
+}
+
+/*
+ * Apply one quadrature edge for an encoder: toggle its A-side pin, set the
+ * companion pin so the firmware's ISR decodes the requested direction, then
+ * latch the external IRQn. The ISR computes
+ *   cw = invert ? (a != b) : (a == b);  inc = cw ? +1 : -1
+ * so we choose b to make inc == dir.
+ *
+ * The firmware configures the IRQ0..IRQ7 SPIs as LEVEL-triggered in the GIC
+ * (ICDICFR2 = 0x...5555). A momentary pulse would be lost, so we model the
+ * real INTC pin latch: set the matching IRQRR bit and hold the GIC line high.
+ * The firmware's ISR clears the bit via clearIRQInterrupt() (a write to
+ * IRQRR), which deasserts the line — see rza1l_intc_write().
+ */
+static void rza1l_gpio_apply_edge(RzA1lGpioState *s, unsigned enc, int dir)
+{
+    const RzA1lEncoderMap *m;
+    bool cur_a;
+    bool new_a;
+    bool b;
+
+    if (enc >= DELUGE_ENC_COUNT) {
+        return;
+    }
+    m = &rza1l_encoder_map[enc];
+
+    cur_a = (s->enc_a_level >> enc) & 1;
+    new_a = !cur_a;
+
+    if (!m->invert) {
+        b = (dir > 0) ? new_a : !new_a;
+    } else {
+        b = (dir > 0) ? !new_a : new_a;
+    }
+
+    rza1l_gpio_set_input_pin(s, 1, m->irq_pin, new_a);
+    rza1l_gpio_set_input_pin(s, 1, m->comp_pin, b);
+
+    if (new_a) {
+        s->enc_a_level |= (uint16_t)(1u << enc);
+    } else {
+        s->enc_a_level &= (uint16_t)~(1u << enc);
+    }
+
+    /* Latch the external IRQn pending bit and assert the level-held line. */
+    if (m->irq_num < RZA1L_GPIO_NUM_IRQ) {
+        s->irqrr |= (uint16_t)(1u << m->irq_num);
+        qemu_set_irq(s->irq[m->irq_num], 1);
+    }
+}
+
+static void rza1l_gpio_edge_cb(void *opaque)
+{
+    RzA1lGpioState *s = opaque;
+
+    if (s->edge_head == s->edge_tail) {
+        return; /* queue empty */
+    }
+
+    rza1l_gpio_apply_edge(s, s->edge_q[s->edge_head].enc,
+                          s->edge_q[s->edge_head].dir);
+    s->edge_head = (s->edge_head + 1) % RZA1L_GPIO_EDGE_QUEUE;
+
+    /* If more edges remain, schedule the next one after the ISR has run. */
+    if (s->edge_head != s->edge_tail) {
+        timer_mod(s->edge_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      RZA1L_GPIO_EDGE_SPACING_NS);
+    }
+}
+
+static void rza1l_gpio_enqueue_edge(RzA1lGpioState *s, unsigned enc, int dir)
+{
+    int next = (s->edge_tail + 1) % RZA1L_GPIO_EDGE_QUEUE;
+
+    if (next == s->edge_head) {
+        /* Queue full: drop the edge rather than overrun. */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "rza1l-gpio: encoder edge queue full, dropping step\n");
+        return;
+    }
+
+    s->edge_q[s->edge_tail].enc = enc;
+    s->edge_q[s->edge_tail].dir = dir;
+    s->edge_tail = next;
+
+    if (!timer_pending(s->edge_timer)) {
+        timer_mod(s->edge_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      RZA1L_GPIO_EDGE_SPACING_NS);
+    }
+}
+
+void rza1l_gpio_encoder_step(DeviceState *dev, int enc, int dir)
+{
+    RzA1lGpioState *s = RZA1L_GPIO(dev);
+
+    if (enc < 0 || enc >= DELUGE_ENC_COUNT || dir == 0) {
+        return;
+    }
+
+    dir = (dir > 0) ? 1 : -1;
+
+    /* One detent = one full quadrature cycle = two A-pin edges. */
+    rza1l_gpio_enqueue_edge(s, (unsigned)enc, dir);
+    rza1l_gpio_enqueue_edge(s, (unsigned)enc, dir);
+}
+
 static const MemoryRegionOps rza1l_gpio_ops = {
     .read = rza1l_gpio_read,
     .write = rza1l_gpio_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
+/*
+ * INTC external-IRQ pin registers, based at 0xFCFEF800:
+ *   0x00 ICR0   IRQ sense/NMI control (shadowed; unused by us)
+ *   0x02 ICR1   per-IRQn edge mode (shadowed; firmware sets both-edge)
+ *   0x04 IRQRR  IRQ request register: bit n latches IRQn pending
+ *
+ * The firmware's clearIRQInterrupt(n) reads IRQRR, and if bit n is set,
+ * writes it back with bit n cleared. We follow the hardware: clearing a
+ * pending bit deasserts the corresponding (level-held) GIC line.
+ */
+static uint64_t rza1l_intc_read(void *opaque, hwaddr offset, unsigned size)
+{
+    RzA1lGpioState *s = opaque;
+
+    switch (offset) {
+    case 0x00:
+        return s->icr0;
+    case 0x02:
+        return s->icr1;
+    case 0x04:
+        return s->irqrr;
+    default:
+        return 0;
+    }
+}
+
+static void rza1l_intc_write(void *opaque, hwaddr offset, uint64_t value,
+                             unsigned size)
+{
+    RzA1lGpioState *s = opaque;
+
+    switch (offset) {
+    case 0x00:
+        s->icr0 = (uint16_t)value;
+        break;
+    case 0x02:
+        s->icr1 = (uint16_t)value;
+        break;
+    case 0x04: {
+        uint16_t newv = (uint16_t)value;
+        uint16_t cleared = s->irqrr & ~newv; /* bits going 1 -> 0 */
+
+        s->irqrr = newv;
+        /* Deassert the level-held line for each acknowledged IRQn. */
+        for (int n = 0; n < RZA1L_GPIO_NUM_IRQ; n++) {
+            if (cleared & (1u << n)) {
+                qemu_set_irq(s->irq[n], 0);
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static const MemoryRegionOps rza1l_intc_ops = {
+    .read = rza1l_intc_read,
+    .write = rza1l_intc_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 4,
@@ -93,6 +323,22 @@ static void rza1l_gpio_reset(DeviceState *dev)
     RzA1lGpioState *s = RZA1L_GPIO(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
+    memset(s->in_drive, 0, sizeof(s->in_drive));
+    memset(s->in_mask, 0, sizeof(s->in_mask));
+    s->enc_a_level = 0;
+    s->icr0 = 0;
+    s->icr1 = 0;
+    s->irqrr = 0;
+    s->edge_head = 0;
+    s->edge_tail = 0;
+    if (s->edge_timer) {
+        timer_del(s->edge_timer);
+    }
+    for (int i = 0; i < RZA1L_GPIO_NUM_IRQ; i++) {
+        if (s->irq[i]) {
+            qemu_set_irq(s->irq[i], 0);
+        }
+    }
 }
 
 static void rza1l_gpio_realize(DeviceState *dev, Error **errp)
@@ -103,14 +349,42 @@ static void rza1l_gpio_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->iomem, OBJECT(dev), &rza1l_gpio_ops, s,
                           TYPE_RZA1L_GPIO, RZA1L_GPIO_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+
+    /* Second MMIO window: the INTC external-IRQ pin registers (ICR0/1, IRQRR). */
+    memory_region_init_io(&s->intc_iomem, OBJECT(dev), &rza1l_intc_ops, s,
+                          TYPE_RZA1L_GPIO ".intc", RZA1L_INTC_IRQ_SIZE);
+    sysbus_init_mmio(sbd, &s->intc_iomem);
+
+    for (int i = 0; i < RZA1L_GPIO_NUM_IRQ; i++) {
+        sysbus_init_irq(sbd, &s->irq[i]);
+    }
+
+    s->edge_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rza1l_gpio_edge_cb, s);
+}
+
+static void rza1l_gpio_unrealize(DeviceState *dev)
+{
+    RzA1lGpioState *s = RZA1L_GPIO(dev);
+
+    if (s->edge_timer) {
+        timer_del(s->edge_timer);
+        timer_free(s->edge_timer);
+        s->edge_timer = NULL;
+    }
 }
 
 static const VMStateDescription vmstate_rza1l_gpio = {
     .name = TYPE_RZA1L_GPIO,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(regs, RzA1lGpioState, RZA1L_GPIO_MMIO_SIZE),
+        VMSTATE_UINT16_ARRAY(in_drive, RzA1lGpioState, RZA1L_GPIO_NUM_PORTS),
+        VMSTATE_UINT16_ARRAY(in_mask, RzA1lGpioState, RZA1L_GPIO_NUM_PORTS),
+        VMSTATE_UINT16(enc_a_level, RzA1lGpioState),
+        VMSTATE_UINT16(icr0, RzA1lGpioState),
+        VMSTATE_UINT16(icr1, RzA1lGpioState),
+        VMSTATE_UINT16(irqrr, RzA1lGpioState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -120,6 +394,7 @@ static void rza1l_gpio_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = rza1l_gpio_realize;
+    dc->unrealize = rza1l_gpio_unrealize;
     dc->vmsd = &vmstate_rza1l_gpio;
     device_class_set_legacy_reset(dc, rza1l_gpio_reset);
 }

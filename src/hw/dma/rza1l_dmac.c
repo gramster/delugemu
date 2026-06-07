@@ -101,6 +101,8 @@
 #define CHCFG_SAD       0x00100000  /* set: source address fixed */
 #define CHCFG_DAD       0x00200000  /* set: destination address fixed */
 #define CHCFG_DEM       0x01000000  /* set: transfer-end interrupt masked */
+#define CHCFG_RSW       0x20000000  /* register-set switch (Next0 -> Next1) */
+#define CHCFG_REN       0x40000000  /* renewal enable (dual-register chaining) */
 
 /*
  * Bootloader-configured OLED DMA channel and its CHCFG value. The Deluge
@@ -171,13 +173,10 @@ static uint32_t rza1l_dmac_dstat(RzA1lDmacState *s, int group, uint32_t bit)
     return val;
 }
 
-/* Copy N0TB bytes from N0SA to N0DA, honouring address direction and unit. */
-static void rza1l_dmac_do_transfer(RzA1lDmacState *s, int ch)
+/* Copy `remaining` bytes from `sa` to `da`, honouring address direction/unit. */
+static void rza1l_dmac_copy(RzA1lDmacChannel *c, uint64_t sa, uint64_t da,
+                            uint32_t remaining)
 {
-    RzA1lDmacChannel *c = &s->ch[ch];
-    uint64_t sa = c->n0sa;
-    uint64_t da = c->n0da;
-    uint32_t remaining = c->n0tb;
     bool sad_fixed = c->chcfg & CHCFG_SAD;
     bool dad_fixed = c->chcfg & CHCFG_DAD;
     unsigned sds = 1u << ((c->chcfg & CHCFG_SDS_MASK) >> CHCFG_SDS_SHIFT);
@@ -209,6 +208,24 @@ static void rza1l_dmac_do_transfer(RzA1lDmacState *s, int ch)
     c->crsa = sa;
     c->crda = da;
     c->crtb = 0;
+}
+
+/*
+ * Run the channel's Next0 transfer. When the firmware has armed dual-register
+ * chaining (CHCFG.REN|RSW set, used by the UART TX path when the data to send
+ * wraps the circular buffer), also run the Next1 transfer so both halves of the
+ * wrapped buffer are emitted in one SETEN, matching the hardware which switches
+ * to the Next1 register set automatically after the Next0 transaction.
+ */
+static void rza1l_dmac_do_transfer(RzA1lDmacState *s, int ch)
+{
+    RzA1lDmacChannel *c = &s->ch[ch];
+
+    rza1l_dmac_copy(c, c->n0sa, c->n0da, c->n0tb);
+
+    if ((c->chcfg & CHCFG_REN) && (c->chcfg & CHCFG_RSW)) {
+        rza1l_dmac_copy(c, c->n1sa, c->n1da, c->n1tb);
+    }
 }
 
 static void rza1l_dmac_chctrl_write(RzA1lDmacState *s, int ch, uint32_t val)
@@ -244,9 +261,16 @@ static void rza1l_dmac_chctrl_write(RzA1lDmacState *s, int ch, uint32_t val)
          * so a pulse latches a pending interrupt in the GIC. The firmware
          * relies on this end-of-transfer interrupt to advance its UART TX
          * queues; without it txSending never clears and later sends stall.
-         * Skip it when the channel masks the end interrupt (CHCFG.DEM set).
+         *
+         * CHCFG.DEM masks the end interrupt, but the firmware only ever sets
+         * it together with REN|RSW for a dual-register (wrapped) UART TX: there
+         * DEM suppresses just the intermediate Next0 completion while the final
+         * Next1 transfer still raises the interrupt. Since rza1l_dmac_do_transfer
+         * runs both halves here, fire the interrupt for a chained transfer
+         * regardless of DEM, and honour DEM only for a plain single transfer.
          */
-        if (!(c->chcfg & CHCFG_DEM)) {
+        if (((c->chcfg & CHCFG_REN) && (c->chcfg & CHCFG_RSW)) ||
+            !(c->chcfg & CHCFG_DEM)) {
             qemu_irq_pulse(s->irq[ch]);
         }
 

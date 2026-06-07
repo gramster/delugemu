@@ -21,6 +21,7 @@
 #include "hw/input/deluge_input.h"
 #include "hw/display/deluge_skin_controls.h"
 #include "hw/misc/deluge_pic.h"
+#include "hw/gpio/rza1l_gpio.h"
 
 #define DELUGE_INPUT_MIN_PRESS_MS 120
 
@@ -134,6 +135,57 @@ static const DelugeSkinControl *deluge_input_hit_test_control(int px, int py)
     }
 
     return NULL;
+}
+
+/*
+ * Map a rotary-encoder skin control to its DelugeEncoder id, or -1 if the
+ * control is not a turnable encoder. The push-click controls share their names
+ * with the encoders they sit under.
+ */
+static int deluge_input_encoder_for_control(const DelugeSkinControl *c)
+{
+    static const struct {
+        const char *name;
+        int enc;
+    } map[] = {
+        { "Y_ENC",         DELUGE_ENC_SCROLL_Y },
+        { "X_ENC",         DELUGE_ENC_SCROLL_X },
+        { "TEMPO_ENC",     DELUGE_ENC_TEMPO },
+        { "SELECT_ENC",    DELUGE_ENC_SELECT },
+        { "MOD_ENCODER_1", DELUGE_ENC_MOD_1 },
+        { "MOD_ENCODER_0", DELUGE_ENC_MOD_0 },
+    };
+
+    if (!c) {
+        return -1;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(map); i++) {
+        if (strcmp(c->name, map[i].name) == 0) {
+            return map[i].enc;
+        }
+    }
+    return -1;
+}
+
+/* Route a host scroll-wheel notch over an encoder to a quadrature step. */
+static void deluge_input_wheel(DelugeInputState *s, int dir)
+{
+    const DelugeSkinControl *ctrl;
+    int enc;
+
+    if (!s->gpio) {
+        return;
+    }
+
+    ctrl = deluge_input_hit_test_control(s->pointer_x, s->pointer_y);
+    enc = deluge_input_encoder_for_control(ctrl);
+    if (enc < 0) {
+        return;
+    }
+
+    fprintf(stderr, "deluge_input: wheel %s encoder %s -> step %+d\n",
+            ctrl->name, dir > 0 ? "up" : "down", dir);
+    rza1l_gpio_encoder_step(s->gpio, enc, dir);
 }
 
 static void deluge_input_pointer_press(DelugeInputState *s)
@@ -288,6 +340,18 @@ static void deluge_input_event(DeviceState *dev, QemuConsole *src,
     case INPUT_EVENT_KIND_BTN: {
         InputBtnEvent *btn = evt->u.btn.data;
 
+        if (btn->button == INPUT_BUTTON_WHEEL_UP) {
+            if (btn->down) {
+                deluge_input_wheel(s, +1);
+            }
+            break;
+        }
+        if (btn->button == INPUT_BUTTON_WHEEL_DOWN) {
+            if (btn->down) {
+                deluge_input_wheel(s, -1);
+            }
+            break;
+        }
         if (btn->button != INPUT_BUTTON_LEFT) {
             break;
         }
@@ -317,6 +381,13 @@ void deluge_input_set_pic(DeviceState *dev, struct Chardev *pic)
     DelugeInputState *s = DELUGE_INPUT(dev);
 
     s->pic = pic;
+}
+
+void deluge_input_set_gpio(DeviceState *dev, DeviceState *gpio)
+{
+    DelugeInputState *s = DELUGE_INPUT(dev);
+
+    s->gpio = gpio;
 }
 
 static void deluge_input_realize(DeviceState *dev, Error **errp)

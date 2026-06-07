@@ -327,6 +327,15 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                                         sysbus_mmio_get_region(
                                             SYS_BUS_DEVICE(&s->gpio), 0),
                                         1);
+    /*
+     * Second GPIO MMIO window: the INTC external-IRQ pin registers
+     * (ICR0/ICR1/IRQRR) at 0xFCFEF800. Modelled by the GPIO device so the
+     * encoder ISR can acknowledge (deassert) its level-held IRQn line.
+     */
+    memory_region_add_subregion_overlap(system_memory, RZA1L_INTC_IRQ_BASE,
+                                        sysbus_mmio_get_region(
+                                            SYS_BUS_DEVICE(&s->gpio), 1),
+                                        1);
 
     /*
      * INTC interrupt controller, modelled with QEMU's ARM GIC. The RZ/A1 INTC
@@ -352,6 +361,18 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
                        qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_IRQ));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->gic), 1,
                        qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_FIQ));
+
+    /*
+     * External interrupt lines IRQ0..IRQ7 (INTC IDs 32..39 = GIC SPI 0..7).
+     * The rotary encoders route their A-side pin to one of these; the GPIO
+     * model asserts the matching (level-held) line on a host-driven quadrature
+     * step so the firmware's encoder ISR fires, and deasserts it when the ISR
+     * acknowledges via IRQRR. INTC_ID_IRQ0 == 32, so SPI index == IRQn.
+     */
+    for (int i = 0; i < RZA1L_GPIO_NUM_IRQ; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->gpio), i,
+                           qdev_get_gpio_in(DEVICE(&s->gic), i));
+    }
 
     /*
      * DMAC transfer-end interrupts (DMAINT0..DMAINT15). The firmware drains
@@ -428,6 +449,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     deluge_pic_set_oled(s->pic, &s->oled);
     deluge_pic_set_padgrid(s->pic, &s->padgrid);
     deluge_input_set_pic(DEVICE(&s->input), s->pic);
+    deluge_input_set_gpio(DEVICE(&s->input), DEVICE(&s->gpio));
     deluge_skin_set_pic(DEVICE(&s->skin), s->pic);
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {

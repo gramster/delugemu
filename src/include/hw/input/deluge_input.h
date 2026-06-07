@@ -37,6 +37,9 @@ struct DelugeInputState {
     /* The PIC the synthesised pad/button events are fed into (set by board). */
     struct Chardev *pic;
 
+    /* The GPIO model driven for rotary-encoder quadrature steps (board setup). */
+    DeviceState *gpio;
+
     /* The registered QEMU keyboard/pointer handler. */
     struct QemuInputHandlerState *handler;
 
@@ -61,5 +64,8 @@ struct DelugeInputState {
 
 /* Bind the PIC whose input stream this device drives (board setup). */
 void deluge_input_set_pic(DeviceState *dev, struct Chardev *pic);
+
+/* Bind the GPIO model that rotary-encoder turns are injected into. */
+void deluge_input_set_gpio(DeviceState *dev, DeviceState *gpio);
 
 #endif /* HW_INPUT_DELUGE_INPUT_H */
