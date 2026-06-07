@@ -439,6 +439,21 @@ static void deluge_skin_fill_led_square(uint32_t *dst, int stride,
 
 static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
 {
+    /*
+     * USB power LED (the open circle on the connector silkscreen, between the
+     * "USB" label and the "9-12V" DC-jack diagram, centred at ~(250, 40)).
+     *
+     * This is a hardware power indicator wired to the input power rail, not a
+     * firmware-controlled lamp: there is no PIC LED command, GPIO output, or
+     * register that drives it (the firmware's controllable LEDs are the 9x4
+     * button-matrix indicators, the RGB pads, the two gold-knob indicator
+     * stacks, and the GPIO P6_7 SYNCED LED). On real hardware it is lit
+     * whenever the unit has power, so the emulator shows it steadily on while
+     * the machine is running. No state tracking is required.
+     */
+    deluge_skin_blend_disc(dst, stride, 250, 40, 8,
+                           DELUGE_LED_GREEN, 210);
+
     if (!s->pic) {
         return;
     }
