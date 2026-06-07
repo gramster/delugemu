@@ -452,6 +452,32 @@ void deluge_pic_set_padgrid(Chardev *chr, struct DelugePadGridState *padgrid)
     s->padgrid = padgrid;
 }
 
+bool deluge_pic_get_led(Chardev *chr, int col, int row)
+{
+    DelugePicState *s = DELUGE_PIC(chr);
+    int index = col + 9 * row;
+
+    if (col < 0 || col >= DELUGE_PIC_BTN_COLS ||
+        row < 0 || row >= DELUGE_PIC_BTN_ROWS ||
+        index < 0 || index >= DELUGE_PIC_NUM_LEDS) {
+        return false;
+    }
+
+    return s->led_on[index];
+}
+
+uint8_t deluge_pic_get_gold_knob(Chardev *chr, int which, int led)
+{
+    DelugePicState *s = DELUGE_PIC(chr);
+
+    if (which < 0 || which >= DELUGE_PIC_GOLD_KNOBS ||
+        led < 0 || led >= DELUGE_PIC_GOLD_LEDS) {
+        return 0;
+    }
+
+    return s->gold_knob[which][led];
+}
+
 static void deluge_pic_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);

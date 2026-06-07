@@ -152,4 +152,14 @@ void deluge_pic_pad_event(Chardev *chr, int x, int y, bool pressed);
  */
 void deluge_pic_button_event(Chardev *chr, int x, int y, bool pressed);
 
+/*
+ * Read decoded display state for the front-panel renderer.
+ *   deluge_pic_get_led        — indicator LED at button (col, row); false if
+ *                               out of range.
+ *   deluge_pic_get_gold_knob  — brightness (0..255) of gold-knob indicator LED
+ *                               (which 0..1, led 0..3); 0 if out of range.
+ */
+bool deluge_pic_get_led(Chardev *chr, int col, int row);
+uint8_t deluge_pic_get_gold_knob(Chardev *chr, int which, int led);
+
 #endif /* HW_MISC_DELUGE_PIC_H */

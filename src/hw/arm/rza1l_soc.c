@@ -428,6 +428,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     deluge_pic_set_oled(s->pic, &s->oled);
     deluge_pic_set_padgrid(s->pic, &s->padgrid);
     deluge_input_set_pic(DEVICE(&s->input), s->pic);
+    deluge_skin_set_pic(DEVICE(&s->skin), s->pic);
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
         return;

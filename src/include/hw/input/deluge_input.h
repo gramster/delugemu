@@ -44,9 +44,14 @@ struct DelugeInputState {
     int pointer_x;
     int pointer_y;
 
-    /* Currently held pad from pointer press, or (-1,-1) if none. */
-    int held_pad_x;
-    int held_pad_y;
+    /*
+     * Currently held control from a pointer press. held_x < 0 means nothing is
+     * held; held_is_button selects the button matrix vs. the pad grid for the
+     * matching release.
+     */
+    int held_x;
+    int held_y;
+    bool held_is_button;
 
     /* Pointer press timing and deferred-release state. */
     struct QEMUTimer *release_timer;

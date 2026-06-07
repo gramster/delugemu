@@ -29,6 +29,9 @@ struct DelugeSkinState {
     struct DelugeOledState *oled;
     struct DelugePadGridState *padgrid;
 
+    /* PIC backend, read for indicator-LED and gold-knob state (may be NULL). */
+    struct Chardev *pic;
+
     /* RGBA skin background, converted to 32-bit ARGB pixels. */
     uint32_t *bg_argb;
     bool bg_loaded;
@@ -43,5 +46,6 @@ struct DelugeSkinState {
 void deluge_skin_set_oled(DeviceState *dev, struct DelugeOledState *oled);
 void deluge_skin_set_padgrid(DeviceState *dev,
                              struct DelugePadGridState *padgrid);
+void deluge_skin_set_pic(DeviceState *dev, struct Chardev *pic);
 
 #endif /* HW_DISPLAY_DELUGE_SKIN_H */

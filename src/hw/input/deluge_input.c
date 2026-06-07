@@ -19,6 +19,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/display/deluge_skin_layout.h"
 #include "hw/input/deluge_input.h"
+#include "hw/display/deluge_skin_controls.h"
 #include "hw/misc/deluge_pic.h"
 
 #define DELUGE_INPUT_MIN_PRESS_MS 120
@@ -119,8 +120,25 @@ static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
     return false;
 }
 
+/* Hit-test the circular buttons and rotary-encoder push-clicks. */
+static const DelugeSkinControl *deluge_input_hit_test_control(int px, int py)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
+        const DelugeSkinControl *c = &deluge_skin_controls[i];
+        int dx = px - c->cx;
+        int dy = py - c->cy;
+
+        if (dx * dx + dy * dy <= c->radius * c->radius) {
+            return c;
+        }
+    }
+
+    return NULL;
+}
+
 static void deluge_input_pointer_press(DelugeInputState *s)
 {
+    const DelugeSkinControl *ctrl;
     int pad_x, pad_y;
 
     if (s->release_armed) {
@@ -131,18 +149,32 @@ static void deluge_input_pointer_press(DelugeInputState *s)
     fprintf(stderr, "deluge_input: pointer press at (%d,%d)\n",
             s->pointer_x, s->pointer_y);
 
+    /* Buttons/encoders sit above the pad grid; test them first. */
+    ctrl = deluge_input_hit_test_control(s->pointer_x, s->pointer_y);
+    if (ctrl) {
+        fprintf(stderr, "deluge_input: press hit %s button (%d,%d)\n",
+                ctrl->name, ctrl->col, ctrl->row);
+        deluge_pic_button_event(s->pic, ctrl->col, ctrl->row, true);
+        s->held_x = ctrl->col;
+        s->held_y = ctrl->row;
+        s->held_is_button = true;
+        s->press_time_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+        return;
+    }
+
     if (!deluge_input_hit_test_pad(s->pointer_x, s->pointer_y, &pad_x, &pad_y)) {
-        fprintf(stderr, "deluge_input: press miss (no pad hit)\n");
-        s->held_pad_x = -1;
-        s->held_pad_y = -1;
+        fprintf(stderr, "deluge_input: press miss (no pad/button hit)\n");
+        s->held_x = -1;
+        s->held_y = -1;
         return;
     }
 
     fprintf(stderr, "deluge_input: press hit pad (%d,%d)\n", pad_x, pad_y);
 
     deluge_pic_pad_event(s->pic, pad_x, pad_y, true);
-    s->held_pad_x = pad_x;
-    s->held_pad_y = pad_y;
+    s->held_x = pad_x;
+    s->held_y = pad_y;
+    s->held_is_button = false;
     s->press_time_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
 }
 
@@ -152,16 +184,22 @@ static void deluge_input_pointer_release_now(DelugeInputState *s)
         timer_del(s->release_timer);
     }
 
-    if (s->held_pad_x < 0 || s->held_pad_y < 0) {
+    if (s->held_x < 0 || s->held_y < 0) {
         s->release_armed = false;
         return;
     }
 
-    fprintf(stderr, "deluge_input: pointer release pad (%d,%d)\n",
-            s->held_pad_x, s->held_pad_y);
-    deluge_pic_pad_event(s->pic, s->held_pad_x, s->held_pad_y, false);
-    s->held_pad_x = -1;
-    s->held_pad_y = -1;
+    if (s->held_is_button) {
+        fprintf(stderr, "deluge_input: pointer release button (%d,%d)\n",
+                s->held_x, s->held_y);
+        deluge_pic_button_event(s->pic, s->held_x, s->held_y, false);
+    } else {
+        fprintf(stderr, "deluge_input: pointer release pad (%d,%d)\n",
+                s->held_x, s->held_y);
+        deluge_pic_pad_event(s->pic, s->held_x, s->held_y, false);
+    }
+    s->held_x = -1;
+    s->held_y = -1;
     s->release_armed = false;
 }
 
@@ -178,7 +216,7 @@ static void deluge_input_pointer_release(DelugeInputState *s)
     int64_t elapsed_ms;
     int64_t delay_ms;
 
-    if (s->held_pad_x < 0 || s->held_pad_y < 0) {
+    if (s->held_x < 0 || s->held_y < 0) {
         return;
     }
     if (s->release_armed) {
@@ -287,8 +325,9 @@ static void deluge_input_realize(DeviceState *dev, Error **errp)
 
     s->pointer_x = 0;
     s->pointer_y = 0;
-    s->held_pad_x = -1;
-    s->held_pad_y = -1;
+    s->held_x = -1;
+    s->held_y = -1;
+    s->held_is_button = false;
     s->press_time_ms = 0;
     s->release_armed = false;
     s->release_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,

@@ -21,6 +21,8 @@
 #include "hw/display/deluge_oled.h"
 #include "hw/display/deluge_padgrid.h"
 #include "hw/display/deluge_skin_layout.h"
+#include "hw/display/deluge_skin_controls.h"
+#include "hw/misc/deluge_pic.h"
 
 #define DELUGE_SKIN_REFRESH_MS 33
 
@@ -327,6 +329,123 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
     }
 }
 
+/*
+ * Gold-knob level LEDs: two vertical stacks of 4 square LEDs beside the gold
+ * modal encoders, driven by PIC SET_GOLD_KNOB0/1 brightness. The table lives
+ * here (only the renderer needs it).
+ */
+static const DelugeSkinKnobLeds deluge_skin_knob_leds[] = {
+    /* Beside the upper gold encoder (MOD_ENCODER_1). */
+    { 1, 676, { 144, 179, 217, 252 }, 11 },
+    /* Beside the lower gold encoder (MOD_ENCODER_0). */
+    { 0, 448, { 452, 487, 512, 524 }, 11 },
+};
+
+/* Blend a solid colour into a filled circle, fading the last pixel of radius. */
+static void deluge_skin_blend_disc(uint32_t *dst, int stride,
+                                   int cx, int cy, int radius,
+                                   uint8_t rr, uint8_t gg, uint8_t bb,
+                                   uint8_t alpha)
+{
+    int r2 = radius * radius;
+
+    for (int py = cy - radius; py <= cy + radius; py++) {
+        if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
+            continue;
+        }
+        for (int px = cx - radius; px <= cx + radius; px++) {
+            int dx = px - cx;
+            int dy = py - cy;
+            int d2 = dx * dx + dy * dy;
+            uint32_t p;
+            uint8_t pr, pg, pb, a = alpha;
+
+            if (px < 0 || px >= DELUGE_SKIN_IMAGE_WIDTH || d2 > r2) {
+                continue;
+            }
+            /* Soften the rim so the glow reads as a lamp, not a flat disc. */
+            if (d2 > (r2 * 3) / 4) {
+                a = (uint8_t)((alpha * (r2 - d2)) / MAX(1, r2 / 4));
+            }
+
+            p = dst[py * stride + px];
+            pr = (p >> 16) & 0xff;
+            pg = (p >> 8) & 0xff;
+            pb = p & 0xff;
+            pr = blend_chan(pr, rr, a);
+            pg = blend_chan(pg, gg, a);
+            pb = blend_chan(pb, bb, a);
+            dst[py * stride + px] = 0xff000000u |
+                                    ((uint32_t)pr << 16) |
+                                    ((uint32_t)pg << 8) | (uint32_t)pb;
+        }
+    }
+}
+
+/* Fill a small square LED at full brightness scaled by level (0..255). */
+static void deluge_skin_fill_led_square(uint32_t *dst, int stride,
+                                        int cx, int cy, int half,
+                                        uint8_t level)
+{
+    for (int py = cy - half; py <= cy + half; py++) {
+        if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
+            continue;
+        }
+        for (int px = cx - half; px <= cx + half; px++) {
+            uint32_t p;
+            uint8_t pr, pg, pb;
+
+            if (px < 0 || px >= DELUGE_SKIN_IMAGE_WIDTH) {
+                continue;
+            }
+            p = dst[py * stride + px];
+            pr = (p >> 16) & 0xff;
+            pg = (p >> 8) & 0xff;
+            pb = p & 0xff;
+            /* Gold/amber lamp, intensity following the indicator level. */
+            pr = blend_chan(pr, 255, level);
+            pg = blend_chan(pg, 170, level);
+            pb = blend_chan(pb, 0, level);
+            dst[py * stride + px] = 0xff000000u |
+                                    ((uint32_t)pr << 16) |
+                                    ((uint32_t)pg << 8) | (uint32_t)pb;
+        }
+    }
+}
+
+static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
+{
+    if (!s->pic) {
+        return;
+    }
+
+    /* Indicator LEDs inside the circular buttons. */
+    for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
+        const DelugeSkinControl *c = &deluge_skin_controls[i];
+
+        if (!c->has_led || !deluge_pic_get_led(s->pic, c->col, c->row)) {
+            continue;
+        }
+        deluge_skin_blend_disc(dst, stride, c->cx, c->cy, c->radius,
+                               c->led_r, c->led_g, c->led_b, 205);
+    }
+
+    /* Gold-knob level LEDs. */
+    for (size_t g = 0; g < ARRAY_SIZE(deluge_skin_knob_leds); g++) {
+        const DelugeSkinKnobLeds *k = &deluge_skin_knob_leds[g];
+
+        for (int led = 0; led < 4; led++) {
+            uint8_t level = deluge_pic_get_gold_knob(s->pic, k->which, led);
+
+            if (level == 0) {
+                continue;
+            }
+            deluge_skin_fill_led_square(dst, stride, k->cx, k->cy[led],
+                                        k->half, level);
+        }
+    }
+}
+
 static void deluge_skin_render(DelugeSkinState *s)
 {
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -355,6 +474,7 @@ static void deluge_skin_render(DelugeSkinState *s)
 
     deluge_skin_draw_oled(s, dst, stride);
     deluge_skin_draw_pads(s, dst, stride);
+    deluge_skin_draw_leds(s, dst, stride);
 
     dpy_gfx_update(s->con, 0, 0,
                    DELUGE_SKIN_IMAGE_WIDTH,
@@ -405,6 +525,14 @@ void deluge_skin_set_padgrid(DeviceState *dev, DelugePadGridState *padgrid)
     DelugeSkinState *s = DELUGE_SKIN(dev);
 
     s->padgrid = padgrid;
+    s->dirty = true;
+}
+
+void deluge_skin_set_pic(DeviceState *dev, struct Chardev *pic)
+{
+    DelugeSkinState *s = DELUGE_SKIN(dev);
+
+    s->pic = pic;
     s->dirty = true;
 }
 
