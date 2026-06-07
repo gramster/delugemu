@@ -257,6 +257,78 @@ static void deluge_input_encoder_stop_repeat(DelugeInputState *s)
     }
 }
 
+/* Deliver a press/release for a pad or button on the appropriate PIC API. */
+static void deluge_input_emit(DelugeInputState *s, int x, int y,
+                              bool is_button, bool down)
+{
+    if (is_button) {
+        deluge_pic_button_event(s->pic, x, y, down);
+    } else {
+        deluge_pic_pad_event(s->pic, x, y, down);
+    }
+}
+
+/* Index of a latched entry matching (x, y, is_button), or -1 if not latched. */
+static int deluge_input_latch_find(DelugeInputState *s, int x, int y,
+                                   bool is_button)
+{
+    for (int i = 0; i < s->latched_count; i++) {
+        if (s->latched[i].x == x && s->latched[i].y == y &&
+            s->latched[i].is_button == is_button) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/*
+ * Toggle a control's latched state. If it is not yet latched, press and hold it
+ * (recording it so it can be released later); if it is already latched, release
+ * it and drop it from the table.
+ */
+static void deluge_input_latch_toggle(DelugeInputState *s, int x, int y,
+                                      bool is_button)
+{
+    int idx = deluge_input_latch_find(s, x, y, is_button);
+
+    if (idx >= 0) {
+        deluge_input_emit(s, x, y, is_button, false);
+        s->latched[idx] = s->latched[s->latched_count - 1];
+        s->latched_count--;
+        fprintf(stderr, "deluge_input: unlatch %s (%d,%d)\n",
+                is_button ? "button" : "pad", x, y);
+        return;
+    }
+
+    if (s->latched_count >= DELUGE_INPUT_MAX_LATCHED) {
+        fprintf(stderr, "deluge_input: latch table full, ignoring (%d,%d)\n",
+                x, y);
+        return;
+    }
+
+    deluge_input_emit(s, x, y, is_button, true);
+    s->latched[s->latched_count].x = x;
+    s->latched[s->latched_count].y = y;
+    s->latched[s->latched_count].is_button = is_button;
+    s->latched_count++;
+    fprintf(stderr, "deluge_input: latch %s (%d,%d)\n",
+            is_button ? "button" : "pad", x, y);
+}
+
+/* Release every still-latched control (host latch modifier was released). */
+static void deluge_input_latch_release_all(DelugeInputState *s)
+{
+    if (s->latched_count) {
+        fprintf(stderr, "deluge_input: releasing %d latched control(s)\n",
+                s->latched_count);
+    }
+    for (int i = 0; i < s->latched_count; i++) {
+        deluge_input_emit(s, s->latched[i].x, s->latched[i].y,
+                          s->latched[i].is_button, false);
+    }
+    s->latched_count = 0;
+}
+
 static void deluge_input_pointer_press(DelugeInputState *s)
 {
     const DelugeSkinControl *ctrl;
@@ -294,6 +366,10 @@ static void deluge_input_pointer_press(DelugeInputState *s)
 
         fprintf(stderr, "deluge_input: press hit %s button (%d,%d)\n",
                 ctrl->name, ctrl->col, ctrl->row);
+        if (s->latch_active) {
+            deluge_input_latch_toggle(s, ctrl->col, ctrl->row, true);
+            return;
+        }
         deluge_pic_button_event(s->pic, ctrl->col, ctrl->row, true);
         s->held_x = ctrl->col;
         s->held_y = ctrl->row;
@@ -310,6 +386,11 @@ static void deluge_input_pointer_press(DelugeInputState *s)
     }
 
     fprintf(stderr, "deluge_input: press hit pad (%d,%d)\n", pad_x, pad_y);
+
+    if (s->latch_active) {
+        deluge_input_latch_toggle(s, pad_x, pad_y, false);
+        return;
+    }
 
     deluge_pic_pad_event(s->pic, pad_x, pad_y, true);
     s->held_x = pad_x;
@@ -389,6 +470,19 @@ static void deluge_input_event(DeviceState *dev, QemuConsole *src,
     case INPUT_EVENT_KIND_KEY: {
         InputKeyEvent *key = evt->u.key.data;
         int qcode = qemu_input_key_value_to_qcode(key->key);
+
+        /*
+         * The latch modifier (Left Alt/Option, plus the right key) is not a
+         * Deluge control: while held it turns left-clicks into latch toggles,
+         * and releasing it drops every still-latched pad/button.
+         */
+        if (qcode == Q_KEY_CODE_ALT || qcode == Q_KEY_CODE_ALT_R) {
+            s->latch_active = key->down;
+            if (!key->down) {
+                deluge_input_latch_release_all(s);
+            }
+            return;
+        }
 
         for (size_t i = 0; i < ARRAY_SIZE(deluge_input_bindings); i++) {
             const DelugeInputBinding *b = &deluge_input_bindings[i];
@@ -498,6 +592,9 @@ static void deluge_input_realize(DeviceState *dev, Error **errp)
     s->enc_repeat_dir = 0;
     s->enc_repeat_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                        deluge_input_encoder_repeat_cb, s);
+
+    s->latch_active = false;
+    s->latched_count = 0;
 
     s->handler = qemu_input_handler_register(dev, &deluge_input_handler);
     qemu_input_handler_activate(s->handler);

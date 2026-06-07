@@ -29,6 +29,9 @@ struct QemuInputHandlerState;
 typedef struct DelugeInputState DelugeInputState;
 DECLARE_INSTANCE_CHECKER(DelugeInputState, DELUGE_INPUT, TYPE_DELUGE_INPUT)
 
+/* Maximum number of pads/buttons that can be latched down simultaneously. */
+#define DELUGE_INPUT_MAX_LATCHED 64
+
 struct DelugeInputState {
     /*< private >*/
     SysBusDevice parent_obj;
@@ -69,6 +72,22 @@ struct DelugeInputState {
     struct QEMUTimer *enc_repeat_timer;
     int enc_repeat_id;
     int enc_repeat_dir;
+
+    /*
+     * Multi-press latch. While the host latch modifier (Left Alt/Option) is
+     * held, latch_active is true and a left-click toggles a control's latched
+     * state instead of doing a momentary press: the first click presses and
+     * holds it, a second click on the same control releases it. Releasing the
+     * modifier releases every still-latched control. latched[] records the held
+     * pad/button coordinates so they can all be released together.
+     */
+    bool latch_active;
+    int latched_count;
+    struct {
+        int x;
+        int y;
+        bool is_button;
+    } latched[DELUGE_INPUT_MAX_LATCHED];
 };
 
 /* Bind the PIC whose input stream this device drives (board setup). */
