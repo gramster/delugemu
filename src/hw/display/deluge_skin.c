@@ -305,14 +305,11 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t rr = p->rgb[col][row][0];
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
-            uint8_t alpha = 215;
 
-            if (!(rr || gg || bb)) {
-                rr = 255; gg = 255; bb = 255;
-                alpha = 200;
+            /* Unlit pads stay black (the prepared slot); only draw lit ones. */
+            if (rr || gg || bb) {
+                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 215);
             }
-
-            deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, alpha);
         }
 
         for (int side = 0; side < 2; side++) {

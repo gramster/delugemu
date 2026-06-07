@@ -22,6 +22,7 @@
 #include "qom/object.h"
 
 struct Chardev;
+struct QEMUTimer;
 struct QemuInputHandlerState;
 
 #define TYPE_DELUGE_INPUT "deluge-input"
@@ -42,6 +43,15 @@ struct DelugeInputState {
     /* Last tracked pointer position, in skin-image pixel coordinates. */
     int pointer_x;
     int pointer_y;
+
+    /* Currently held pad from pointer press, or (-1,-1) if none. */
+    int held_pad_x;
+    int held_pad_y;
+
+    /* Pointer press timing and deferred-release state. */
+    struct QEMUTimer *release_timer;
+    int64_t press_time_ms;
+    bool release_armed;
 };
 
 /* Bind the PIC whose input stream this device drives (board setup). */

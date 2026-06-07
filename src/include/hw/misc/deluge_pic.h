@@ -48,6 +48,9 @@ DECLARE_INSTANCE_CHECKER(DelugePicState, DELUGE_PIC, TYPE_DELUGE_PIC)
 /* Button matrix scanned by the PIC: NUM_BUTTON_COLS(9) x NUM_BUTTON_ROWS(4). */
 #define DELUGE_PIC_BTN_COLS   9
 #define DELUGE_PIC_BTN_ROWS   4
+#define DELUGE_PIC_INPUT_INDEX_COUNT (DELUGE_PIC_BTN_COLS * \
+                                      (DELUGE_PIC_GRID_ROWS * 2 + \
+                                       DELUGE_PIC_BTN_ROWS))
 
 /* Largest message payload: vertical scroll carries (16 + 2) RGB triples. */
 #define DELUGE_PIC_MAX_PAYLOAD ((16 + 2) * 3)
@@ -100,6 +103,7 @@ struct DelugePicState {
      */
     struct QEMUTimer *heartbeat;
     unsigned held_count;
+    bool held_inputs[DELUGE_PIC_INPUT_INDEX_COUNT];
 
     /*
      * Display state decoded from the command stream, for the renderers.

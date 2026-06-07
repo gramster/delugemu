@@ -144,12 +144,19 @@ static void deluge_pic_send_event(DelugePicState *s, uint8_t index, bool pressed
     }
     deluge_pic_respond(s, index);
 
-    if (pressed) {
-        s->held_count++;
-    } else {
-        /* Always decrement on release so held_count stays at zero after a tap. */
-        if (s->held_count > 0) {
-            s->held_count--;
+    if (index < DELUGE_PIC_INPUT_INDEX_COUNT) {
+        if (pressed) {
+            if (!s->held_inputs[index]) {
+                s->held_inputs[index] = true;
+                s->held_count++;
+            }
+        } else {
+            if (s->held_inputs[index]) {
+                s->held_inputs[index] = false;
+                if (s->held_count > 0) {
+                    s->held_count--;
+                }
+            }
         }
     }
 }
@@ -342,6 +349,8 @@ static const VMStateDescription vmstate_deluge_pic = {
         VMSTATE_UINT8_ARRAY(payload, DelugePicState, DELUGE_PIC_MAX_PAYLOAD),
         VMSTATE_UINT8(baud_div, DelugePicState),
         VMSTATE_UINT32(held_count, DelugePicState),
+        VMSTATE_BOOL_ARRAY(held_inputs, DelugePicState,
+                   DELUGE_PIC_INPUT_INDEX_COUNT),
         VMSTATE_BUFFER_UNSAFE(pad_grid, DelugePicState, 0,
                               DELUGE_PIC_GRID_COLS * DELUGE_PIC_GRID_ROWS * 3),
         VMSTATE_BOOL_ARRAY(led_on, DelugePicState, DELUGE_PIC_NUM_LEDS),

@@ -13,12 +13,15 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/timer.h"
 #include "ui/console.h"
 #include "ui/input.h"
 #include "hw/core/sysbus.h"
 #include "hw/display/deluge_skin_layout.h"
 #include "hw/input/deluge_input.h"
 #include "hw/misc/deluge_pic.h"
+
+#define DELUGE_INPUT_MIN_PRESS_MS 120
 
 /*
  * One host-key binding. A binding addresses either the button matrix (9 cols x
@@ -80,7 +83,13 @@ static const DelugeInputBinding deluge_input_bindings[] = {
 
 static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
 {
-    int half = DELUGE_SKIN_PAD_SIZE / 2;
+    /*
+     * Use full cell extents (pitch/2), not just the illuminated core, so
+     * normal user clicks across the pad face register reliably.
+     */
+    int half_x_main = DELUGE_SKIN_PAD_MAIN_DX / 2;
+    int half_x_side = DELUGE_SKIN_PAD_SIDE_DX / 2;
+    int half_y = DELUGE_SKIN_PAD_SIDE_DY / 2;
 
     for (int row = 0; row < DELUGE_PIC_GRID_ROWS; row++) {
         int cy = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
@@ -88,7 +97,7 @@ static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
         for (int col = 0; col < 16; col++) {
             int cx = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;
 
-            if (abs(px - cx) <= half && abs(py - cy) <= half) {
+            if (abs(px - cx) <= half_x_main && abs(py - cy) <= half_y) {
                 *grid_x = col;
                 *grid_y = row;
                 return true;
@@ -99,7 +108,7 @@ static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
             int col = 16 + side;
             int cx = DELUGE_SKIN_PAD_SIDE_X0 + side * DELUGE_SKIN_PAD_SIDE_DX;
 
-            if (abs(px - cx) <= half && abs(py - cy) <= half) {
+            if (abs(px - cx) <= half_x_side && abs(py - cy) <= half_y) {
                 *grid_x = col;
                 *grid_y = row;
                 return true;
@@ -110,23 +119,83 @@ static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
     return false;
 }
 
-static void deluge_input_pointer_tap(DelugeInputState *s)
+static void deluge_input_pointer_press(DelugeInputState *s)
 {
     int pad_x, pad_y;
 
-    fprintf(stderr, "deluge_input: pointer tap at (%d,%d)\n",
+    if (s->release_armed) {
+        timer_del(s->release_timer);
+        s->release_armed = false;
+    }
+
+    fprintf(stderr, "deluge_input: pointer press at (%d,%d)\n",
             s->pointer_x, s->pointer_y);
 
     if (!deluge_input_hit_test_pad(s->pointer_x, s->pointer_y, &pad_x, &pad_y)) {
-        fprintf(stderr, "deluge_input: tap miss (no pad hit)\n");
+        fprintf(stderr, "deluge_input: press miss (no pad hit)\n");
+        s->held_pad_x = -1;
+        s->held_pad_y = -1;
         return;
     }
 
-    fprintf(stderr, "deluge_input: tap hit pad (%d,%d)\n", pad_x, pad_y);
+    fprintf(stderr, "deluge_input: press hit pad (%d,%d)\n", pad_x, pad_y);
 
-    /* Send press then immediate release: clean tap regardless of BTN_UP. */
     deluge_pic_pad_event(s->pic, pad_x, pad_y, true);
-    deluge_pic_pad_event(s->pic, pad_x, pad_y, false);
+    s->held_pad_x = pad_x;
+    s->held_pad_y = pad_y;
+    s->press_time_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+}
+
+static void deluge_input_pointer_release_now(DelugeInputState *s)
+{
+    if (s->release_armed) {
+        timer_del(s->release_timer);
+    }
+
+    if (s->held_pad_x < 0 || s->held_pad_y < 0) {
+        s->release_armed = false;
+        return;
+    }
+
+    fprintf(stderr, "deluge_input: pointer release pad (%d,%d)\n",
+            s->held_pad_x, s->held_pad_y);
+    deluge_pic_pad_event(s->pic, s->held_pad_x, s->held_pad_y, false);
+    s->held_pad_x = -1;
+    s->held_pad_y = -1;
+    s->release_armed = false;
+}
+
+static void deluge_input_pointer_release_cb(void *opaque)
+{
+    DelugeInputState *s = opaque;
+
+    deluge_input_pointer_release_now(s);
+}
+
+static void deluge_input_pointer_release(DelugeInputState *s)
+{
+    int64_t now_ms;
+    int64_t elapsed_ms;
+    int64_t delay_ms;
+
+    if (s->held_pad_x < 0 || s->held_pad_y < 0) {
+        return;
+    }
+    if (s->release_armed) {
+        return;
+    }
+
+    now_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    elapsed_ms = now_ms - s->press_time_ms;
+
+    if (elapsed_ms >= DELUGE_INPUT_MIN_PRESS_MS) {
+        deluge_input_pointer_release_now(s);
+        return;
+    }
+
+    delay_ms = DELUGE_INPUT_MIN_PRESS_MS - elapsed_ms;
+    s->release_armed = true;
+    timer_mod(s->release_timer, now_ms + delay_ms);
 }
 
 static void deluge_input_event(DeviceState *dev, QemuConsole *src,
@@ -185,7 +254,11 @@ static void deluge_input_event(DeviceState *dev, QemuConsole *src,
             break;
         }
         if (btn->down) {
-            deluge_input_pointer_tap(s);
+            /* Guard against missing BTN_UP by releasing previous held pad. */
+            deluge_input_pointer_release_now(s);
+            deluge_input_pointer_press(s);
+        } else {
+            deluge_input_pointer_release(s);
         }
 
         break;
@@ -214,6 +287,12 @@ static void deluge_input_realize(DeviceState *dev, Error **errp)
 
     s->pointer_x = 0;
     s->pointer_y = 0;
+    s->held_pad_x = -1;
+    s->held_pad_y = -1;
+    s->press_time_ms = 0;
+    s->release_armed = false;
+    s->release_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                    deluge_input_pointer_release_cb, s);
 
     s->handler = qemu_input_handler_register(dev, &deluge_input_handler);
     qemu_input_handler_activate(s->handler);
@@ -226,6 +305,12 @@ static void deluge_input_unrealize(DeviceState *dev)
     if (s->handler) {
         qemu_input_handler_unregister(s->handler);
         s->handler = NULL;
+    }
+
+    if (s->release_timer) {
+        timer_del(s->release_timer);
+        timer_free(s->release_timer);
+        s->release_timer = NULL;
     }
 }
 
