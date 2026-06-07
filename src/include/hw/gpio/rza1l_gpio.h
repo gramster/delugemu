@@ -104,4 +104,11 @@ struct RzA1lGpioState {
  */
 void rza1l_gpio_encoder_step(DeviceState *dev, int enc, int dir);
 
+/*
+ * Read the current output-latch level of a GPIO pin (port 1..11, pin 0..15).
+ * Used by the skin renderer to reflect firmware-driven panel LEDs such as the
+ * Synced LED on P6_7.
+ */
+bool rza1l_gpio_get_output_pin(DeviceState *dev, unsigned port, unsigned pin);
+
 #endif /* HW_GPIO_RZA1L_GPIO_H */

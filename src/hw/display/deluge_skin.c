@@ -23,6 +23,7 @@
 #include "hw/display/deluge_skin_layout.h"
 #include "hw/display/deluge_skin_controls.h"
 #include "hw/misc/deluge_pic.h"
+#include "hw/gpio/rza1l_gpio.h"
 
 #define DELUGE_SKIN_REFRESH_MS 33
 
@@ -467,6 +468,15 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
                                         k->half, level);
         }
     }
+
+    /*
+     * Synced LED (beside the SWING/SYNCED label). Driven directly by the
+     * firmware on GPIO P6_7, which it flashes in time with the tempo.
+     */
+    if (s->gpio && rza1l_gpio_get_output_pin(s->gpio, 6, 7)) {
+        deluge_skin_blend_disc(dst, stride, 1911, 242, 7,
+                               DELUGE_LED_RED, 230);
+    }
 }
 
 static void deluge_skin_render(DelugeSkinState *s)
@@ -556,6 +566,14 @@ void deluge_skin_set_pic(DeviceState *dev, struct Chardev *pic)
     DelugeSkinState *s = DELUGE_SKIN(dev);
 
     s->pic = pic;
+    s->dirty = true;
+}
+
+void deluge_skin_set_gpio(DeviceState *dev, DeviceState *gpio)
+{
+    DelugeSkinState *s = DELUGE_SKIN(dev);
+
+    s->gpio = gpio;
     s->dirty = true;
 }
 

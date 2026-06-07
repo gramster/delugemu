@@ -246,6 +246,24 @@ void rza1l_gpio_encoder_step(DeviceState *dev, int enc, int dir)
     rza1l_gpio_enqueue_edge(s, (unsigned)enc, dir);
 }
 
+bool rza1l_gpio_get_output_pin(DeviceState *dev, unsigned port, unsigned pin)
+{
+    RzA1lGpioState *s = RZA1L_GPIO(dev);
+    hwaddr off;
+
+    if (port < 1 || port >= RZA1L_GPIO_NUM_PORTS || pin > 15) {
+        return false;
+    }
+
+    /* Output latch: port p data register at (p-1)*4, low byte = pins 0..7. */
+    off = GPIO_P_BASE + (port - 1) * 4 + (pin / 8);
+    if (off >= RZA1L_GPIO_MMIO_SIZE) {
+        return false;
+    }
+
+    return (s->regs[off] >> (pin % 8)) & 1;
+}
+
 static const MemoryRegionOps rza1l_gpio_ops = {
     .read = rza1l_gpio_read,
     .write = rza1l_gpio_write,
