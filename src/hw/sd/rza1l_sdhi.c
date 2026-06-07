@@ -86,6 +86,10 @@
 
 #define SD_CMD_INDEX_MASK 0x003f
 
+/* SD_STOP bits. */
+#define SD_STOP_STP        0x0001  /* compulsory transfer stop (issue CMD12) */
+#define SD_STOP_SEC_ENABLE 0x0100  /* honour SD_SECCNT for a multi-block transfer */
+
 /* CC_EXT_MODE bits. */
 #define CC_EXT_MODE_DMASDRW 0x0002  /* SD buffer accesses are driven by DMA */
 
@@ -173,17 +177,27 @@ static void rza1l_sdhi_command(RzA1lSdhiState *s, uint16_t cmdreg)
      * Determine whether a data phase follows from the card's resulting state,
      * which avoids decoding the SDHI command flags (and the ACMD13/CMD13 index
      * ambiguity). The transfer length comes from SD_SIZE/SD_SECCNT.
+     *
+     * SD_SECCNT is only meaningful for a multi-block transfer, which the driver
+     * selects by setting the SD_STOP block-count-enable bit. For a single-block
+     * transfer it clears SD_STOP and leaves SD_SECCNT holding whatever count a
+     * previous multi-block transfer programmed; honouring that stale value would
+     * make the controller wait for blocks that never arrive, so the access-end
+     * interrupt would never fire and the driver would time out. Clamp to one
+     * block unless the block-count-enable bit is set.
      */
     if (sdbus_data_ready(&s->sdbus)) {
         s->data_dir = 1;
         s->blocklen = s->size ? s->size : 512;
-        s->blockcnt = s->seccnt ? s->seccnt : 1;
+        s->blockcnt = (s->stop & SD_STOP_SEC_ENABLE) && s->seccnt ?
+                      s->seccnt : 1;
         s->datacnt = s->blocklen;
         s->info2 |= INFO2_RE;
     } else if (sdbus_receive_ready(&s->sdbus)) {
         s->data_dir = 2;
         s->blocklen = s->size ? s->size : 512;
-        s->blockcnt = s->seccnt ? s->seccnt : 1;
+        s->blockcnt = (s->stop & SD_STOP_SEC_ENABLE) && s->seccnt ?
+                      s->seccnt : 1;
         s->datacnt = s->blocklen;
         s->info2 |= INFO2_WE;
     }
