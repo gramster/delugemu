@@ -14,9 +14,9 @@
  * FIFO serves both DMA and PIO accesses.
  *
  * In 64-byte DMA mode (SDCFG_TRANS_DMA_64) the firmware points the DMAC at the
- * register base rather than at SD_BUF0, so the controller also exposes the data
- * FIFO through the low 64-byte window (offsets 0x00..0x3F) while a DMA transfer
- * is in progress; see the DMA_FIFO_WINDOW handling below.
+ * register base (SD_CMD) with a fixed source address rather than at SD_BUF0, so
+ * the controller also exposes the data FIFO at that single offset while a DMA
+ * transfer is in progress; see the SD_CMD handling in the read/write paths.
  *
  * Copyright (c) 2026 delugemu contributors
  *
@@ -64,6 +64,7 @@
 #define INFO1_REM_CD     0x0008  /* CD-pin removal event */
 #define INFO1_INS_CD     0x0010  /* CD-pin insertion event */
 #define INFO1_CD_LEVEL   0x0020  /* CD-pin current level (1 = card present) */
+#define INFO1_WP_LEVEL   0x0080  /* WP-pin current level (1 = not protected) */
 #define INFO1_REM_DAT3   0x0100  /* DAT3 removal event */
 #define INFO1_INS_DAT3   0x0200  /* DAT3 insertion event */
 #define INFO1_DAT3_LEVEL 0x0400  /* DAT3 current level (1 = card present) */
@@ -281,12 +282,15 @@ static uint64_t rza1l_sdhi_read(void *opaque, hwaddr offset, unsigned size)
         /*
          * The CD/DAT3 level bits reflect the live card-detect state and are not
          * latching, so report them from the bus rather than from stored status
-         * (which a clear-write could otherwise drop).
+         * (which a clear-write could otherwise drop). WP is reported high
+         * (not write-protected): the emulated card has no write-protect slider.
          */
         if (sdbus_get_inserted(&s->sdbus)) {
-            return s->info1 | INFO1_CD_LEVEL | INFO1_DAT3_LEVEL;
+            return s->info1 | INFO1_CD_LEVEL | INFO1_DAT3_LEVEL |
+                   INFO1_WP_LEVEL;
         }
-        return s->info1 & ~(INFO1_CD_LEVEL | INFO1_DAT3_LEVEL);
+        return (s->info1 & ~(INFO1_CD_LEVEL | INFO1_DAT3_LEVEL)) |
+               INFO1_WP_LEVEL;
     case SD_INFO2:
         /* SCLKDIVEN is always reported set: the SD bus is never busy. */
         return s->info2 | INFO2_SCLKDIVEN;
