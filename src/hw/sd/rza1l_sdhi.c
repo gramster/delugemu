@@ -89,15 +89,6 @@
 #define CC_EXT_MODE_DMASDRW 0x0002  /* SD buffer accesses are driven by DMA */
 
 /*
- * Size of the 64-byte DMA data window. In DMA mode (SDCFG_TRANS_DMA_64) the
- * firmware points the DMAC source/destination at the register base rather than
- * at SD_BUF0, so the SDHI exposes the data FIFO through the low 64-byte window
- * (offsets 0x00..0x3F) instead of only at SD_BUF0. While a DMA-driven data
- * transfer is in progress, accesses in that window stream the FIFO.
- */
-#define DMA_FIFO_WINDOW 0x40
-
-/*
  * Standard SD/MMC commands that complete without any response. For these a
  * zero-length result from the card is normal and must not be reported as a
  * response timeout. CMD0 GO_IDLE_STATE, CMD4 SET_DSR, CMD15 GO_INACTIVE_STATE.
@@ -259,12 +250,15 @@ static uint64_t rza1l_sdhi_read(void *opaque, hwaddr offset, unsigned size)
     RzA1lSdhiState *s = opaque;
 
     /*
-     * During a DMA-driven read the DMAC pulls bytes from the register base
-     * (the 64-byte DMA window), not from SD_BUF0; route those accesses to the
-     * data FIFO so the block is properly drained.
+     * During a 64-byte DMA-driven read the DMAC pulls bytes from the register
+     * base (SD_CMD) with a fixed source address rather than from SD_BUF0; route
+     * those accesses to the data FIFO so the block is drained. Only the exact
+     * DMA source offset is redirected: the real status/response registers
+     * (SD_INFO1, SD_INFO2, SD_RESP*, ...) must keep returning their true values
+     * because the firmware polls them while a DMA transfer is in progress.
      */
     if (s->data_dir != 0 && (s->cc_ext_mode & CC_EXT_MODE_DMASDRW) &&
-        offset < DMA_FIFO_WINDOW) {
+        offset == SD_CMD) {
         return rza1l_sdhi_read_buf(s, size);
     }
 
@@ -339,9 +333,13 @@ static void rza1l_sdhi_write(void *opaque, hwaddr offset, uint64_t value,
     RzA1lSdhiState *s = opaque;
     uint16_t val = (uint16_t)value;
 
-    /* DMA-driven writes target the 64-byte DMA window; route to the FIFO. */
+    /*
+     * As for reads, only the exact 64-byte DMA source offset (SD_CMD) is routed
+     * to the FIFO; status/control registers written by the firmware during a
+     * transfer must reach their real registers.
+     */
     if (s->data_dir != 0 && (s->cc_ext_mode & CC_EXT_MODE_DMASDRW) &&
-        offset < DMA_FIFO_WINDOW) {
+        offset == SD_CMD) {
         rza1l_sdhi_write_buf(s, (uint32_t)value, size);
         return;
     }

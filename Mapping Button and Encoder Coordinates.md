@@ -47,7 +47,7 @@ Two groups of four leds, used to indicate level of the modal encoders. These are
 
 Group 1 (for lower gold modal encoder)
 
-448,512 - top
+448,415 - top
 448,452
 448,487
 448,524 - bottom
