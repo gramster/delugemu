@@ -157,6 +157,115 @@ static inline uint8_t blend_chan(uint8_t dst, uint8_t src, uint8_t a)
     return (uint8_t)(((int)dst * (255 - a) + (int)src * a) / 255);
 }
 
+static uint32_t deluge_skin_sample_background(uint32_t *img, int stride,
+                                              int cx, int cy)
+{
+    int half = DELUGE_SKIN_PAD_SIZE / 2;
+    int offs = half + 8;
+    int sx[4] = { cx, cx, cx - offs, cx + offs };
+    int sy[4] = { cy - offs, cy + offs, cy, cy };
+    int rs = 0, gs = 0, bs = 0;
+    int samples = 0;
+
+    for (int i = 0; i < 4; i++) {
+        int x = sx[i];
+        int y = sy[i];
+        uint32_t p;
+
+        if (x < 0 || x >= DELUGE_SKIN_IMAGE_WIDTH ||
+            y < 0 || y >= DELUGE_SKIN_IMAGE_HEIGHT) {
+            continue;
+        }
+
+        p = img[y * stride + x];
+        rs += (p >> 16) & 0xff;
+        gs += (p >> 8) & 0xff;
+        bs += p & 0xff;
+        samples++;
+    }
+
+    if (!samples) {
+        return 0xff2a2a2au;
+    }
+
+    return 0xff000000u |
+           ((uint32_t)(rs / samples) << 16) |
+           ((uint32_t)(gs / samples) << 8) |
+           (uint32_t)(bs / samples);
+}
+
+static void deluge_skin_fill_pad_slot(uint32_t *img, int stride,
+                                      int cx, int cy, uint32_t bg)
+{
+    int half = DELUGE_SKIN_PAD_SIZE / 2;
+    int round = DELUGE_SKIN_PAD_ROUND;
+    int x0 = cx - half;
+    int y0 = cy - half;
+    int x1 = cx + half;
+    int y1 = cy + half;
+
+    for (int py = y0; py < y1; py++) {
+        if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
+            continue;
+        }
+        for (int px = x0; px < x1; px++) {
+            int dx = 0, dy = 0;
+
+            if (px < 0 || px >= DELUGE_SKIN_IMAGE_WIDTH) {
+                continue;
+            }
+
+            if (px < x0 + round) {
+                dx = x0 + round - px;
+            } else if (px >= x1 - round) {
+                dx = px - (x1 - round - 1);
+            }
+            if (py < y0 + round) {
+                dy = y0 + round - py;
+            } else if (py >= y1 - round) {
+                dy = py - (y1 - round - 1);
+            }
+            if (dx || dy) {
+                int d2 = dx * dx + dy * dy;
+                int r2 = round * round;
+                if (d2 > r2) {
+                    continue;
+                }
+            }
+
+            img[py * stride + px] = bg;
+        }
+    }
+}
+
+static void deluge_skin_prepare_padless_background(DelugeSkinState *s)
+{
+    uint32_t *img = s->bg_argb;
+    int stride = DELUGE_SKIN_IMAGE_WIDTH;
+
+    if (!s->bg_loaded || !img) {
+        return;
+    }
+
+    for (int row = 0; row < DELUGE_PADGRID_ROWS; row++) {
+        int y = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
+
+        for (int col = 0; col < 16; col++) {
+            int x = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;
+            uint32_t bg = deluge_skin_sample_background(img, stride, x, y);
+
+            deluge_skin_fill_pad_slot(img, stride, x, y, bg);
+        }
+
+        for (int side = 0; side < 2; side++) {
+            int x = DELUGE_SKIN_PAD_SIDE_X0 + side * DELUGE_SKIN_PAD_SIDE_DX;
+            uint32_t bg = deluge_skin_sample_background(img, stride, x, y);
+
+            deluge_skin_fill_pad_slot(img, stride, x, y, bg);
+        }
+    }
+}
+
 static void deluge_skin_blend_pad(uint32_t *dst, int stride,
                                   int cx, int cy,
                                   uint8_t rr, uint8_t gg, uint8_t bb,
@@ -229,13 +338,15 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
     }
 
     for (int row = 0; row < DELUGE_PADGRID_ROWS; row++) {
-        int y = DELUGE_SKIN_PAD_ROWS_Y0 + row * DELUGE_SKIN_PAD_ROWS_DY;
+        /* Keep main grid rows on the exact same vertical lattice as sidebar. */
+        int y = DELUGE_SKIN_PAD_SIDE_Y0 + row * DELUGE_SKIN_PAD_SIDE_DY;
 
         for (int col = 0; col < 16; col++) {
             int x = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;
             uint8_t rr = p->rgb[col][row][0];
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
+            uint8_t alpha = 215;
 
             if (s->test_grid && (col == 0 || row == 0)) {
                 if (col == 0 && row == 0) {
@@ -245,11 +356,12 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
                 } else {
                     rr = 32; gg = 96; bb = 255;
                 }
+            } else if (!(rr || gg || bb)) {
+                rr = 255; gg = 255; bb = 255;
+                alpha = 200;
             }
 
-            if (rr || gg || bb) {
-                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 215);
-            }
+            deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, alpha);
         }
 
         for (int side = 0; side < 2; side++) {
@@ -259,14 +371,16 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t rr = p->rgb[col][row][0];
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
+            uint8_t alpha = 215;
 
             if (s->test_grid && row == 0) {
                 rr = 32; gg = 96; bb = 255;
+            } else if (!(rr || gg || bb)) {
+                rr = 255; gg = 255; bb = 255;
+                alpha = 200;
             }
 
-            if (rr || gg || bb) {
-                deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, 215);
-            }
+            deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, alpha);
         }
     }
 }
@@ -373,6 +487,7 @@ static void deluge_skin_realize(DeviceState *dev, Error **errp)
 
     s->bg_argb = g_new0(uint32_t, DELUGE_SKIN_IMAGE_WIDTH * DELUGE_SKIN_IMAGE_HEIGHT);
     s->bg_loaded = deluge_skin_load_png_argb(path, s->bg_argb);
+    deluge_skin_prepare_padless_background(s);
 
     s->con = graphic_console_init(dev, 0, &deluge_skin_gfx_ops, s);
     qemu_console_resize(s->con, DELUGE_SKIN_IMAGE_WIDTH, DELUGE_SKIN_IMAGE_HEIGHT);
