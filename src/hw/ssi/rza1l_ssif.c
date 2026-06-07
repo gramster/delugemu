@@ -59,6 +59,17 @@
 #define SSIFSR_RDF   0x00000001 /* receive FIFO has data   */
 #define SSIFSR_TDE   0x00010000 /* transmit FIFO empty     */
 
+/*
+ * Firmware render write head. AudioEngine::i2sTXBufferPos (a uint32_t pointer
+ * into the uncached SDRAM mirror) marks the slot just past the last frame the
+ * firmware has finished writing into the SSI TX ring. Reading the ring bounded
+ * by this head yields finished, tear-free output. The address is fixed by the
+ * firmware link map (.bss._ZN11AudioEngine14i2sTXBufferPosE) and the mirror
+ * offset by RZA1 cpu_specific.h (UNCACHED_MIRROR_OFFSET).
+ */
+#define RZA1L_SSIF_I2S_TX_POS_ADDR    0x20038FDC
+#define RZA1L_SSIF_RING_MIRROR_OFFSET 0x40000000
+
 static uint64_t rza1l_ssif_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lSsifState *s = opaque;
@@ -154,60 +165,196 @@ void rza1l_ssif_set_dma(RzA1lSsifState *s, struct RzA1lDmacState *dmac,
     s->dmac = dmac;
     s->tx_dma_channel = tx_channel;
     s->rx_dma_channel = rx_channel;
+    /* Sample the TX ring on the vCPU thread, driven by the firmware's CRSA
+     * polling, so it is never starved by main-loop (display) stalls. */
+    rza1l_dmac_set_tx_audio_pump(dmac, rza1l_ssif_tx_crsa_read, s);
 }
 
 /*
- * Audio output callback. QEMU's audio backend invokes this when its output
- * buffer can accept up to free_bytes more bytes. The firmware streams the I2S
- * transmit buffer through DMA (the SSI transmit channel), so we mirror that
- * ring from guest memory to the host: read samples at play_cursor, wrapping at
- * the ring size, and feed them to the voice. Until the firmware arms the
- * transmit DMA the ring is unknown, so we output silence to keep the backend's
- * clock running.
+ * Push staged samples into the output voice. Called both from the sampling
+ * timer (after fresh frames are lifted from the ring) and from the backend's
+ * pull callback (when mixer space frees up). audio_be_write accepts only what
+ * currently fits in the mix buffer, so we drain as much of the FIFO as the
+ * voice will take and leave the rest for the next opportunity.
+ */
+static void rza1l_ssif_flush_fifo(RzA1lSsifState *s)
+{
+    while (s->fifo_len > 0) {
+        uint32_t to_end = RZA1L_SSIF_FIFO_SIZE - s->fifo_head;
+        uint32_t chunk = MIN(s->fifo_len, to_end);
+        size_t written = audio_be_write(s->audio_be, s->voice_out,
+                                        s->fifo + s->fifo_head, chunk);
+        if (written == 0) {
+            break; /* mix buffer full for now */
+        }
+        s->fifo_head = (s->fifo_head + (uint32_t)written) % RZA1L_SSIF_FIFO_SIZE;
+        s->fifo_len -= (uint32_t)written;
+        if (written < chunk) {
+            break;
+        }
+    }
+}
+
+/*
+ * Append PCM bytes to the staging FIFO. If the FIFO would overflow (the host
+ * backend is draining slower than real time) the oldest staged bytes are
+ * dropped to keep latency bounded; this is inaudible jitter, not the gross
+ * distortion that reading a stale ring would cause.
+ */
+static void rza1l_ssif_fifo_push(RzA1lSsifState *s, const uint8_t *buf,
+                                 uint32_t len)
+{
+    uint32_t tail;
+
+    if (len >= RZA1L_SSIF_FIFO_SIZE) {
+        /* Keep only the most recent FIFO-worth. */
+        buf += len - (RZA1L_SSIF_FIFO_SIZE - RZA1L_SSIF_BYTES_PER_FRAME);
+        len = RZA1L_SSIF_FIFO_SIZE - RZA1L_SSIF_BYTES_PER_FRAME;
+    }
+    if (s->fifo_len + len > RZA1L_SSIF_FIFO_SIZE) {
+        uint32_t drop = s->fifo_len + len - RZA1L_SSIF_FIFO_SIZE;
+        s->fifo_head = (s->fifo_head + drop) % RZA1L_SSIF_FIFO_SIZE;
+        s->fifo_len -= drop;
+    }
+
+    tail = (s->fifo_head + s->fifo_len) % RZA1L_SSIF_FIFO_SIZE;
+    while (len > 0) {
+        uint32_t to_end = RZA1L_SSIF_FIFO_SIZE - tail;
+        uint32_t chunk = MIN(len, to_end);
+        memcpy(s->fifo + tail, buf, chunk);
+        tail = (tail + chunk) % RZA1L_SSIF_FIFO_SIZE;
+        buf += chunk;
+        len -= chunk;
+        s->fifo_len += chunk;
+    }
+}
+
+/*
+ * Copy newly-rendered frames from the guest TX ring into the staging FIFO.
+ *
+ * The read position is bounded by the firmware's render write head, not by the
+ * DMA play head. In AudioEngine::doSomeOutputting the firmware copies freshly
+ * mixed frames into the ring starting at i2sTXBufferPos and advancing up to —
+ * but never past — the DMA source address (CRSA), then publishes the updated
+ * i2sTXBufferPos in one store once the whole batch is written. Therefore every
+ * slot strictly *behind* i2sTXBufferPos holds finished, tear-free output that
+ * will not change until the head laps the ring a whole wrap later. We copy
+ * exactly that span: from read_off forward up to i2sTXBufferPos, one slot at a
+ * time, in order, delivering the firmware's true output stream frame-for-frame.
+ *
+ * Crucially this runs on the vCPU thread: the DMAC calls it from every CRSA
+ * register read, which the firmware performs inside its audio loop (see
+ * ssi.c getTxBufferCurrentPlace). That keeps the copy locked to production and
+ * immune to main-loop stalls — the guest ring is only 128 frames (~2.9 ms), so
+ * the periodic display redraw, which blocks the iothread timers for several
+ * milliseconds, would otherwise let the write head lap an unread region and
+ * tear the audio. A virtual-clock fallback timer also pumps it so the FIFO
+ * keeps draining while the firmware is briefly not polling CRSA.
+ */
+static void rza1l_ssif_pump(RzA1lSsifState *s)
+{
+    uint32_t base = 0, size = 0;
+    uint32_t wpos_ptr = 0, wpos, avail;
+
+    if (!s->dmac ||
+        !rza1l_dmac_get_tx_audio_ring(s->dmac, s->tx_dma_channel,
+                                      &base, &size) ||
+        size < RZA1L_SSIF_BYTES_PER_FRAME) {
+        /* Ring not armed yet: re-seed read_off when it appears. */
+        s->play_anchored = false;
+        return;
+    }
+
+    /*
+     * Fetch AudioEngine::i2sTXBufferPos, the firmware's render write head. It
+     * is a pointer into the uncached SDRAM mirror; strip the mirror offset and
+     * ring base to land on a ring byte offset, then frame-align it (the
+     * firmware only ever advances it whole frames, but guard against a torn
+     * read shearing a stereo frame).
+     */
+    if (dma_memory_read(&address_space_memory, RZA1L_SSIF_I2S_TX_POS_ADDR,
+                        &wpos_ptr, sizeof(wpos_ptr),
+                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        return;
+    }
+    wpos_ptr = le32_to_cpu(wpos_ptr);
+    wpos = (wpos_ptr - RZA1L_SSIF_RING_MIRROR_OFFSET - base) % size;
+    wpos &= ~(RZA1L_SSIF_BYTES_PER_FRAME - 1);
+
+    if (!s->play_anchored) {
+        /* Seed the read head at the live write head: no backlog. */
+        s->play_anchored = true;
+        s->read_off = wpos;
+    }
+
+    /* Frames to copy now: distance from read_off forward to the write head. */
+    avail = (wpos + size - s->read_off) % size;
+
+    /*
+     * If we have somehow fallen more than a ring behind (a stall longer than
+     * the ring's wrap period), the head has lapped us and the data in between
+     * is already overwritten; resync rather than read stale frames.
+     */
+    if (avail >= size - RZA1L_SSIF_BYTES_PER_FRAME) {
+        s->read_off = wpos;
+        avail = 0;
+    }
+
+    while (avail > 0) {
+        uint8_t buf[1024];
+        uint32_t to_end = size - s->read_off;
+        uint32_t chunk = MIN(avail, MIN(to_end, (uint32_t)sizeof(buf)));
+
+        if (dma_memory_read(&address_space_memory, base + s->read_off, buf,
+                            chunk, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+            memset(buf, 0, chunk);
+        }
+        rza1l_ssif_fifo_push(s, buf, chunk);
+        s->read_off = (s->read_off + chunk) % size;
+        avail -= chunk;
+    }
+}
+
+/*
+ * DMAC hook: the transmit audio channel invokes this on every CRSA register
+ * read so the ring is sampled on the vCPU thread, in step with the firmware's
+ * own playback polling (see rza1l_ssif_pump).
+ */
+void rza1l_ssif_tx_crsa_read(void *opaque)
+{
+    rza1l_ssif_pump((RzA1lSsifState *)opaque);
+}
+
+/*
+ * Fallback sampling/drain timer on the virtual clock. The vCPU-side pump above
+ * does the bulk of the work; this keeps the FIFO draining (and catches up the
+ * ring) during stretches where the firmware is not polling CRSA.
+ */
+static void rza1l_ssif_play_tick(void *opaque)
+{
+    RzA1lSsifState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    rza1l_ssif_pump(s);
+    rza1l_ssif_flush_fifo(s);
+
+    timer_mod_ns(s->play_timer, now + RZA1L_SSIF_PLAY_TICK_NS);
+}
+
+/*
+ * Audio output pull callback. The backend invokes this when its mix buffer can
+ * accept more samples; we simply drain whatever the sampling timer has staged.
+ * The actual ring sampling happens in rza1l_ssif_play_tick so that the small
+ * guest ring is read finely enough never to be overwritten before we copy it.
  */
 static void rza1l_ssif_out_cb(void *opaque, int free_bytes)
 {
     RzA1lSsifState *s = opaque;
-    uint8_t buf[1024];
-    uint32_t base = 0, size = 0;
-    bool have_ring;
 
     if (free_bytes <= 0) {
         return;
     }
-
-    have_ring = s->dmac &&
-        rza1l_dmac_get_tx_audio_ring(s->dmac, s->tx_dma_channel, &base, &size);
-
-    while (free_bytes > 0) {
-        int chunk = MIN(free_bytes, (int)sizeof(buf));
-        size_t written;
-
-        if (have_ring) {
-            uint32_t avail = size - s->play_cursor;
-            if ((uint32_t)chunk > avail) {
-                chunk = avail;
-            }
-            if (dma_memory_read(&address_space_memory, base + s->play_cursor,
-                                buf, chunk, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
-                memset(buf, 0, chunk);
-            }
-        } else {
-            memset(buf, 0, chunk);
-        }
-
-        written = audio_be_write(s->audio_be, s->voice_out, buf, chunk);
-        if (have_ring) {
-            s->play_cursor += written;
-            if (s->play_cursor >= size) {
-                s->play_cursor -= size;
-            }
-        }
-        free_bytes -= written;
-        if (written < (size_t)chunk) {
-            break; /* backend buffer full for now */
-        }
-    }
+    rza1l_ssif_flush_fifo(s);
 }
 
 /*
@@ -276,7 +423,10 @@ static void rza1l_ssif_reset(DeviceState *dev)
     s->ssifccr = 0;
     s->ssifcmr = 0;
     s->ssifcsr = 0;
-    s->play_cursor = 0;
+    s->play_anchored = false;
+    s->read_off = 0;
+    s->fifo_head = 0;
+    s->fifo_len = 0;
     s->rec_cursor = 0;
 }
 
@@ -320,6 +470,18 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
         audio_be_set_active_out(s->audio_be, s->voice_out, true);
         s->output_open = true;
 
+        /*
+         * Start the fallback ring sampler/drain timer. The bulk of the ring
+         * copying is driven from the vCPU thread on each CRSA read (see
+         * rza1l_ssif_pump); this timer keeps the FIFO draining and catches the
+         * ring up whenever the firmware is briefly not polling CRSA.
+         */
+        s->play_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rza1l_ssif_play_tick,
+                                     s);
+        timer_mod_ns(s->play_timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                         RZA1L_SSIF_PLAY_TICK_NS);
+
         s->voice_in = audio_be_open_in(s->audio_be, s->voice_in, "ssif.in",
                                        s, rza1l_ssif_in_cb, &as);
         if (s->voice_in) {
@@ -331,8 +493,8 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
 
 static const VMStateDescription vmstate_rza1l_ssif = {
     .name = TYPE_RZA1L_SSIF,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ssicr, RzA1lSsifState),
         VMSTATE_UINT32(ssisr, RzA1lSsifState),
@@ -341,7 +503,6 @@ static const VMStateDescription vmstate_rza1l_ssif = {
         VMSTATE_UINT32(ssifccr, RzA1lSsifState),
         VMSTATE_UINT32(ssifcmr, RzA1lSsifState),
         VMSTATE_UINT32(ssifcsr, RzA1lSsifState),
-        VMSTATE_UINT32(play_cursor, RzA1lSsifState),
         VMSTATE_UINT32(rec_cursor, RzA1lSsifState),
         VMSTATE_END_OF_LIST()
     },

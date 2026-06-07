@@ -126,6 +126,16 @@ struct RzA1lDmacState {
 
     /* Group common control registers (DCTRL_0_7 / DCTRL_8_15), shadowed. */
     uint32_t dctrl[2];
+
+    /*
+     * Hook invoked on every transmit-audio CRSA register read. The SSI model
+     * registers itself here (rza1l_dmac_set_tx_audio_pump) so the guest TX ring
+     * is sampled on the vCPU thread, in step with the firmware's playback
+     * polling, rather than only from a main-loop timer that the periodic
+     * display redraw can starve.
+     */
+    void (*tx_audio_pump)(void *opaque);
+    void *tx_audio_pump_opaque;
 };
 
 /*
@@ -151,6 +161,23 @@ void rza1l_dmac_register_tx_audio_ring(RzA1lDmacState *s, int ch);
  */
 bool rza1l_dmac_get_tx_audio_ring(RzA1lDmacState *s, int ch,
                                   uint32_t *base, uint32_t *size);
+
+/*
+ * Return the live current source address (CRSA) of a TX audio ring, i.e. the
+ * position the SSI transmit DMA is currently reading (the firmware's playback
+ * head). Returns false if the channel is not an armed TX audio ring. The SSI
+ * model uses this to phase-lock its ring sampling to the firmware's render
+ * cursor and read only the stable, not-yet-overwritten region of the ring.
+ */
+bool rza1l_dmac_get_tx_audio_crsa(RzA1lDmacState *s, int ch, uint32_t *crsa);
+
+/*
+ * Register a callback invoked on every transmit-audio CRSA register read. The
+ * SSI model uses this to pump its ring sampler from the vCPU thread (see
+ * RzA1lDmacState::tx_audio_pump).
+ */
+void rza1l_dmac_set_tx_audio_pump(RzA1lDmacState *s,
+                                  void (*pump)(void *opaque), void *opaque);
 
 /*
  * Mark a channel as the SSI audio receive ring. When the firmware enables such

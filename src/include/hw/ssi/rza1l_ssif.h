@@ -33,6 +33,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSsifState, RZA1L_SSIF)
 /* Audio format the firmware drives: 44.1 kHz, stereo, 32-bit system word. */
 #define RZA1L_SSIF_SAMPLE_RATE   44100
 #define RZA1L_SSIF_NUM_CHANNELS  2
+#define RZA1L_SSIF_BYTES_PER_FRAME (RZA1L_SSIF_NUM_CHANNELS * 4)
+
+/*
+ * The firmware's transmit ring is tiny (128 stereo frames, ~2.9 ms) and is
+ * overwritten in place by the audio engine on every loop, while the host audio
+ * backend pulls in much coarser ~10 ms periods. To avoid reading the ring after
+ * the firmware has overwritten it (which manifests as harsh distortion), the
+ * SSI copies finished frames into a host-side staging FIFO that the output
+ * voice then drains. The copy (rza1l_ssif_pump) is driven primarily from the
+ * vCPU thread, on every transmit CRSA register read the firmware performs in
+ * its audio loop, so sampling tracks production and is never starved by
+ * main-loop stalls such as the periodic display redraw. A virtual-time fallback
+ * timer also pumps it so the FIFO keeps draining when CRSA is briefly not
+ * polled.
+ */
+#define RZA1L_SSIF_PLAY_TICK_NS  1000000ull          /* 1 ms fallback tick   */
+#define RZA1L_SSIF_FIFO_SIZE     32768u              /* ~93 ms, power of two */
 
 struct RzA1lDmacState;
 
@@ -66,8 +83,17 @@ struct RzA1lSsifState {
      * Audio output. The transmit DMA channel's ring buffer (in guest memory)
      * is mirrored to a QEMU output voice. The DMAC owns the ring geometry; the
      * SSI is told which channel carries it (tx_dma_channel) and reads the live
-     * base/size from the DMAC on demand. play_cursor walks the ring as the
-     * audio backend consumes samples.
+     * base/size from the DMAC on demand.
+     *
+     * Because the guest ring (~2.9 ms) is far smaller than the backend's pull
+     * period (~10 ms), rza1l_ssif_pump copies finished frames from the ring
+     * into a staging FIFO and the output voice drains that FIFO. The read
+     * position is bounded by the firmware's render write head
+     * (AudioEngine::i2sTXBufferPos): read_off advances up to that head, copying
+     * only frames the firmware has finished writing. The pump runs from the
+     * vCPU thread on every CRSA register read (plus a fallback timer), so it
+     * keeps pace with production even when the main loop stalls. play_anchored
+     * is false until the ring is armed and read_off has been seeded.
      */
     AudioBackend *audio_be;
     struct RzA1lDmacState *dmac;
@@ -75,7 +101,16 @@ struct RzA1lSsifState {
     int      rx_dma_channel;
     SWVoiceOut *voice_out;
     SWVoiceIn  *voice_in;
-    uint32_t play_cursor;   /* byte offset within the TX ring */
+
+    QEMUTimer *play_timer;       /* fine-grained ring sampler             */
+    bool      play_anchored;     /* read_off seeded for the live ring     */
+    uint32_t  read_off;          /* byte offset within the TX ring        */
+
+    /* Host-side staging FIFO between the ring sampler and the output voice. */
+    uint8_t   fifo[RZA1L_SSIF_FIFO_SIZE];
+    uint32_t  fifo_head;         /* read index (mod RZA1L_SSIF_FIFO_SIZE)  */
+    uint32_t  fifo_len;          /* bytes currently staged                */
+
     uint32_t rec_cursor;    /* byte offset within the RX ring */
     bool     output_open;
     bool     input_open;
@@ -87,5 +122,13 @@ struct RzA1lSsifState {
  */
 void rza1l_ssif_set_dma(RzA1lSsifState *s, struct RzA1lDmacState *dmac,
                         int tx_channel, int rx_channel);
+
+/*
+ * vCPU-side ring pump invoked by the DMAC on each transmit CRSA register read.
+ * Copies finished frames from the guest TX ring into the staging FIFO in step
+ * with the firmware's playback polling, so sampling tracks production and is
+ * never starved by main-loop stalls. opaque is the RzA1lSsifState.
+ */
+void rza1l_ssif_tx_crsa_read(void *opaque);
 
 #endif /* HW_SSI_RZA1L_SSIF_H */

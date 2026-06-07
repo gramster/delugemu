@@ -440,6 +440,28 @@ static uint32_t rza1l_dmac_tx_audio_crsa(RzA1lDmacChannel *c)
     return c->tx_audio_base + (uint32_t)(bytes % c->tx_audio_size);
 }
 
+bool rza1l_dmac_get_tx_audio_crsa(RzA1lDmacState *s, int ch, uint32_t *crsa)
+{
+    RzA1lDmacChannel *c;
+
+    if (ch < 0 || ch >= RZA1L_DMAC_NUM_CH) {
+        return false;
+    }
+    c = &s->ch[ch];
+    if (!c->tx_audio_active || c->tx_audio_size == 0) {
+        return false;
+    }
+    *crsa = rza1l_dmac_tx_audio_crsa(c);
+    return true;
+}
+
+void rza1l_dmac_set_tx_audio_pump(RzA1lDmacState *s,
+                                  void (*pump)(void *opaque), void *opaque)
+{
+    s->tx_audio_pump = pump;
+    s->tx_audio_pump_opaque = opaque;
+}
+
 /*
  * Synthesise the SSI receive channel's current destination address from
  * elapsed virtual time, modelling the audio DMA continuously writing captured
@@ -556,6 +578,14 @@ static uint64_t rza1l_dmac_read(void *opaque, hwaddr offset, unsigned size)
             /* Live audio playback position (see rza1l_dmac_tx_audio_crsa). */
             s->ch[ch].crsa = rza1l_dmac_tx_audio_crsa(&s->ch[ch]);
             reg = s->ch[ch].crsa;
+            /*
+             * The firmware polls this register from its audio loop; use it as
+             * a vCPU-side tick to pump the SSI ring sampler, keeping the copy
+             * locked to production and immune to main-loop stalls.
+             */
+            if (s->tx_audio_pump) {
+                s->tx_audio_pump(s->tx_audio_pump_opaque);
+            }
         } else if (chreg == DMAC_CRDA && s->ch[ch].rx_audio_active) {
             /* Live audio capture position (see rza1l_dmac_rx_audio_crda). */
             s->ch[ch].crda = rza1l_dmac_rx_audio_crda(&s->ch[ch]);
