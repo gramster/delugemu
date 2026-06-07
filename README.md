@@ -80,6 +80,12 @@ See [docs/architecture.md](docs/architecture.md) for details.
 # Options: attach an SD image, route MIDI to a chardev, add an audio
 # backend, or pick a display mode (headless/console/none). See --help.
 ./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
+
+# Hear the Deluge on your speakers: route the SSIF (I2S) output to a host
+# audio backend. 'auto' picks coreaudio on macOS, pa on Linux, dsound on
+# Windows; or name one explicitly (coreaudio / pa / sdl / wav). Play a note in
+# an instrument clip to get 44.1 kHz stereo output.
+./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console --audio auto
 ```
 
 ## Repository layout

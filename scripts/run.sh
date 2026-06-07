@@ -16,9 +16,12 @@
 #                           chardev spec, e.g. --usb-midi udp:127.0.0.1:1998 or
 #                           --usb-midi pty. Bridges the firmware's bulk USB-MIDI
 #                           pipes to that backend (routed to serial slot 1).
-#   --audio <driver>        Add a QEMU audio backend (-audiodev <driver>),
-#                           e.g. --audio coreaudio / pa / sdl / none. (No audio
-#                           device consumes it yet; reserved for the M5 SSI sink.)
+#   --audio <driver>        Route the SSIF (I2S) output to a host audio backend
+#                           (-audiodev <driver>). Use 'auto' to pick the OS
+#                           default (coreaudio on macOS, pa on Linux, dsound on
+#                           Windows); or name one explicitly, e.g. --audio
+#                           coreaudio / pa / sdl / wav / none. Play a note in an
+#                           instrument clip to hear 44.1 kHz stereo output.
 #   --display <mode>        Display mode:
 #                             headless  no GUI; serial+monitor on stdio (default)
 #                             console   open a window with the modelled OLED /
@@ -141,11 +144,21 @@ esac
 
 # Optional audio backend, routed to the SSIF (I2S) sink. The SoC builds the
 # SSIF internally, so -global binds the audiodev to the device's property.
+# 'auto' resolves to the recommended host driver for this OS.
 AUDIO_ARGS=()
 if [ -n "${AUDIO}" ]; then
+    if [ "${AUDIO}" = "auto" ]; then
+        case "$(uname -s)" in
+            Darwin)  AUDIO="coreaudio" ;;
+            Linux)   AUDIO="pa" ;;
+            MINGW*|MSYS*|CYGWIN*) AUDIO="dsound" ;;
+            *)       AUDIO="sdl" ;;
+        esac
+        log "Audio backend auto-selected for $(uname -s): ${AUDIO}"
+    fi
     AUDIO_ARGS=(-audiodev "${AUDIO},id=deluge0"
                 -global "rza1l-ssif.audiodev=deluge0")
-    log "Adding audio backend: ${AUDIO}"
+    log "Routing SSIF audio to backend: ${AUDIO}"
 fi
 
 [ ${#SD_ARGS[@]} -gt 0 ] && log "Attaching SD image"
