@@ -10,7 +10,7 @@ The goal is to boot unmodified Deluge firmware (the open-source
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; a Windows port is pending. MIDI in/out passthrough to host is handled by a separate bridge that has not been tested yet.**
+> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; a Windows port is pending. MIDI in/out passthrough to host is handled by a separate bridge that has not been tested yet. Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub.**
 
 
 ## Target hardware
