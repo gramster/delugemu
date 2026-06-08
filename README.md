@@ -66,12 +66,14 @@ See [docs/architecture.md](docs/architecture.md) for details.
 ## Prebuilt binaries
 
 If you just want to run firmware without setting up a build toolchain, grab a
-prebuilt bundle from the [Releases](https://github.com/gramster/delugemu/releases)
-page. The macOS bundle is self-contained (the required libraries are vendored
-alongside the binary), so no Homebrew or QEMU install is needed:
+prebuilt bundle for your OS from the
+[Releases](https://github.com/gramster/delugemu/releases) page. Each bundle is
+self-contained — the required libraries are vendored alongside the binary — so
+no Homebrew / QEMU / MSYS2 install is needed.
+
+**macOS** (`DelugEmu-macos-<arch>.tar.gz`):
 
 ```sh
-# Download DelugEmu-macos-<arch>.tar.gz from Releases, then:
 tar -xzf DelugEmu-macos-arm64.tar.gz
 cd DelugEmu-macos-arm64
 ./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
@@ -82,9 +84,33 @@ The build is ad-hoc signed but not notarized, so on first launch macOS Gatekeepe
 may block it — allow it under **System Settings → Privacy & Security**, or clear
 the quarantine attribute with `xattr -dr com.apple.quarantine <bundle-dir>`.
 
+**Linux** (`DelugEmu-linux-<arch>.tar.gz`):
+
+```sh
+tar -xzf DelugEmu-linux-x86_64.tar.gz
+cd DelugEmu-linux-x86_64
+./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
+```
+
+The core C runtime and the graphics/driver stack (OpenGL, X11/Wayland) are
+deliberately left to the host, so a recent desktop distribution is assumed.
+
+**Windows** (`DelugEmu-windows-<arch>.zip`):
+
+```bat
+:: Extract the zip, then from the extracted folder:
+delugemu.cmd path\to\deluge_firmware.bin
+```
+
+The Windows bundle ships the emulator and its DLLs with a minimal launcher; the
+full `run.sh` experience (automatic firmware download, SD-card folder
+snapshotting, MIDI bridging) needs the MSYS2 build — see
+[docs/windows.md](docs/windows.md). Windows SmartScreen may warn on first launch
+because the build is unsigned.
+
 To produce a bundle yourself from a local build, run
-[`./scripts/package.sh`](scripts/package.sh) (see [Building from source](#quick-start)
-first).
+[`./scripts/package.sh`](scripts/package.sh) on the matching OS (it detects the
+host automatically; see [Building from source](#quick-start) first).
 
 ## Quick start
 
