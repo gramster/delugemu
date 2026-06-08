@@ -59,17 +59,6 @@
 #define SSIFSR_RDF   0x00000001 /* receive FIFO has data   */
 #define SSIFSR_TDE   0x00010000 /* transmit FIFO empty     */
 
-/*
- * Firmware render write head. AudioEngine::i2sTXBufferPos (a uint32_t pointer
- * into the uncached SDRAM mirror) marks the slot just past the last frame the
- * firmware has finished writing into the SSI TX ring. Reading the ring bounded
- * by this head yields finished, tear-free output. The address is fixed by the
- * firmware link map (.bss._ZN11AudioEngine14i2sTXBufferPosE) and the mirror
- * offset by RZA1 cpu_specific.h (UNCACHED_MIRROR_OFFSET).
- */
-#define RZA1L_SSIF_I2S_TX_POS_ADDR    0x20038FDC
-#define RZA1L_SSIF_RING_MIRROR_OFFSET 0x40000000
-
 static uint64_t rza1l_ssif_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lSsifState *s = opaque;
@@ -296,31 +285,39 @@ static void rza1l_ssif_fifo_push(RzA1lSsifState *s, const uint8_t *buf,
 }
 
 /*
- * Copy newly-rendered frames from the guest TX ring into the staging FIFO.
+ * Copy played-out frames from the guest TX ring into the staging FIFO.
  *
- * The read position is bounded by the firmware's render write head, not by the
- * DMA play head. In AudioEngine::doSomeOutputting the firmware copies freshly
- * mixed frames into the ring starting at i2sTXBufferPos and advancing up to —
- * but never past — the DMA source address (CRSA), then publishes the updated
- * i2sTXBufferPos in one store once the whole batch is written. Therefore every
- * slot strictly *behind* i2sTXBufferPos holds finished, tear-free output that
- * will not change until the head laps the ring a whole wrap later. We copy
- * exactly that span: from read_off forward up to i2sTXBufferPos, one slot at a
- * time, in order, delivering the firmware's true output stream frame-for-frame.
+ * The read position is bounded by the DMA play head (CRSA), the source address
+ * the SSI transmit DMA channel reads as it streams the ring to the codec. The
+ * DMAC synthesises CRSA from elapsed virtual time at the sample rate (see
+ * rza1l_dmac_tx_audio_crsa), so every slot strictly *behind* CRSA has already
+ * been clocked out to the DAC — that is exactly the audio the hardware would
+ * play. We copy that span: from read_off forward up to CRSA, one slot at a
+ * time, in order, delivering the device's true output stream frame-for-frame.
+ *
+ * This is deliberately firmware-independent: the ring base/size come from the
+ * DMA descriptor the firmware programs, and CRSA comes from the virtual clock,
+ * so no firmware build-specific symbol address is involved. (An earlier design
+ * bounded the copy by the firmware's render write head, read from the hardcoded
+ * symbol AudioEngine::i2sTXBufferPos; that produced silence for any firmware
+ * whose link map placed the symbol elsewhere than the one build it was lifted
+ * from.) Reading behind the play head can only read a stale ring slot if the
+ * firmware underruns its own DMA — rare, and absorbed by the staging FIFO's
+ * cushion rather than the gross tearing a misplaced symbol would cause.
  *
  * Crucially this runs on the vCPU thread: the DMAC calls it from every CRSA
  * register read, which the firmware performs inside its audio loop (see
  * ssi.c getTxBufferCurrentPlace). That keeps the copy locked to production and
  * immune to main-loop stalls — the guest ring is only 128 frames (~2.9 ms), so
  * the periodic display redraw, which blocks the iothread timers for several
- * milliseconds, would otherwise let the write head lap an unread region and
+ * milliseconds, would otherwise let the play head lap an unread region and
  * tear the audio. A virtual-clock fallback timer also pumps it so the FIFO
  * keeps draining while the firmware is briefly not polling CRSA.
  */
 static void rza1l_ssif_pump(RzA1lSsifState *s)
 {
     uint32_t base = 0, size = 0;
-    uint32_t wpos_ptr = 0, wpos, avail;
+    uint32_t crsa = 0, wpos, avail;
 
     if (!s->dmac ||
         !rza1l_dmac_get_tx_audio_ring(s->dmac, s->tx_dma_channel,
@@ -332,28 +329,24 @@ static void rza1l_ssif_pump(RzA1lSsifState *s)
     }
 
     /*
-     * Fetch AudioEngine::i2sTXBufferPos, the firmware's render write head. It
-     * is a pointer into the uncached SDRAM mirror; strip the mirror offset and
-     * ring base to land on a ring byte offset, then frame-align it (the
-     * firmware only ever advances it whole frames, but guard against a torn
-     * read shearing a stereo frame).
+     * Fetch the DMA play head (CRSA), an absolute address within the ring
+     * synthesised from elapsed virtual time. Reduce it to a ring byte offset
+     * and frame-align it (guard against a sub-frame value shearing a stereo
+     * frame).
      */
-    if (dma_memory_read(&address_space_memory, RZA1L_SSIF_I2S_TX_POS_ADDR,
-                        &wpos_ptr, sizeof(wpos_ptr),
-                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+    if (!rza1l_dmac_get_tx_audio_crsa(s->dmac, s->tx_dma_channel, &crsa)) {
         return;
     }
-    wpos_ptr = le32_to_cpu(wpos_ptr);
-    wpos = (wpos_ptr - RZA1L_SSIF_RING_MIRROR_OFFSET - base) % size;
+    wpos = (crsa - base) % size;
     wpos &= ~(RZA1L_SSIF_BYTES_PER_FRAME - 1);
 
     if (!s->play_anchored) {
-        /* Seed the read head at the live write head: no backlog. */
+        /* Seed the read head at the live play head: no backlog. */
         s->play_anchored = true;
         s->read_off = wpos;
     }
 
-    /* Frames to copy now: distance from read_off forward to the write head. */
+    /* Frames to copy now: distance from read_off forward to the play head. */
     avail = (wpos + size - s->read_off) % size;
 
     /*
