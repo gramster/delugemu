@@ -127,6 +127,41 @@ first).
 ./scripts/run.sh path/to/deluge_firmware.elf --usb-midi coremidi --midi coremidi
 ```
 
+### Playing the emulator from real gear (macOS)
+
+The `coremidi` bridge exposes the Deluge as virtual ports, but macOS does not
+auto-connect them to a physical instrument. The
+[`scripts/midi_route.py`](scripts/midi_route.py) helper wires two CoreMIDI
+endpoints together by name **and prints every message that crosses**, so you can
+play your hardware into the emulated Deluge and hear/see the Deluge's output
+back on your gear. It needs [python-rtmidi](https://pypi.org/project/python-rtmidi/)
+(`pip install python-rtmidi`).
+
+Given two name fragments `A` and `B`, it connects both directions:
+
+```
+A out (source)  ──▶  B in  (destination)
+B out (source)  ──▶  A in  (destination)
+```
+
+```sh
+# Start the emulator with the DIN MIDI exposed as a CoreMIDI port:
+./scripts/run.sh path/to/deluge_firmware.elf --midi coremidi
+
+# In another terminal, bridge your instrument to the Deluge and watch traffic.
+# Defaults are A="Summit", B="DelugEmu"; pass your own names to override:
+./scripts/midi_route.py                      # Summit  <->  DelugEmu
+./scripts/midi_route.py Summit "DelugEmu DIN"
+
+# List the available CoreMIDI ports (to find the right names) and exit:
+./scripts/midi_route.py --list
+```
+
+Names are matched as case-insensitive substrings of the CoreMIDI port name. If a
+fragment is ambiguous (e.g. `DelugEmu` matches both `DelugEmu DIN` and
+`DelugEmu USB`), pass the full name. Press Ctrl-C to stop. The script is also
+included under `scripts/` in the release bundle.
+
 ## SD card image
 
 The Deluge loads songs, synths, kits and samples from an SD card, so most of
