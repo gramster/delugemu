@@ -96,6 +96,66 @@ See [docs/architecture.md](docs/architecture.md) for details.
 ./scripts/run.sh path/to/deluge_firmware.elf --usb-midi coremidi --midi coremidi --display console
 ```
 
+## SD card image
+
+The Deluge loads songs, synths, kits and samples from an SD card, so most of
+the firmware (song load, audio playback, the file browser) only works with a
+card attached. The card is a raw FAT32 disk image passed with `--sd`.
+
+QEMU's SD device requires the image to be **a power-of-two size** (e.g. 128 MiB,
+256 MiB, 512 MiB, 1 GiB); a non-power-of-two image is rejected with
+`Invalid SD card size`.
+
+The easiest way is the helper script, which sizes the image correctly for you:
+
+```sh
+# Build build/deluge_sd.img from the bundled factory content in sdcard/
+./scripts/mksd.sh
+
+# Or from your own content directory, to a custom output path
+./scripts/mksd.sh path/to/my_card_content build/my_sd.img
+```
+
+`mksd.sh` measures the content, adds slack, **rounds the capacity up to the next
+power of two** (minimum 128 MiB), formats it FAT32 with volume label `DELUGE`,
+and copies the directory contents to the root of the card. On macOS it uses the
+built-in `hdiutil` / `newfs_msdos`; on Linux it needs `dosfstools` (`mkfs.fat`)
+and `mtools` (`mcopy`) — install them with your package manager first.
+
+Lay out the content directory like a real Deluge card (factory folders are in
+[`sdcard/`](sdcard) to copy from):
+
+```
+SONGS/      Song .XML files
+SYNTHS/     Synth preset .XML files
+KITS/       Kit preset .XML files
+SAMPLES/    Audio samples (.wav)
+```
+
+To build an image by hand instead, create a power-of-two raw image, format it
+FAT32, and copy your content in:
+
+```sh
+# 256 MiB (= 2^28 bytes) raw image, FAT32, label DELUGE
+dd if=/dev/zero of=build/deluge_sd.img bs=1m count=256
+
+# macOS
+dev=$(hdiutil attach -nomount -imagekey diskimage-class=CRawDiskImage build/deluge_sd.img | head -1 | awk '{print $1}')
+newfs_msdos -F 32 -v DELUGE "$dev"
+diskutil mount "$dev"            # then copy SONGS/ SYNTHS/ KITS/ SAMPLES/ into the mounted volume
+diskutil unmount "$dev"; hdiutil detach "$dev"
+
+# Linux (needs dosfstools + mtools)
+mkfs.fat -F 32 -n DELUGE build/deluge_sd.img
+mcopy -i build/deluge_sd.img -s SONGS SYNTHS KITS SAMPLES ::/
+```
+
+Then run with `--sd`:
+
+```sh
+./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
+```
+
 ## Controls
 
 With the interactive skin window (`--display console`), the front panel is
