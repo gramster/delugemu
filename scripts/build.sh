@@ -12,8 +12,10 @@
 
 require_submodule
 
-# Ensure our models are linked in before configuring.
-if [ ! -L "${QEMU_DIR}/hw/deluge" ]; then
+# Ensure our models are linked in before configuring. integrate.sh may have
+# linked (symlink) or copied the sources in, so test for existence rather than
+# specifically a symlink (Windows/MSYS2 may use a copy).
+if [ ! -e "${QEMU_DIR}/hw/deluge" ]; then
     warn "delugemu sources not linked into QEMU; running integrate.sh first."
     "${REPO_ROOT}/scripts/integrate.sh"
 fi
@@ -50,7 +52,7 @@ fi
 log "Building with ${JOBS} jobs..."
 ninja -C "${QEMU_BUILD_DIR}"
 
-BIN="${QEMU_BUILD_DIR}/qemu-system-arm"
+BIN="${QEMU_BUILD_DIR}/qemu-system-arm${EXE_SUFFIX}"
 
 # On macOS, QEMU's build system links `qemu-system-arm-unsigned` and then runs
 # `scripts/entitlement.sh` (via a Meson custom_target) to produce the final

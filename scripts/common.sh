@@ -14,10 +14,20 @@ QEMU_DIR="${REPO_ROOT}/qemu"
 QEMU_BUILD_DIR="${QEMU_DIR}/build"
 SRC_DIR="${REPO_ROOT}/src"
 
+# Host OS classification. On Windows the build/run scripts are expected to run
+# inside an MSYS2/MinGW shell, where `uname -s` reports MINGW*/MSYS*/CYGWIN*.
+# EXE_SUFFIX is appended to the emulator binary name there (qemu-system-arm.exe).
+case "$(uname -s 2>/dev/null || echo unknown)" in
+    Darwin)                 DELUGEMU_OS="macos";   EXE_SUFFIX="" ;;
+    Linux)                  DELUGEMU_OS="linux";   EXE_SUFFIX="" ;;
+    MINGW*|MSYS*|CYGWIN*)   DELUGEMU_OS="windows"; EXE_SUFFIX=".exe" ;;
+    *)                      DELUGEMU_OS="unknown"; EXE_SUFFIX="" ;;
+esac
+
 # The qemu-system-arm binary the run helper drives. Defaults to the in-tree
 # build, but a packaged/relocatable bundle can point it at its vendored binary
 # via DELUGEMU_QEMU_BIN (see scripts/package.sh).
-QEMU_SYSTEM_BIN="${DELUGEMU_QEMU_BIN:-${QEMU_BUILD_DIR}/qemu-system-arm}"
+QEMU_SYSTEM_BIN="${DELUGEMU_QEMU_BIN:-${QEMU_BUILD_DIR}/qemu-system-arm${EXE_SUFFIX}}"
 
 # The QEMU machine type registered by our board model. Used by run.sh.
 DELUGE_MACHINE="deluge"

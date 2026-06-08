@@ -1,3 +1,14 @@
 
+# Normalise line endings to LF in the repository. This project's tooling is
+# Unix-oriented (Bash build scripts, QEMU Meson/Kconfig, Python helpers) and is
+# run on Windows through MSYS2 / Git Bash, which cannot execute scripts with
+# CRLF line endings. Without this, a Windows checkout with core.autocrlf=true
+# would rewrite the shell scripts to CRLF and break the build/run flow.
+* text=auto eol=lf
+
+# Belt-and-braces: always keep executable scripts as LF regardless of detection.
+*.sh   text eol=lf
+*.py   text eol=lf
+
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads

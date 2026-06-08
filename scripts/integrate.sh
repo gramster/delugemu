@@ -74,6 +74,32 @@ MARKER_END="# <<< delugemu integration end >>>"
 # directories present in src/include/hw).
 HEADER_DIRS=(arm char display dma gpio input misc sd ssi timer usb)
 
+# Whether any link fell back to a plain copy (see link_or_copy). Set during the
+# integration pass so we can warn the user that re-running integrate.sh is
+# needed after editing src/ when real symlinks are unavailable.
+LINK_FALLBACK_USED=0
+
+# Create a link named $2 that resolves to $1. Prefer a real symbolic link; on
+# platforms where symlinks are unavailable (notably MSYS2/MinGW without Windows
+# Developer Mode, or MSYS=winsymlinks:nativestrict), fall back to copying so the
+# build still works. With a copy, edits to src/ are not reflected until
+# integrate.sh is re-run -- link_or_copy records that in LINK_FALLBACK_USED.
+link_or_copy() {
+    local target="$1" linkname="$2"
+    if ln -s "${target}" "${linkname}" 2>/dev/null && [ -L "${linkname}" ]; then
+        return 0
+    fi
+    # ln may have created a non-symlink copy (MSYS default) or failed outright;
+    # normalise to a clean copy either way.
+    rm -rf "${linkname}"
+    if [ -d "${target}" ]; then
+        cp -R "${target}" "${linkname}"
+    else
+        cp "${target}" "${linkname}"
+    fi
+    LINK_FALLBACK_USED=1
+}
+
 # Tracked upstream files we append our build hooks to. They are kept out of
 # `git status` with --skip-worktree (see header comment).
 TRACKED_HOOK_FILES=(hw/meson.build hw/Kconfig)
@@ -189,17 +215,17 @@ undo() {
     # 0b. Reverse any applied qemu-patches/ so upstream files are byte-identical.
     revert_patches
 
-    # 1. Source tree symlink.
-    [ -L "${LINK_PATH}" ] && rm -f "${LINK_PATH}"
+    # 1. Source tree link (symlink or copied directory).
+    rm -rf "${LINK_PATH}"
 
-    # 2. Per-file header symlinks under include/hw/<dir>/.
+    # 2. Per-file header links (symlinks or copies) under include/hw/<dir>/.
     local dir hdr target
     for dir in "${HEADER_DIRS[@]}"; do
         [ -d "${SRC_INC_HW}/${dir}" ] || continue
         for hdr in "${SRC_INC_HW}/${dir}"/*.h; do
             [ -e "${hdr}" ] || continue
             target="${QEMU_INC_HW}/${dir}/$(basename "${hdr}")"
-            [ -L "${target}" ] && rm -f "${target}"
+            rm -f "${target}"
         done
     done
 
@@ -237,29 +263,25 @@ if [ "${1:-}" = "--undo" ]; then
     exit 0
 fi
 
-# 1. Symlink our source tree in as hw/deluge.
-if [ -L "${LINK_PATH}" ]; then
-    log "Symlink ${LINK_PATH} already present."
-elif [ -e "${LINK_PATH}" ]; then
-    die "${LINK_PATH} exists and is not a symlink; refusing to clobber."
+# 1. Link our source tree in as hw/deluge (symlink, or a copy as a fallback).
+if [ -e "${LINK_PATH}" ] || [ -L "${LINK_PATH}" ]; then
+    log "${LINK_PATH} already present."
 else
     log "Linking ${SRC_DIR} -> ${LINK_PATH}"
-    ln -s "${SRC_DIR}" "${LINK_PATH}"
+    link_or_copy "${SRC_DIR}" "${LINK_PATH}"
 fi
 
-# 2. Symlink headers into qemu/include/hw/<dir>/ (on the default include path).
+# 2. Link headers into qemu/include/hw/<dir>/ (on the default include path).
 for dir in "${HEADER_DIRS[@]}"; do
     [ -d "${SRC_INC_HW}/${dir}" ] || continue
     mkdir -p "${QEMU_INC_HW}/${dir}"
     for hdr in "${SRC_INC_HW}/${dir}"/*.h; do
         [ -e "${hdr}" ] || continue
         target="${QEMU_INC_HW}/${dir}/$(basename "${hdr}")"
-        if [ -L "${target}" ]; then
+        if [ -e "${target}" ] || [ -L "${target}" ]; then
             continue
-        elif [ -e "${target}" ]; then
-            die "${target} exists and is not a symlink; refusing to clobber."
         fi
-        ln -s "${hdr}" "${target}"
+        link_or_copy "${hdr}" "${target}"
         log "Linked header $(basename "${hdr}") into include/hw/${dir}/"
     done
 done
@@ -303,3 +325,11 @@ apply_patches
 log "Integration complete. Next: ./scripts/build.sh"
 log "The qemu submodule now reports clean (git status -C qemu); run"
 log "  ./scripts/integrate.sh --undo  to fully revert these local changes."
+
+if [ "${LINK_FALLBACK_USED}" -eq 1 ]; then
+    warn "Symlinks were unavailable; copied sources/headers into the QEMU tree"
+    warn "instead. Edits under src/ will NOT be picked up until you re-run"
+    warn "./scripts/integrate.sh. To get live symlinks on Windows, enable"
+    warn "Developer Mode (or run as Administrator) and export"
+    warn "MSYS=winsymlinks:nativestrict before re-running."
+fi

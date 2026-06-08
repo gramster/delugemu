@@ -57,6 +57,61 @@ jobs:
         # image in a prior step and point DELUGE_FIRMWARE at it.
         run: ./tests/boot.sh
 
+  # Windows build runs under MSYS2/MinGW -- the same toolchain QEMU itself uses
+  # for its official Windows binaries. The Bash build scripts run unmodified in
+  # the MINGW64 shell (see docs/windows.md).
+  build-windows:
+    name: Build qemu-system-arm.exe + smoke + regression (Windows/MSYS2)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout (without submodules; we fetch QEMU shallowly)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up MSYS2 (MINGW64) with build dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            ninja
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-pixman
+            mingw-w64-x86_64-gtk3
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-dosfstools
+            mtools
+
+      - name: Bootstrap QEMU submodule
+        run: ./scripts/bootstrap.sh
+
+      - name: Integrate device models
+        run: ./scripts/integrate.sh
+
+      - name: Build
+        run: ./scripts/build.sh
+
+      - name: Smoke test
+        run: ./tests/smoke.sh
+
+      - name: Firmware-boot regression test
+        # Firmware is not shipped with the repo, so this skips cleanly (exit 0)
+        # when no image is present. To exercise the full boot in CI, fetch an
+        # image in a prior step and point DELUGE_FIRMWARE at it.
+        run: ./tests/boot.sh
+
   # On a version tag (v*), build a self-contained, relocatable macOS bundle and
   # attach it to the GitHub Release so users can download and run without a
   # build toolchain. See scripts/package.sh.

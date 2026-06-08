@@ -12,7 +12,8 @@ Thanks for your interest in improving the Deluge emulator.
   `snake_case` for functions. Run `clang-format` (config in `.clang-format`).
 - **Keep upstream clean.** Do not commit changes inside `qemu/`. All custom code
   lives in `src/`. Integration with the QEMU tree happens via
-  `scripts/integrate.sh`, which symlinks our files in and patches the build.
+  `scripts/integrate.sh`, which symlinks our files in (or copies them, on hosts
+  without symlink support such as Windows/MSYS2) and patches the build.
 
 ## Workflow
 

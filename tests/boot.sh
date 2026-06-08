@@ -26,7 +26,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${REPO_ROOT}/qemu/build/qemu-system-arm"
+# On Windows (MSYS2/MinGW) the emulator is qemu-system-arm.exe.
+case "$(uname -s 2>/dev/null || echo unknown)" in
+    MINGW*|MSYS*|CYGWIN*) EXE_SUFFIX=".exe" ;;
+    *)                    EXE_SUFFIX="" ;;
+esac
+BIN="${REPO_ROOT}/qemu/build/qemu-system-arm${EXE_SUFFIX}"
 
 # Minimum IRQ exceptions expected from a healthy boot. The firmware programs
 # several periodic timers (OSTM/MTU2) during init; a stuck/early-faulting boot

@@ -10,7 +10,7 @@ The goal is to boot unmodified Deluge firmware (the open-source
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; Windows and Linux ports are pending.  Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option.
+> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; the build also runs on Windows via MSYS2/MinGW (see [docs/windows.md](docs/windows.md)), and a Linux port is pending.  Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option.
 
 
 ## Target hardware
@@ -88,6 +88,11 @@ first).
 
 ## Quick start
 
+The build scripts are Bash and drive QEMU's Meson/Ninja build. On **macOS** and
+**Linux** run them directly from a terminal. On **Windows**, run them from an
+MSYS2/MinGW shell — see [docs/windows.md](docs/windows.md) for the one-time
+toolchain setup; the commands below are otherwise identical.
+
 ```sh
 # 1. Fetch the QEMU submodule (large, one-time)
 ./scripts/bootstrap.sh
@@ -126,6 +131,10 @@ first).
 # stream to CoreMIDI virtual ports.
 ./scripts/run.sh path/to/deluge_firmware.elf --usb-midi coremidi --midi coremidi
 ```
+
+> On **Windows**, the `coremidi` shortcut is not available (it uses Apple's
+> CoreMIDI). Generic chardev MIDI routing (e.g. `--midi udp:127.0.0.1:1999`)
+> still works; see [docs/windows.md](docs/windows.md#midi-on-windows).
 
 ### Playing the emulator from real gear (macOS)
 
