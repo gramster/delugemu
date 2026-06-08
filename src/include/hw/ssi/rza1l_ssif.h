@@ -59,11 +59,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSsifState, RZA1L_SSIF)
  * voice's pull rate, spending and refilling the cushion as bursts ebb and
  * flow. Measured production stalls (emulation briefly pausing while the host
  * keeps consuming, e.g. during the periodic display redraw) drain ~85 ms, so
- * the cushion is sized well above that (~125 ms) to ride them without the FIFO
- * ever reaching empty. A brief shortfall is handled softly (silence for that
- * callback only) rather than by a disruptive full rebuild.
+ * the default cushion is sized well above that (~125 ms) to ride them without
+ * the FIFO ever reaching empty. A brief shortfall is handled softly (silence
+ * for that callback only) rather than by a disruptive full rebuild.
+ *
+ * The depth is tunable at runtime via the "prime-ms" property (run.sh's
+ * --audio-latency): lowering it cuts perceived latency (helpful when playing
+ * the emulated Deluge live from external MIDI) at the cost of more frequent
+ * soft dropouts during redraw stalls. The value is clamped to the FIFO size.
  */
-#define RZA1L_SSIF_PRIME_BYTES   44100u             /* ~125 ms @ 44.1k stereo */
+#define RZA1L_SSIF_DEFAULT_PRIME_MS  125u           /* ~125 ms @ 44.1k stereo */
 
 struct RzA1lDmacState;
 
@@ -121,6 +126,10 @@ struct RzA1lSsifState {
     bool      out_primed;        /* output cushion built; draining at rate */
     uint32_t  read_off;          /* byte offset within the TX ring        */
     uint32_t  drain_frac;        /* 16.16 resampler phase for drift trim   */
+
+    /* Output latency cushion: "prime-ms" property -> derived byte depth. */
+    uint32_t  prime_ms;          /* configured cushion in milliseconds    */
+    uint32_t  prime_bytes;       /* cushion depth in bytes (clamped)      */
 
     /* Host-side staging FIFO between the ring sampler and the output voice. */
     uint8_t   fifo[RZA1L_SSIF_FIFO_SIZE];

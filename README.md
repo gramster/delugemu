@@ -10,7 +10,7 @@ The goal is to boot unmodified Deluge firmware (the open-source
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; a Windows port is pending. MIDI in/out passthrough to host is handled by a separate bridge that has not been tested yet. Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub.**
+> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; Windows and Linux ports are pending.  Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering MIDI on the Deluge emulator from an external source is a bit laggy.
 
 
 ## Target hardware
@@ -110,6 +110,12 @@ first).
 # note in an instrument clip to get 44.1 kHz stereo. Pass --audio <driver> only
 # to select a non-default backend (e.g. sdl / wav / none).
 ./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img
+
+# Output latency: the SSIF keeps a ~125 ms cushion so the periodic display
+# redraw can't starve the audio. Lower it with --audio-latency <ms> (e.g. 40)
+# to play the emulated Deluge live from external MIDI with less delay; too low
+# risks occasional dropouts during the redraw.
+./scripts/run.sh path/to/deluge_firmware.elf --midi coremidi --audio-latency 40
 
 # Run without a window (serial + monitor on the terminal):
 ./scripts/run.sh path/to/deluge_firmware.elf --display headless

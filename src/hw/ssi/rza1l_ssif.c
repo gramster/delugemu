@@ -200,7 +200,7 @@ void rza1l_ssif_set_dma(RzA1lSsifState *s, struct RzA1lDmacState *dmac,
 static void rza1l_ssif_drain(RzA1lSsifState *s, uint32_t max_bytes)
 {
     const uint32_t F = RZA1L_SSIF_BYTES_PER_FRAME;
-    int32_t target = RZA1L_SSIF_PRIME_BYTES;
+    int32_t target = (int32_t)s->prime_bytes;
     int32_t err = (int32_t)s->fifo_len - target;
     uint32_t step;                   /* 16.16 FIFO frames per emitted frame */
     uint8_t out[4096];
@@ -426,7 +426,7 @@ static void rza1l_ssif_out_cb(void *opaque, int free_bytes)
     }
 
     if (!s->out_primed) {
-        if (s->fifo_len < RZA1L_SSIF_PRIME_BYTES) {
+        if (s->fifo_len < s->prime_bytes) {
             return; /* still building the cushion; voice plays silence */
         }
         s->out_primed = true;
@@ -523,6 +523,26 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(sbd, &s->irq_txi);
 
     /*
+     * Derive the output latency cushion (bytes) from the configured prime-ms.
+     * Clamp to just under the staging FIFO so the cushion can always be filled;
+     * an unreachable target would leave the voice permanently silent.
+     */
+    {
+        uint64_t bytes = (uint64_t)s->prime_ms * RZA1L_SSIF_SAMPLE_RATE *
+                         RZA1L_SSIF_BYTES_PER_FRAME / 1000u;
+        uint32_t cap = RZA1L_SSIF_FIFO_SIZE - RZA1L_SSIF_BYTES_PER_FRAME;
+        if (bytes > cap) {
+            bytes = cap;
+        }
+        /* Always keep at least a frame of cushion. */
+        if (bytes < RZA1L_SSIF_BYTES_PER_FRAME) {
+            bytes = RZA1L_SSIF_BYTES_PER_FRAME;
+        }
+        bytes &= ~(uint64_t)(RZA1L_SSIF_BYTES_PER_FRAME - 1);
+        s->prime_bytes = (uint32_t)bytes;
+    }
+
+    /*
      * The Deluge is fundamentally an audio device, so we always open a host
      * voice. With no -audiodev on the command line, audio_be_check() resolves
      * the OS default backend (coreaudio/pa/dsound/...); pass -audiodev only to
@@ -600,6 +620,8 @@ static const VMStateDescription vmstate_rza1l_ssif = {
 static const Property rza1l_ssif_properties[] = {
     DEFINE_AUDIO_PROPERTIES(RzA1lSsifState, audio_be),
     DEFINE_PROP_BOOL("capture", RzA1lSsifState, capture, false),
+    DEFINE_PROP_UINT32("prime-ms", RzA1lSsifState, prime_ms,
+                       RZA1L_SSIF_DEFAULT_PRIME_MS),
 };
 
 static void rza1l_ssif_class_init(ObjectClass *klass, const void *data)
