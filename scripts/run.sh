@@ -45,7 +45,7 @@ usage() {
     sed -n '4,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-BIN="${QEMU_BUILD_DIR}/qemu-system-arm"
+BIN="${QEMU_SYSTEM_BIN}"
 [ -x "${BIN}" ] || die "qemu-system-arm not built. Run ./scripts/build.sh first."
 
 FIRMWARE="${1:-}"

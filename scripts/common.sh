@@ -14,6 +14,11 @@ QEMU_DIR="${REPO_ROOT}/qemu"
 QEMU_BUILD_DIR="${QEMU_DIR}/build"
 SRC_DIR="${REPO_ROOT}/src"
 
+# The qemu-system-arm binary the run helper drives. Defaults to the in-tree
+# build, but a packaged/relocatable bundle can point it at its vendored binary
+# via DELUGEMU_QEMU_BIN (see scripts/package.sh).
+QEMU_SYSTEM_BIN="${DELUGEMU_QEMU_BIN:-${QEMU_BUILD_DIR}/qemu-system-arm}"
+
 # The QEMU machine type registered by our board model. Used by run.sh.
 DELUGE_MACHINE="deluge"
 

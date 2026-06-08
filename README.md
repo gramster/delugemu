@@ -63,6 +63,29 @@ firmware (.elf/.bin)
 
 See [docs/architecture.md](docs/architecture.md) for details.
 
+## Prebuilt binaries
+
+If you just want to run firmware without setting up a build toolchain, grab a
+prebuilt bundle from the [Releases](https://github.com/gramster/delugemu/releases)
+page. The macOS bundle is self-contained (the required libraries are vendored
+alongside the binary), so no Homebrew or QEMU install is needed:
+
+```sh
+# Download DelugEmu-macos-<arch>.tar.gz from Releases, then:
+tar -xzf DelugEmu-macos-arm64.tar.gz
+cd DelugEmu-macos-arm64
+./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img --display console
+./delugemu --help
+```
+
+The build is ad-hoc signed but not notarized, so on first launch macOS Gatekeeper
+may block it — allow it under **System Settings → Privacy & Security**, or clear
+the quarantine attribute with `xattr -dr com.apple.quarantine <bundle-dir>`.
+
+To produce a bundle yourself from a local build, run
+[`./scripts/package.sh`](scripts/package.sh) (see [Building from source](#quick-start)
+first).
+
 ## Quick start
 
 ```sh
