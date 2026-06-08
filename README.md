@@ -3,14 +3,15 @@
 A hardware emulator for the [Synthstrom Audible Deluge](https://synthstrom.com/product/deluge/),
 built as a custom machine model on top of [QEMU](https://www.qemu.org/).
 
+![Deluge front panel](Deluge_Plain.png)
+
 The goal is to boot unmodified Deluge firmware (the open-source
 [DelugeFirmware](https://github.com/SynthstromAudible/DelugeFirmware)) in a
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **early scaffolding**. The repository currently provides the project
-> structure, build glue and device-model stubs. None of the peripherals are
-> functionally complete yet. See [docs/roadmap.md](docs/roadmap.md).
+> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; a Windows port is pending. MIDI in/out passthrough to host is handled by a separate bridge that has not been tested yet.**
+
 
 ## Target hardware
 

@@ -1,0 +1,37 @@
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 9093d1e408..f6204738d1 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -1185,9 +1185,9 @@ - (void) grabMouse
+     COCOA_DEBUG("QemuCocoaView: grabMouse\n");
+ 
+     if (qemu_name)
+-        [[self window] setTitle:[NSString stringWithFormat:@"QEMU %s - (Press  " UC_CTRL_KEY " " UC_ALT_KEY " G  to release Mouse)", qemu_name]];
++        [[self window] setTitle:[NSString stringWithFormat:@"DelugEmu %s - (Press  " UC_CTRL_KEY " " UC_ALT_KEY " G  to release Mouse)", qemu_name]];
+     else
+-        [[self window] setTitle:@"QEMU - (Press  " UC_CTRL_KEY " " UC_ALT_KEY " G  to release Mouse)"];
++        [[self window] setTitle:@"DelugEmu - (Press  " UC_CTRL_KEY " " UC_ALT_KEY " G  to release Mouse)"];
+     [self hideCursor];
+     CGAssociateMouseAndMouseCursorPosition(isAbsoluteEnabled);
+     isMouseGrabbed = TRUE; // while isMouseGrabbed = TRUE, QemuCocoaApp sends all events to [cocoaView handleEvent:]
+@@ -1198,9 +1198,9 @@ - (void) ungrabMouse
+     COCOA_DEBUG("QemuCocoaView: ungrabMouse\n");
+ 
+     if (qemu_name)
+-        [[self window] setTitle:[NSString stringWithFormat:@"QEMU %s", qemu_name]];
++        [[self window] setTitle:[NSString stringWithFormat:@"DelugEmu %s", qemu_name]];
+     else
+-        [[self window] setTitle:@"QEMU"];
++        [[self window] setTitle:@"DelugEmu"];
+     [self unhideCursor];
+     CGAssociateMouseAndMouseCursorPosition(TRUE);
+     isMouseGrabbed = FALSE;
+@@ -1307,7 +1307,7 @@ - (id) init
+         }
+         [window setAcceptsMouseMovedEvents:YES];
+         [window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
+-        [window setTitle:qemu_name ? [NSString stringWithFormat:@"QEMU %s", qemu_name] : @"QEMU"];
++        [window setTitle:qemu_name ? [NSString stringWithFormat:@"DelugEmu %s", qemu_name] : @"DelugEmu"];
+         [window setContentView:cocoaView];
+         [window makeKeyAndOrderFront:self];
+         [window center];
