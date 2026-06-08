@@ -6,8 +6,10 @@
     A PowerShell port of scripts/run.sh for the relocatable Windows bundle, so a
     clean Windows machine (no MSYS2) gets the full experience: optional firmware
     with auto-download of the community release, SD images and SD *folders*
-    (snapshotted into a FAT image, with write-back for '_rw' folders), MIDI
-    routing over QEMU chardevs, audio backend selection and display modes.
+    (snapshotted into a FAT image, with write-back for '_rw' folders) including
+    auto-detection of a default sdcard folder and download of the Synthstrom
+    factory card, MIDI routing over QEMU chardevs, audio backend selection and
+    display modes.
 
     It is shipped alongside qemu-system-arm.exe in the Windows release bundle and
     invoked by delugemu.cmd. The macOS-only 'coremidi' MIDI shortcut is not
@@ -51,7 +53,10 @@ Options:
                         into a temporary FAT image at launch. If the directory
                         name ends in '_rw', the guest's changes are written back
                         to it on exit. SD folders need the bundled mkfs.fat and
-                        mcopy tools.
+                        mcopy tools. If omitted, an 'sdcard_rw' or 'sdcard'
+                        folder in the current directory is used automatically;
+                        if neither exists, the launcher offers to download the
+                        Synthstrom factory card contents into .\sdcard.
   --midi <chardev>      Back SCIF0 (DIN MIDI) with a QEMU chardev spec, e.g.
                         --midi udp:127.0.0.1:1999. ('coremidi' is macOS-only.)
   --usb-midi <chardev>  Attach a host USB-MIDI device on a QEMU chardev spec.
@@ -81,6 +86,13 @@ $FirmwareDir = if ($env:DELUGEMU_FIRMWARE_DIR) { $env:DELUGEMU_FIRMWARE_DIR } el
 
 $CommunityFwUrl  = 'https://github.com/SynthstromAudible/DelugeFirmware/releases/download/release_1_2_1/deluge-community-release-1_2_1.zip'
 $CommunityFwName = 'Deluge community firmware 1.2.1 (Chopin)'
+
+# Default SD-card folder (auto-detected when no --sd is given) and the Synthstrom
+# factory card contents offered for download when neither it nor an '<sd>_rw'
+# variant exists. Downloaded and unzipped, not redistributed.
+$SdDir         = if ($env:DELUGEMU_SD_DIR) { $env:DELUGEMU_SD_DIR } else { 'sdcard' }
+$FactorySdUrl  = 'https://s3.us-east-2.amazonaws.com/synthstrom-audible-deluge/Deluge+V2p1p0+factory+card+contents.zip'
+$FactorySdName = 'Deluge V2.1.0 factory card contents'
 
 # A bundled or on-PATH tool. Returns the resolved path or $null.
 function Find-Tool {
@@ -218,6 +230,28 @@ function Resolve-SdArgs {
     }
 }
 
+# Download the Synthstrom factory card zip and unzip it into $Dir.
+function Get-FactorySdCard {
+    param([string]$Dir)
+    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("delugemu-sddl-" + [System.IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    $zip = Join-Path $tmp 'sdcard.zip'
+    try {
+        Write-Log "Downloading $FactorySdName..."
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $FactorySdUrl -OutFile $zip -UseBasicParsing
+        Write-Log "Extracting into $Dir"
+        Expand-Archive -LiteralPath $zip -DestinationPath $Dir -Force
+    }
+    catch {
+        Die "SD card download/extract failed: $($_.Exception.Message)"
+    }
+    finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- Argument parsing (mirrors run.sh) --------------------------------------
 
 $Firmware    = $null
@@ -283,6 +317,37 @@ if (-not $Firmware) {
     }
 }
 if (-not (Test-Path -LiteralPath $Firmware -PathType Leaf)) { Die "Firmware not found: $Firmware" }
+
+# --- Resolve default SD card ------------------------------------------------
+
+# If no --sd was given, auto-detect an '<sd>_rw' or '<sd>' folder in the current
+# directory (the '_rw' variant is preferred so guest changes are written back).
+# If neither exists and we are interactive, offer to download the factory card.
+if ($SdArgs.Count -eq 0) {
+    foreach ($cand in @("${SdDir}_rw", $SdDir)) {
+        if (Test-Path -LiteralPath $cand -PathType Container) {
+            Write-Log "No --sd given; defaulting to .\$cand"
+            $SdArgs = Resolve-SdArgs $cand
+            break
+        }
+    }
+}
+if ($SdArgs.Count -eq 0 -and [Environment]::UserInteractive) {
+    Write-Host "No SD card specified and no .\$SdDir folder found."
+    $reply = Read-Host "Download $FactorySdName from Synthstrom and use it? [y/N]"
+    if ($reply -match '^(y|yes)$') {
+        Get-FactorySdCard -Dir $SdDir
+        if (Test-Path -LiteralPath $SdDir -PathType Container) {
+            $SdArgs = Resolve-SdArgs $SdDir
+        }
+        else {
+            Write-Warn "factory card download produced no .\$SdDir folder; continuing without an SD card"
+        }
+    }
+    else {
+        Write-Log "Continuing without an SD card"
+    }
+}
 
 # --- Build QEMU arguments ---------------------------------------------------
 

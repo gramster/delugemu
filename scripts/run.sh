@@ -24,7 +24,10 @@
 #                               left untouched (read-only snapshot).
 #                           If omitted, run.sh auto-detects an 'sdcard_rw' or
 #                           'sdcard' directory in the current working directory
-#                           and uses it (the '_rw' variant takes precedence).
+#                           and uses it (the '_rw' variant takes precedence). If
+#                           neither exists and the terminal is interactive,
+#                           run.sh offers to download the Synthstrom factory card
+#                           contents into ./sdcard and uses that.
 #   --midi <chardev>        Back SCIF0 (the DIN MIDI UART) with a QEMU chardev
 #                           spec, e.g. --midi udp:127.0.0.1:1999 or --midi pty.
 #                           Pass the special value 'coremidi' to expose the
@@ -163,6 +166,13 @@ FIRMWARE_DIR="${DELUGEMU_FIRMWARE_DIR:-${REPO_ROOT}/firmware}"
 COMMUNITY_FW_URL="https://github.com/SynthstromAudible/DelugeFirmware/releases/download/release_1_2_1/deluge-community-release-1_2_1.zip"
 COMMUNITY_FW_NAME="Deluge community firmware 1.2.1 (Chopin)"
 
+# The Synthstrom factory SD-card contents offered when no card is given and no
+# default sdcard folder exists. Downloaded and unzipped into SD_DIR, not
+# redistributed. SD_DIR (overridable) is also the folder auto-detected below.
+FACTORY_SD_URL="https://s3.us-east-2.amazonaws.com/synthstrom-audible-deluge/Deluge+V2p1p0+factory+card+contents.zip"
+FACTORY_SD_NAME="Deluge V2.1.0 factory card contents"
+SD_DIR="${DELUGEMU_SD_DIR:-sdcard}"
+
 # Echo the path of a usable firmware image already present in FIRMWARE_DIR (or
 # nothing). Prefer an OLED .bin (the emulator's OLED can also render the 7-seg
 # UI), then any .bin, then an .elf, so an existing firmware/deluge.elf dev setup
@@ -180,16 +190,16 @@ find_local_firmware() {
     return 0
 }
 
-# Download the community firmware zip and unzip it into FIRMWARE_DIR. Uses curl
-# or wget to fetch and unzip or python's zipfile module to extract, so it works
-# on macOS, Linux and Windows/MSYS2 without extra tooling.
-download_community_firmware() {
-    local url="$1" dir="$2" tmp zip
+# Download a zip archive and unzip it into a directory. Uses curl or wget to
+# fetch and unzip or python's zipfile module to extract, so it works on macOS,
+# Linux and Windows/MSYS2 without extra tooling.
+download_and_unzip() {
+    local url="$1" dir="$2" name="$3" tmp zip
     mkdir -p "${dir}"
-    tmp="$(mktemp -d "${TMPDIR:-/tmp}/delugemu-fw.XXXXXX")" || die "mktemp failed"
-    zip="${tmp}/firmware.zip"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/delugemu-dl.XXXXXX")" || die "mktemp failed"
+    zip="${tmp}/archive.zip"
 
-    log "Downloading ${COMMUNITY_FW_NAME}..."
+    log "Downloading ${name}..."
     if command -v curl >/dev/null 2>&1; then
         curl -fL --progress-bar -o "${zip}" "${url}" \
             || { rm -rf "${tmp}"; die "download failed (curl): ${url}"; }
@@ -198,22 +208,22 @@ download_community_firmware() {
             || { rm -rf "${tmp}"; die "download failed (wget): ${url}"; }
     else
         rm -rf "${tmp}"
-        die "neither curl nor wget found; cannot download firmware"
+        die "neither curl nor wget found; cannot download ${name}"
     fi
 
     log "Extracting into ${dir}"
     if command -v unzip >/dev/null 2>&1; then
         unzip -o -q "${zip}" -d "${dir}" \
-            || { rm -rf "${tmp}"; die "failed to unzip firmware archive"; }
+            || { rm -rf "${tmp}"; die "failed to unzip archive"; }
     elif command -v python3 >/dev/null 2>&1; then
         python3 -m zipfile -e "${zip}" "${dir}" \
-            || { rm -rf "${tmp}"; die "failed to extract firmware (python3)"; }
+            || { rm -rf "${tmp}"; die "failed to extract archive (python3)"; }
     elif command -v python >/dev/null 2>&1; then
         python -m zipfile -e "${zip}" "${dir}" \
-            || { rm -rf "${tmp}"; die "failed to extract firmware (python)"; }
+            || { rm -rf "${tmp}"; die "failed to extract archive (python)"; }
     else
         rm -rf "${tmp}"
-        die "no unzip or python found to extract the firmware archive"
+        die "no unzip or python found to extract the archive"
     fi
     rm -rf "${tmp}"
 }
@@ -242,7 +252,7 @@ if [ -z "${FIRMWARE}" ]; then
         read -r reply || reply=""
         case "${reply}" in
             [yY]|[yY][eE][sS])
-                download_community_firmware "${COMMUNITY_FW_URL}" "${FIRMWARE_DIR}"
+                download_and_unzip "${COMMUNITY_FW_URL}" "${FIRMWARE_DIR}" "${COMMUNITY_FW_NAME}"
                 FIRMWARE="$(find_local_firmware)"
                 [ -n "${FIRMWARE}" ] \
                     || die "firmware download/extract produced no .bin image"
@@ -322,18 +332,38 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Default SD card: if no --sd was given, look for an 'sdcard_rw' or 'sdcard'
-# directory in the current working directory and use it automatically. The
-# '_rw' variant is preferred (it is checked first) so guest changes are written
-# back; otherwise the read-only 'sdcard' snapshot is used.
+# Default SD card: if no --sd was given, look for an '<sdcard>_rw' or '<sdcard>'
+# directory in the current working directory and use it automatically (the
+# '_rw' variant is preferred, so guest changes are written back; otherwise the
+# read-only snapshot is used). If neither exists and the terminal is
+# interactive, offer to download the Synthstrom factory card contents into
+# ./${SD_DIR} and use that.
 if [ ${#SD_ARGS[@]} -eq 0 ]; then
-    for default_sd in sdcard_rw sdcard; do
+    for default_sd in "${SD_DIR}_rw" "${SD_DIR}"; do
         if [ -d "${default_sd}" ]; then
             log "No --sd given; defaulting to ./${default_sd}"
             sd_setup "${default_sd}"
             break
         fi
     done
+fi
+if [ ${#SD_ARGS[@]} -eq 0 ] && [ -t 0 ]; then
+    printf '%s\n' "No SD card specified and no ./${SD_DIR} folder found." >&2
+    printf '%s' "Download ${FACTORY_SD_NAME} from Synthstrom and use it? [y/N] " >&2
+    read -r reply || reply=""
+    case "${reply}" in
+        [yY]|[yY][eE][sS])
+            download_and_unzip "${FACTORY_SD_URL}" "${SD_DIR}" "${FACTORY_SD_NAME}"
+            if [ -d "${SD_DIR}" ]; then
+                sd_setup "${SD_DIR}"
+            else
+                warn "factory card download produced no ./${SD_DIR} folder; continuing without an SD card"
+            fi
+            ;;
+        *)
+            log "Continuing without an SD card"
+            ;;
+    esac
 fi
 
 # 'coremidi' bridges a transport to a real host MIDI port via a standalone

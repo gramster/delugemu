@@ -421,7 +421,9 @@ This bundle includes a native PowerShell launcher (delugemu.ps1) that gives the
 full experience without MSYS2:
   delugemu.cmd [firmware.bin] [options]
     --sd <img|folder>     attach a raw FAT image, or snapshot a folder into one
-                          (folders ending in _rw are written back on exit)
+                          (folders ending in _rw are written back on exit). With
+                          no --sd, an sdcard_rw/sdcard folder is used if present,
+                          else you are offered the Synthstrom factory card.
     --midi <chardev>      route DIN MIDI, e.g. --midi udp:127.0.0.1:1999
     --usb-midi <chardev>  attach a host USB-MIDI device on a chardev
     --audio <driver>      pick an audio backend (default dsound)

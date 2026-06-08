@@ -243,7 +243,10 @@ directory, which is snapshotted into one for you — see
 If you don't pass `--sd`, `run.sh` automatically uses an `sdcard_rw` or `sdcard`
 directory in the current working directory if one exists (the writable `_rw`
 variant takes precedence). So from the repo root you can simply run with the
-bundled factory content with no `--sd` flag at all.
+bundled factory content with no `--sd` flag at all. If no such folder exists and
+the terminal is interactive, `run.sh` offers to download the Synthstrom factory
+card contents into `./sdcard` and uses that (set `DELUGEMU_SD_DIR` to change the
+folder).
 
 QEMU's SD device requires the image to be **a power-of-two size** (e.g. 128 MiB,
 256 MiB, 512 MiB, 1 GiB); a non-power-of-two image is rejected with

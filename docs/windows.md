@@ -27,9 +27,11 @@ delugemu.cmd --help                   :: full option list
 The launcher mirrors `run.sh`: optional firmware with auto-download of the
 community release, raw SD images **and** SD folders (`--sd <dir>`, snapshotted
 into a FAT image, with write-back for `_rw` folders), MIDI/USB-MIDI chardevs,
-audio backend selection, and display modes. SD-folder support uses the bundled
-`mkfs.fat` and `mcopy`; raw `.img` SD cards work even without them. Build the
-bundle yourself with `./scripts/package.sh` (steps below).
+audio backend selection, and display modes. With no `--sd`, it auto-detects an
+`sdcard_rw`/`sdcard` folder, or offers to download the Synthstrom factory card
+contents into `.\sdcard`. SD-folder support uses the bundled `mkfs.fat` and
+`mcopy`; raw `.img` SD cards work even without them. Build the bundle yourself
+with `./scripts/package.sh` (steps below).
 
 The rest of this document covers building from source under MSYS2.
 
