@@ -44,6 +44,18 @@ struct DelugeSkinState {
 
     bool dirty;
     QEMUTimer *refresh_timer;
+
+    /*
+     * Idle-skip state for the periodic refresh. The static skin (background,
+     * encoder affordances, power LED) is only recomposited when the dynamic
+     * overlays actually change, so a quiescent panel costs no full-frame
+     * memcpy or display upload. last_content_hash digests every dynamic source
+     * read during a render; idle_ticks bounds staleness with an occasional
+     * forced refresh in case a source is ever missed.
+     */
+    uint64_t last_content_hash;
+    bool have_content_hash;
+    uint32_t idle_ticks;
 };
 
 void deluge_skin_set_oled(DeviceState *dev, struct DelugeOledState *oled);

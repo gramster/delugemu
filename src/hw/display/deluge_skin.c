@@ -28,6 +28,13 @@
 
 #define DELUGE_SKIN_REFRESH_MS 33
 
+/*
+ * Force a full recomposite at least this often (in refresh ticks, ~1s) even if
+ * the content hash is unchanged, so a missed dynamic source can never leave the
+ * panel stale for long.
+ */
+#define DELUGE_SKIN_SAFETY_TICKS 30
+
 static bool deluge_skin_load_png_argb(const char *path, uint32_t *dst)
 {
     FILE *fp;
@@ -618,6 +625,77 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
     }
 }
 
+static inline uint64_t deluge_skin_fnv1a(uint64_t h, const void *data,
+                                         size_t len)
+{
+    const uint8_t *p = data;
+
+    while (len--) {
+        h ^= *p++;
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
+/*
+ * Digest every dynamic source a render reads: the OLED framebuffer and mode
+ * flags, the pad-grid colours, the indicator and gold-knob LEDs, and the
+ * firmware-driven Synced LED. The static skin (background, encoder triangles,
+ * power LED) is excluded because it never changes. Equal digests on two
+ * consecutive ticks mean the panel is visually identical, so the refresh can
+ * be skipped entirely.
+ */
+static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
+{
+    uint64_t h = 0xcbf29ce484222325ULL;
+
+    if (s->oled) {
+        DelugeOledState *o = s->oled;
+        uint8_t flags = (o->display_on ? 1u : 0u) |
+                        (o->enabled ? 2u : 0u) |
+                        (o->inverted ? 4u : 0u);
+
+        h = deluge_skin_fnv1a(h, &flags, sizeof(flags));
+        h = deluge_skin_fnv1a(h, &o->page_start, sizeof(o->page_start));
+        h = deluge_skin_fnv1a(h, o->gddram, sizeof(o->gddram));
+    }
+
+    if (s->padgrid) {
+        h = deluge_skin_fnv1a(h, s->padgrid->rgb, sizeof(s->padgrid->rgb));
+    }
+
+    if (s->pic) {
+        for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
+            const DelugeSkinControl *c = &deluge_skin_controls[i];
+            uint8_t on;
+
+            if (!c->has_led) {
+                continue;
+            }
+            on = deluge_pic_get_led(s->pic, c->col, c->row) ? 1u : 0u;
+            h = deluge_skin_fnv1a(h, &on, sizeof(on));
+        }
+
+        for (size_t g = 0; g < ARRAY_SIZE(deluge_skin_knob_leds); g++) {
+            const DelugeSkinKnobLeds *k = &deluge_skin_knob_leds[g];
+
+            for (int led = 0; led < 4; led++) {
+                uint8_t level = deluge_pic_get_gold_knob(s->pic, k->which, led);
+
+                h = deluge_skin_fnv1a(h, &level, sizeof(level));
+            }
+        }
+    }
+
+    if (s->gpio) {
+        uint8_t synced = rza1l_gpio_get_output_pin(s->gpio, 6, 7) ? 1u : 0u;
+
+        h = deluge_skin_fnv1a(h, &synced, sizeof(synced));
+    }
+
+    return h;
+}
+
 static void deluge_skin_render(DelugeSkinState *s)
 {
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -652,13 +730,31 @@ static void deluge_skin_render(DelugeSkinState *s)
     dpy_gfx_update(s->con, 0, 0,
                    DELUGE_SKIN_IMAGE_WIDTH,
                    DELUGE_SKIN_IMAGE_HEIGHT);
+
+    /* Remember what we just drew so the timer can skip unchanged frames. */
+    s->last_content_hash = deluge_skin_content_hash(s);
+    s->have_content_hash = true;
+    s->idle_ticks = 0;
 }
 
 static void deluge_skin_refresh(void *opaque)
 {
     DelugeSkinState *s = opaque;
 
-    deluge_skin_render(s);
+    /*
+     * Only recomposite when the dynamic overlays actually changed. A static
+     * panel costs just the hash below (a few KB) instead of a full-frame
+     * memcpy and display upload, which removes the periodic stall that was
+     * adding latency when playing the emulated Deluge live. As a safety net
+     * against ever missing a dynamic source, force a refresh roughly once a
+     * second regardless.
+     */
+    if (!s->have_content_hash ||
+        deluge_skin_content_hash(s) != s->last_content_hash ||
+        ++s->idle_ticks >= DELUGE_SKIN_SAFETY_TICKS) {
+        deluge_skin_render(s);
+    }
+
     timer_mod(s->refresh_timer,
               qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + DELUGE_SKIN_REFRESH_MS);
 }
