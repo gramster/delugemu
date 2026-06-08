@@ -3,7 +3,7 @@
 A hardware emulator for the [Synthstrom Audible Deluge](https://synthstrom.com/product/deluge/),
 built as a custom machine model on top of [QEMU](https://www.qemu.org/).
 
-![Deluge front panel](Deluge_Plain.png)
+![Delugemu front panel](Screenshot.png)
 
 The goal is to boot unmodified Deluge firmware (the open-source
 [DelugeFirmware](https://github.com/SynthstromAudible/DelugeFirmware)) in a
