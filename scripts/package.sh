@@ -426,7 +426,7 @@ full experience without MSYS2:
                           else you are offered the Synthstrom factory card.
     --midi <chardev>      route DIN MIDI, e.g. --midi udp:127.0.0.1:1999
     --usb-midi <chardev>  attach a host USB-MIDI device on a chardev
-    --audio <driver>      pick an audio backend (default sdl)
+    --audio <driver>      pick an audio backend (default dsound)
     --display <mode>      console (default) | headless | none
   delugemu.cmd --help     full option list
 
