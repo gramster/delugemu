@@ -129,6 +129,10 @@ Run firmware (opens the front-panel window by default):
 Attach an SD card image and hear audio (44.1 kHz stereo on your speakers):
   ./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
 
+--sd also accepts a folder, snapshotted into a card image for you. Name the
+folder ending in '_rw' to have the guest's changes written back to it on exit:
+  ./delugemu path/to/deluge_firmware.elf --sd path/to/card_folder_rw
+
 Run without a window (serial + monitor on the terminal):
   ./delugemu path/to/deluge_firmware.elf --display headless
 

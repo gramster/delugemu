@@ -126,7 +126,9 @@ first).
 
 The Deluge loads songs, synths, kits and samples from an SD card, so most of
 the firmware (song load, audio playback, the file browser) only works with a
-card attached. The card is a raw FAT32 disk image passed with `--sd`.
+card attached. The card is a raw FAT32 disk image passed with `--sd` (or a
+directory, which is snapshotted into one for you — see
+[Folder-backed card](#folder-backed-card-no-manual-image) below).
 
 QEMU's SD device requires the image to be **a power-of-two size** (e.g. 128 MiB,
 256 MiB, 512 MiB, 1 GiB); a non-power-of-two image is rejected with
@@ -181,6 +183,33 @@ Then run with `--sd`:
 ```sh
 ./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img
 ```
+
+### Folder-backed card (no manual image)
+
+Instead of an image file, `--sd` also accepts a **directory**. The folder is
+snapshotted into a temporary FAT image at launch (using the same `mksd.sh`
+sizing/rounding logic), so you don't have to build an image by hand:
+
+```sh
+./scripts/run.sh path/to/deluge_firmware.elf --sd path/to/card_folder
+```
+
+By default the snapshot is **read-only** with respect to your folder: the guest
+can write to the card, but those changes live only in the temporary image and
+are discarded on exit, leaving your folder untouched.
+
+To have guest changes **written back** to the folder when the emulator quits,
+name the folder so it ends in `_rw`:
+
+```sh
+./scripts/run.sh path/to/deluge_firmware.elf --sd path/to/card_folder_rw
+```
+
+On a clean exit the temporary image is mirrored back into the folder (files the
+guest added or modified are copied in, files it deleted are removed), then the
+temporary image is discarded. Write-back is best-effort and only happens on a
+normal shutdown; if QEMU is killed, the folder is left as it was. On Linux,
+write-back requires `mtools` (`mcopy`).
 
 ## Controls
 

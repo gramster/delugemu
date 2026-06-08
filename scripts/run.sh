@@ -7,7 +7,14 @@
 #   ./scripts/run.sh <firmware.elf> [options] [-- extra qemu args...]
 #
 # Options:
-#   --sd <image>            Attach a FAT disk image to the SDHI SD card slot.
+#   --sd <path>             Attach an SD card to the SDHI slot. <path> may be:
+#                             * a raw FAT disk image file (attached directly), or
+#                             * a directory, which is snapshotted into a
+#                               temporary FAT image at launch. If the directory
+#                               name ends in '_rw', changes the guest makes to
+#                               the card are written back to the directory when
+#                               the emulator exits; otherwise the directory is
+#                               left untouched (read-only snapshot).
 #   --midi <chardev>        Back SCIF0 (the DIN MIDI UART) with a QEMU chardev
 #                           spec, e.g. --midi udp:127.0.0.1:1999 or --midi pty.
 #                           Pass the special value 'coremidi' to expose the
@@ -43,7 +50,91 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
-    sed -n '4,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '4,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# Resolve a --sd argument that may be either a raw image file or a directory.
+# A directory is snapshotted into a temporary FAT image (via mksd.sh) so the
+# guest sees a normal card. If its name ends in '_rw', guest changes are copied
+# back to the directory on exit (see sd_writeback and the cleanup trap).
+sd_setup() {
+    local path="$1"
+    if [ -d "${path}" ]; then
+        SD_FOLDER="${path%/}"
+        SD_TMP_IMG="$(mktemp "${TMPDIR:-/tmp}/delugemu-sd.XXXXXX")"
+        log "Snapshotting folder into a temporary SD image: ${SD_FOLDER}"
+        "${REPO_ROOT}/scripts/mksd.sh" "${SD_FOLDER}" "${SD_TMP_IMG}" \
+            || die "failed to build SD image from ${SD_FOLDER}"
+        case "${SD_FOLDER}" in
+            *_rw)
+                SD_WRITEBACK=1
+                log "Folder name ends in '_rw': changes will be written back on exit"
+                ;;
+        esac
+        SD_ARGS=(-drive "if=sd,format=raw,file=${SD_TMP_IMG}")
+    elif [ -f "${path}" ]; then
+        SD_ARGS=(-drive "if=sd,format=raw,file=${path}")
+    else
+        die "SD image/directory not found: ${path}"
+    fi
+}
+
+# Mirror the (possibly guest-modified) temporary SD image back into the source
+# directory. Only called for '_rw' folders. Best-effort: warns on failure
+# rather than aborting, since the emulator has already run.
+sd_writeback() {
+    [ -n "${SD_TMP_IMG}" ] || return 0
+    [ -d "${SD_FOLDER}" ] || return 0
+    log "Writing SD changes back to ${SD_FOLDER}"
+    case "$(uname -s)" in
+        Darwin)
+            local dev mp
+            dev="$(hdiutil attach -nomount -imagekey diskimage-class=CRawDiskImage \
+                    "${SD_TMP_IMG}" 2>/dev/null | head -1 | awk '{print $1}')"
+            if [ -z "${dev}" ]; then
+                warn "could not attach SD image for write-back; ${SD_FOLDER} left unchanged"
+                return 0
+            fi
+            if ! diskutil mount "${dev}" >/dev/null 2>&1; then
+                warn "could not mount SD image for write-back; ${SD_FOLDER} left unchanged"
+                hdiutil detach "${dev}" >/dev/null 2>&1 || true
+                return 0
+            fi
+            mp="$(diskutil info "${dev}" | awk -F': *' '/Mount Point/ {print $2}')"
+            if [ -n "${mp}" ]; then
+                rsync -a --delete \
+                    --exclude '.fseventsd' --exclude '.Spotlight-V100' \
+                    --exclude '.Trashes' --exclude '.TemporaryItems' \
+                    "${mp}/" "${SD_FOLDER}/" \
+                    || warn "write-back to ${SD_FOLDER} reported errors"
+            else
+                warn "could not locate mount point for write-back"
+            fi
+            diskutil unmount "${dev}" >/dev/null 2>&1 || true
+            hdiutil detach "${dev}" >/dev/null 2>&1 || true
+            ;;
+        *)
+            if ! command -v mcopy >/dev/null 2>&1; then
+                warn "mtools (mcopy) not found; cannot write SD changes back to ${SD_FOLDER}"
+                return 0
+            fi
+            local tmpdir
+            tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/delugemu-sdout.XXXXXX")"
+            if mcopy -i "${SD_TMP_IMG}" -s -n -m "::/*" "${tmpdir}/" 2>/dev/null; then
+                if command -v rsync >/dev/null 2>&1; then
+                    rsync -a --delete "${tmpdir}/" "${SD_FOLDER}/" \
+                        || warn "write-back to ${SD_FOLDER} reported errors"
+                else
+                    cp -a "${tmpdir}/." "${SD_FOLDER}/" \
+                        || warn "write-back to ${SD_FOLDER} reported errors"
+                fi
+            else
+                warn "could not read SD image for write-back; ${SD_FOLDER} left unchanged"
+            fi
+            rm -rf "${tmpdir}"
+            ;;
+    esac
+    return 0
 }
 
 BIN="${QEMU_SYSTEM_BIN}"
@@ -63,6 +154,9 @@ AUDIO=""
 DISPLAY_MODE="console"
 
 SD_ARGS=()
+SD_FOLDER=""
+SD_TMP_IMG=""
+SD_WRITEBACK=0
 EXTRA_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -73,15 +167,12 @@ while [ $# -gt 0 ]; do
             break
             ;;
         --sd)
-            [ -n "${2:-}" ] || die "--sd requires an image path"
-            [ -f "$2" ] || die "SD image not found: $2"
-            SD_ARGS=(-drive "if=sd,format=raw,file=$2")
+            [ -n "${2:-}" ] || die "--sd requires an image path or directory"
+            sd_setup "$2"
             shift 2
             ;;
         --sd=*)
-            sd_img="${1#--sd=}"
-            [ -f "${sd_img}" ] || die "SD image not found: ${sd_img}"
-            SD_ARGS=(-drive "if=sd,format=raw,file=${sd_img}")
+            sd_setup "${1#--sd=}"
             shift
             ;;
         --midi)
@@ -221,6 +312,23 @@ fi
 
 [ ${#SD_ARGS[@]} -gt 0 ] && log "Attaching SD image"
 
+# Post-run cleanup: reap the MIDI bridge and its sockets, write back a '_rw'
+# folder-backed SD, and remove the temporary SD image. Idempotent: clears its
+# own traps so it runs at most once across EXIT/INT/TERM.
+cleanup() {
+    trap - EXIT INT TERM
+    if [ -n "${BRIDGE_PID}" ]; then
+        kill "${BRIDGE_PID}" 2>/dev/null || true
+        rm -f "${DIN_SOCK}" "${USB_SOCK}"
+    fi
+    if [ -n "${SD_TMP_IMG}" ]; then
+        if [ "${SD_WRITEBACK}" = "1" ]; then
+            sd_writeback || true
+        fi
+        rm -f "${SD_TMP_IMG}"
+    fi
+}
+
 # Launch the host MIDI bridge for any 'coremidi' transports. It connects to the
 # QEMU sockets once they appear, so it can start before QEMU.
 BRIDGE_PID=""
@@ -228,8 +336,6 @@ if [ ${#BRIDGE_SPECS[@]} -gt 0 ]; then
     ensure_midi_bridge
     "${MIDI_BRIDGE_BIN}" "${BRIDGE_SPECS[@]}" &
     BRIDGE_PID=$!
-    trap 'kill "${BRIDGE_PID}" 2>/dev/null; rm -f "${DIN_SOCK}" "${USB_SOCK}"' \
-        EXIT INT TERM
 fi
 
 log "Launching ${DELUGE_MACHINE} machine with ${FIRMWARE} (display=${DISPLAY_MODE})"
@@ -244,8 +350,10 @@ QEMU_CMD=("${BIN}"
     "${SD_ARGS[@]+"${SD_ARGS[@]}"}"
     "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}")
 
-if [ -n "${BRIDGE_PID}" ]; then
-    # Keep this shell alive so the EXIT trap can reap the bridge + sockets.
+if [ -n "${BRIDGE_PID}" ] || [ -n "${SD_TMP_IMG}" ]; then
+    # Keep this shell alive so the cleanup trap can reap the bridge and/or write
+    # back and remove the temporary SD image.
+    trap cleanup EXIT INT TERM
     "${QEMU_CMD[@]}"
 else
     exec "${QEMU_CMD[@]}"
