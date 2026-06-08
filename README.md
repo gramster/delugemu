@@ -99,14 +99,17 @@ deliberately left to the host, so a recent desktop distribution is assumed.
 
 ```bat
 :: Extract the zip, then from the extracted folder:
-delugemu.cmd path\to\deluge_firmware.bin
+delugemu.cmd                        :: auto-detect / offer to download firmware
+delugemu.cmd path\to\firmware.bin   :: or boot a specific image
+delugemu.cmd --help                 :: full option list
 ```
 
-The Windows bundle ships the emulator and its DLLs with a minimal launcher; the
-full `run.sh` experience (automatic firmware download, SD-card folder
-snapshotting, MIDI bridging) needs the MSYS2 build — see
-[docs/windows.md](docs/windows.md). Windows SmartScreen may warn on first launch
-because the build is unsigned.
+The Windows bundle includes a native PowerShell launcher (`delugemu.ps1`,
+wrapped by `delugemu.cmd`) that mirrors `run.sh` without MSYS2: optional
+firmware with auto-download, raw SD images and SD folders (`--sd`, with
+write-back for `_rw` folders), MIDI/USB-MIDI chardevs, audio backends, and
+display modes. See [docs/windows.md](docs/windows.md) for details. Windows
+SmartScreen may warn on first launch because the build is unsigned.
 
 To produce a bundle yourself from a local build, run
 [`./scripts/package.sh`](scripts/package.sh) on the matching OS (it detects the

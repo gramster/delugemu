@@ -27,8 +27,9 @@ ARCH="$(uname -m)"
 
 # ---------------------------------------------------------------------------
 # Shared staging: helper scripts, skin image, launcher and README. macOS and
-# Linux share the Bash launcher + full run.sh UX; Windows gets a .cmd shim
-# (see package_windows) because a clean Windows box has no Bash.
+# Linux share the Bash launcher + full run.sh UX; Windows gets a native
+# PowerShell launcher (delugemu.ps1) that mirrors run.sh, plus a .cmd wrapper,
+# because a clean Windows box has no Bash.
 # ---------------------------------------------------------------------------
 
 # Copy the Bash helper scripts and skin image used by the run.sh-based launcher.
@@ -269,32 +270,47 @@ package_windows() {
     cp "${REPO_ROOT}/Deluge_Plain.png" "${stage}/Deluge_Plain.png"
     cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
 
-    # Minimal launcher. The full run.sh UX (SD snapshotting, firmware download,
-    # MIDI bridging) needs Bash and is documented as MSYS2-only; this .cmd just
-    # boots a firmware image with the front-panel window and dsound audio.
+    # Vendor the SD-folder helpers so the native launcher can build a FAT image
+    # from a directory without MSYS2: mkfs.fat (dosfstools, a MinGW .exe) and
+    # mcopy (mtools, an MSYS .exe that needs msys-2.0.dll alongside it). Both are
+    # best-effort: if absent, the launcher falls back to raw-image SD support.
+    stage_windows_tool() {
+        local tool="$1" found
+        found="$(command -v "${tool}" 2>/dev/null || true)"
+        if [ -n "${found}" ] && [ -e "${found}" ]; then
+            cp -n "${found}" "${stage}/" 2>/dev/null || true
+            log "Vendored ${tool}"
+            # Bundle any DLLs the tool itself needs (e.g. msys-2.0.dll).
+            local tline tpath
+            while IFS= read -r tline; do
+                case "${tline}" in
+                    *"=>"*) tpath="${tline#*=> }"; tpath="${tpath%% (0x*}" ;;
+                    *) continue ;;
+                esac
+                tpath="$(printf '%s' "${tpath}" | sed 's/[[:space:]]*$//')"
+                [ -n "${tpath}" ] || continue
+                case "${tpath}" in
+                    /usr/bin/*|/mingw64/*|/ucrt64/*|/clang64/*|/mingw32/*|"${mingw}"/*) ;;
+                    *) continue ;;
+                esac
+                [ -e "${tpath}" ] && cp -n "${tpath}" "${stage}/" 2>/dev/null || true
+            done < <(ldd "${found}" 2>/dev/null)
+        else
+            log "WARNING: ${tool} not found; SD *folder* support disabled in the bundle (raw .img still works)."
+        fi
+    }
+    stage_windows_tool mkfs.fat.exe
+    stage_windows_tool mcopy.exe
+
+    # Native launcher: delugemu.ps1 delivers the full run.sh UX on Windows
+    # (optional firmware + auto-download, SD images and folders with write-back,
+    # MIDI/USB-MIDI chardevs, audio backends, display modes). delugemu.cmd is a
+    # thin wrapper so users can double-click or drag a firmware .bin onto it.
+    cp "${REPO_ROOT}/scripts/delugemu.ps1" "${stage}/delugemu.ps1"
     cat > "${stage}/delugemu.cmd" <<'LAUNCH'
 @echo off
-rem Self-contained launcher for the packaged Deluge emulator (Windows).
-setlocal
-set "HERE=%~dp0"
-if "%~1"=="" (
-    echo Usage: delugemu.cmd path\to\deluge_firmware.bin [extra qemu args...]
-    echo The full SD/MIDI/auto-download experience needs the MSYS2 build
-    echo ^(see docs\windows.md^).
-    exit /b 2
-)
-set "FW=%~1"
-shift
-rem Rebuild the remaining args.
-set "REST="
-:collect
-if "%~1"=="" goto run
-set "REST=%REST% %1"
-shift
-goto collect
-:run
-"%HERE%qemu-system-arm.exe" -M deluge -kernel "%FW%" -global "deluge-skin.image=%HERE%Deluge_Plain.png" -audiodev dsound,id=deluge0 -global "rza1l-ssif.audiodev=deluge0" %REST%
-endlocal
+rem Thin wrapper that runs the native PowerShell launcher next to this file.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0delugemu.ps1" %*
 LAUNCH
 
     write_readme_windows "${stage}"
@@ -393,15 +409,29 @@ write_readme_windows() {
     cat > "${stage}/README.txt" <<'EOF'
 DelugEmu - Synthstrom Deluge emulator (relocatable Windows build)
 
-Run firmware (opens the front-panel window):
+Quick start (opens the front-panel window):
   delugemu.cmd path\to\deluge_firmware.bin
 
-You can also drag a firmware .bin onto delugemu.cmd in Explorer.
+The firmware image is optional. If you run delugemu.cmd with no firmware, it
+uses a .bin/.elf from the bundled "firmware" folder, or offers to download the
+Deluge community firmware release and use that. You can also drag a firmware
+.bin onto delugemu.cmd in Explorer.
 
-This Windows bundle ships the emulator and its DLLs only. The full run.sh
-experience (automatic firmware download, SD-card folder snapshotting, MIDI
-bridging) is driven by Bash scripts and requires the MSYS2 build - see
-docs/windows.md in the source repository:
+This bundle includes a native PowerShell launcher (delugemu.ps1) that gives the
+full experience without MSYS2:
+  delugemu.cmd [firmware.bin] [options]
+    --sd <img|folder>     attach a raw FAT image, or snapshot a folder into one
+                          (folders ending in _rw are written back on exit)
+    --midi <chardev>      route DIN MIDI, e.g. --midi udp:127.0.0.1:1999
+    --usb-midi <chardev>  attach a host USB-MIDI device on a chardev
+    --audio <driver>      pick an audio backend (default dsound)
+    --display <mode>      console (default) | headless | none
+  delugemu.cmd --help     full option list
+
+SD *folder* snapshotting uses the bundled mkfs.fat and mcopy tools. If they are
+missing, attach a raw .img with --sd instead. 'coremidi' MIDI is macOS-only;
+on Windows use a chardev spec (with loopMIDI + a UDP/RTP bridge) - see
+docs/windows.md:
   https://github.com/gramster/delugemu/blob/main/docs/windows.md
 
 SmartScreen: this build is unsigned, so Windows may warn on first launch.

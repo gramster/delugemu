@@ -221,6 +221,8 @@ jobs:
             mingw-w64-x86_64-SDL2
             mingw-w64-x86_64-libpng
             mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-dosfstools
+            mtools
 
       - name: Bootstrap QEMU submodule
         run: ./scripts/bootstrap.sh

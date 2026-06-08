@@ -8,9 +8,30 @@ option, but these instructions cover the native MSYS2 path so you get a real
 Windows `qemu-system-arm.exe` with a native GUI window.
 
 > Outgoing audio uses the `dsound` backend by default on Windows. The
-> `coremidi` host-MIDI bridge (`--midi coremidi` / `--usb-midi coremidi`) and
-> `scripts/package.sh` are macOS-only — see [MIDI on Windows](#midi-on-windows)
-> for what works instead.
+> `coremidi` host-MIDI bridge (`--midi coremidi` / `--usb-midi coremidi`) is
+> macOS-only — see [MIDI on Windows](#midi-on-windows) for what works instead.
+
+## Prebuilt bundle (no MSYS2 needed)
+
+Tagged releases publish a relocatable `DelugEmu-windows-*.zip` containing
+`qemu-system-arm.exe`, its DLLs, and a native PowerShell launcher
+(`delugemu.ps1`) wrapped by `delugemu.cmd`. Download it from the
+[Releases page](https://github.com/gramster/delugemu/releases), unzip, and run:
+
+```bat
+delugemu.cmd                          :: auto-detect/offer to download firmware
+delugemu.cmd path\to\firmware.bin     :: boot a specific firmware image
+delugemu.cmd --help                   :: full option list
+```
+
+The launcher mirrors `run.sh`: optional firmware with auto-download of the
+community release, raw SD images **and** SD folders (`--sd <dir>`, snapshotted
+into a FAT image, with write-back for `_rw` folders), MIDI/USB-MIDI chardevs,
+audio backend selection, and display modes. SD-folder support uses the bundled
+`mkfs.fat` and `mcopy`; raw `.img` SD cards work even without them. Build the
+bundle yourself with `./scripts/package.sh` (steps below).
+
+The rest of this document covers building from source under MSYS2.
 
 ## 1. Install MSYS2
 
