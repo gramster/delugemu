@@ -64,7 +64,7 @@ pacman -S --needed \
     mingw-w64-x86_64-zstd
 
 # Optional: needed only for folder-backed SD cards (--sd <dir>) and write-back
-pacman -S --needed mingw-w64-x86_64-dosfstools mtools
+pacman -S --needed dosfstools mingw-w64-x86_64-mtools
 ```
 
 `gtk3` / `SDL2` provide the front-panel skin window, `glib2` and `pixman` are
@@ -169,7 +169,7 @@ turnkey Windows MIDI bridge is not yet provided; contributions welcome.
 - **No GUI window appears** — ensure `mingw-w64-x86_64-gtk3` (and/or `SDL2`) is
   installed; without a display backend QEMU has no window to open.
 - **`mcopy` / `mkfs.fat` not found** when using `--sd <folder>` — install
-  `mtools` and `mingw-w64-x86_64-dosfstools` (see step 2). A raw `.img` passed
+  `mingw-w64-x86_64-mtools` and `dosfstools` (see step 2). A raw `.img` passed
   to `--sd` does not need these.
 - **Edits to `src/` are ignored after a rebuild** — symlinks fell back to
   copies; either re-run `./scripts/integrate.sh`, or enable real symlinks
