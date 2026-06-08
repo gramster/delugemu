@@ -130,6 +130,16 @@ struct RzA1lSsifState {
     uint32_t rec_cursor;    /* byte offset within the RX ring */
     bool     output_open;
     bool     input_open;
+
+    /*
+     * Audio capture (line-in) is opt-in. Most host backends used for playback
+     * cannot capture (e.g. CoreAudio has no input voice), and attempting to
+     * open one emits a spurious "Can not open `ssif.in'" error on the default
+     * path. The firmware only sees silence on the receive ring when capture is
+     * off, which is the normal case, so we leave it disabled unless a
+     * capture-capable backend is explicitly requested via this property.
+     */
+    bool     capture;
 };
 
 /*

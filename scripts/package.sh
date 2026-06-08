@@ -103,6 +103,12 @@ cp "${REPO_ROOT}/scripts/run.sh" \
    "${STAGE}/scripts/"
 cp "${REPO_ROOT}/LICENSE" "${STAGE}/LICENSE" 2>/dev/null || true
 
+# Front-panel skin image. run.sh resolves it as ${REPO_ROOT}/Deluge_Plain.png,
+# and inside the bundle the helper scripts live at <stage>/scripts/, so
+# REPO_ROOT resolves to <stage>. Place the PNG at the bundle root so the skin
+# loads with no extra configuration.
+cp "${REPO_ROOT}/Deluge_Plain.png" "${STAGE}/Deluge_Plain.png"
+
 # Top-level launcher: point the run helper at the vendored binary.
 cat > "${STAGE}/delugemu" <<'LAUNCH'
 #!/usr/bin/env bash
@@ -117,11 +123,14 @@ chmod +x "${STAGE}/delugemu"
 cat > "${STAGE}/README.txt" <<EOF
 DelugEmu — Synthstrom Deluge emulator (relocatable macOS ${ARCH} build)
 
-Run firmware:
-  ./delugemu path/to/deluge_firmware.elf --display console
+Run firmware (opens the front-panel window by default):
+  ./delugemu path/to/deluge_firmware.elf
 
 Attach an SD card image and hear audio (44.1 kHz stereo on your speakers):
-  ./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img --display console
+  ./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
+
+Run without a window (serial + monitor on the terminal):
+  ./delugemu path/to/deluge_firmware.elf --display headless
 
 See all options:
   ./delugemu --help

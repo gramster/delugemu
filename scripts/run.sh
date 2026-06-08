@@ -28,9 +28,10 @@
 #                           default explicitly. Play a note in an instrument
 #                           clip to hear 44.1 kHz stereo output.
 #   --display <mode>        Display mode:
-#                             headless  no GUI; serial+monitor on stdio (default)
-#                             console   open a window with the modelled OLED /
-#                                       pad-grid / 7-seg consoles
+#                             console   open the front-panel skin window with
+#                                       the modelled OLED / pad-grid / 7-seg
+#                                       overlays (default)
+#                             headless  no GUI; serial+monitor on stdio
 #                             none      graphics subsystem present but not shown
 #   -h, --help              Show this help and exit.
 #
@@ -42,7 +43,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
-    sed -n '4,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '4,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 BIN="${QEMU_SYSTEM_BIN}"
@@ -59,7 +60,7 @@ shift
 MIDI=""
 USB_MIDI=""
 AUDIO=""
-DISPLAY_MODE="headless"
+DISPLAY_MODE="console"
 
 SD_ARGS=()
 EXTRA_ARGS=()
@@ -179,8 +180,23 @@ case "${DISPLAY_MODE}" in
         esac
         ;;
     none)     DISPLAY_ARGS=(-display none) ;;
-    *) die "unknown --display mode '${DISPLAY_MODE}' (headless|console|none)" ;;
+    *) die "unknown --display mode '${DISPLAY_MODE}' (console|headless|none)" ;;
 esac
+
+# Front-panel skin image. The skin device loads "Deluge_Plain.png" from the
+# working directory by default, which breaks when run.sh is invoked from another
+# directory (or from a relocatable bundle). Resolve it next to the repo/bundle
+# root (REPO_ROOT, set by common.sh) and pass an absolute path so it loads
+# regardless of cwd. DELUGEMU_SKIN overrides the location.
+SKIN_ARGS=()
+SKIN_IMAGE="${DELUGEMU_SKIN:-${REPO_ROOT}/Deluge_Plain.png}"
+if [ "${DISPLAY_MODE}" = "console" ]; then
+    if [ -f "${SKIN_IMAGE}" ]; then
+        SKIN_ARGS=(-global "deluge-skin.image=${SKIN_IMAGE}")
+    else
+        warn "skin image not found at ${SKIN_IMAGE}; the panel will render without its photo background"
+    fi
+fi
 
 # Optional audio backend override, routed to the SSIF (I2S) sink. The device
 # opens the OS default backend on its own, so this is only needed to select a
@@ -223,6 +239,7 @@ QEMU_CMD=("${BIN}"
     "${SERIAL_ARGS[@]}"
     "${USB_MIDI_ARGS[@]+"${USB_MIDI_ARGS[@]}"}"
     "${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"}"
+    "${SKIN_ARGS[@]+"${SKIN_ARGS[@]}"}"
     "${AUDIO_ARGS[@]+"${AUDIO_ARGS[@]}"}"
     "${SD_ARGS[@]+"${SD_ARGS[@]}"}"
     "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}")

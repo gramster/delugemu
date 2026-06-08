@@ -562,11 +562,20 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                          RZA1L_SSIF_PLAY_TICK_NS);
 
-        s->voice_in = audio_be_open_in(s->audio_be, s->voice_in, "ssif.in",
-                                       s, rza1l_ssif_in_cb, &as);
-        if (s->voice_in) {
-            audio_be_set_active_in(s->audio_be, s->voice_in, true);
-            s->input_open = true;
+        /*
+         * Audio capture (line-in) is opt-in. Most host backends used for
+         * playback cannot capture (CoreAudio has no input voice at all), and
+         * opening one there emits a spurious "Can not open `ssif.in'" error.
+         * Only open the input voice when a capture-capable backend has been
+         * explicitly requested via the "capture" property.
+         */
+        if (s->capture) {
+            s->voice_in = audio_be_open_in(s->audio_be, s->voice_in, "ssif.in",
+                                           s, rza1l_ssif_in_cb, &as);
+            if (s->voice_in) {
+                audio_be_set_active_in(s->audio_be, s->voice_in, true);
+                s->input_open = true;
+            }
         }
     }
 }
@@ -590,6 +599,7 @@ static const VMStateDescription vmstate_rza1l_ssif = {
 
 static const Property rza1l_ssif_properties[] = {
     DEFINE_AUDIO_PROPERTIES(RzA1lSsifState, audio_be),
+    DEFINE_PROP_BOOL("capture", RzA1lSsifState, capture, false),
 };
 
 static void rza1l_ssif_class_init(ObjectClass *klass, const void *data)

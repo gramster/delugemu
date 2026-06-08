@@ -74,7 +74,7 @@ alongside the binary), so no Homebrew or QEMU install is needed:
 # Download DelugEmu-macos-<arch>.tar.gz from Releases, then:
 tar -xzf DelugEmu-macos-arm64.tar.gz
 cd DelugEmu-macos-arm64
-./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img --display console
+./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
 ./delugemu --help
 ```
 
@@ -98,25 +98,28 @@ first).
 # 3. Build qemu-system-arm with the Deluge machine
 ./scripts/build.sh
 
-# 4. Run firmware
+# 4. Run firmware (opens the front-panel skin window by default)
 ./scripts/run.sh path/to/deluge_firmware.elf
 
 # Options: attach an SD image, route MIDI to a chardev, add an audio
-# backend, or pick a display mode (headless/console/none). See --help.
-./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
+# backend, or pick a display mode (console/headless/none). See --help.
+./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img
 
 # Audio plays on your speakers by default (the SSIF/I2S output opens the OS
 # default backend: coreaudio on macOS, pa on Linux, dsound on Windows). Play a
 # note in an instrument clip to get 44.1 kHz stereo. Pass --audio <driver> only
 # to select a non-default backend (e.g. sdl / wav / none).
-./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
+./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img
+
+# Run without a window (serial + monitor on the terminal):
+./scripts/run.sh path/to/deluge_firmware.elf --display headless
 
 # MIDI: on macOS, pass 'coremidi' to either MIDI flag to expose the Deluge as a
 # real host MIDI in/out device (it appears in your DAW as "DelugEmu DIN" and/or
 # "DelugEmu USB"). --midi is the DIN ports, --usb-midi is the USB-MIDI port. A
 # small helper (scripts/midi_bridge.c, built automatically) bridges the byte
 # stream to CoreMIDI virtual ports.
-./scripts/run.sh path/to/deluge_firmware.elf --usb-midi coremidi --midi coremidi --display console
+./scripts/run.sh path/to/deluge_firmware.elf --usb-midi coremidi --midi coremidi
 ```
 
 ## SD card image
@@ -176,7 +179,7 @@ mcopy -i build/deluge_sd.img -s SONGS SYNTHS KITS SAMPLES ::/
 Then run with `--sd`:
 
 ```sh
-./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img --display console
+./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img
 ```
 
 ## Controls
