@@ -32,12 +32,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git ninja-build pkg-config python3-venv \
-            libglib2.0-dev libpixman-1-dev flex bison
+            libglib2.0-dev libpixman-1-dev libpng-dev flex bison
 
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install ninja pkg-config glib pixman meson
+          brew install ninja pkg-config glib pixman libpng meson
 
       - name: Bootstrap QEMU submodule
         run: ./scripts/bootstrap.sh
@@ -74,7 +74,7 @@ jobs:
           submodules: false
 
       - name: Install build dependencies (macOS)
-        run: brew install ninja pkg-config glib pixman meson
+        run: brew install ninja pkg-config glib pixman libpng meson
 
       - name: Bootstrap QEMU submodule
         run: ./scripts/bootstrap.sh
