@@ -4,7 +4,14 @@
 # Run Deluge firmware under the emulator.
 #
 # Usage:
-#   ./scripts/run.sh <firmware.elf> [options] [-- extra qemu args...]
+#   ./scripts/run.sh [firmware.elf|firmware.bin] [options] [-- qemu args...]
+#
+# The firmware image is optional. If omitted, run.sh uses a .bin (or .elf) image
+# found in the firmware folder (default: <repo>/firmware; override with the
+# DELUGEMU_FIRMWARE_DIR environment variable). If that folder has no image and
+# the terminal is interactive, run.sh offers to download the Deluge community
+# firmware release from Synthstrom, unzips it into the firmware folder, and uses
+# it from then on.
 #
 # Options:
 #   --sd <path>             Attach an SD card to the SDHI slot. <path> may be:
@@ -57,7 +64,9 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
-    sed -n '4,55p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # Print the banner comment (from the "Run Deluge..." line through the end of
+    # the leading comment block), stripping the leading "# ".
+    awk 'NR>=4 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
 }
 
 # Resolve a --sd argument that may be either a raw image file or a directory.
@@ -144,16 +153,113 @@ sd_writeback() {
     return 0
 }
 
+# Where auto-detected and downloaded firmware images live. Overridable so a user
+# can point at an existing collection without copying it in.
+FIRMWARE_DIR="${DELUGEMU_FIRMWARE_DIR:-${REPO_ROOT}/firmware}"
+
+# The community firmware release offered when no image is present. This is the
+# unmodified open-source build published by Synthstrom; we only download and
+# unzip it, we do not redistribute it.
+COMMUNITY_FW_URL="https://github.com/SynthstromAudible/DelugeFirmware/releases/download/release_1_2_1/deluge-community-release-1_2_1.zip"
+COMMUNITY_FW_NAME="Deluge community firmware 1.2.1 (Chopin)"
+
+# Echo the path of a usable firmware image already present in FIRMWARE_DIR (or
+# nothing). Prefer an OLED .bin (the emulator's OLED can also render the 7-seg
+# UI), then any .bin, then an .elf, so an existing firmware/deluge.elf dev setup
+# keeps working too. `|| true` guards against SIGPIPE under `set -o pipefail`.
+find_local_firmware() {
+    [ -d "${FIRMWARE_DIR}" ] || return 0
+    local f
+    f="$(find "${FIRMWARE_DIR}" -type f -iname '*.bin' ! -iname '*7seg*' \
+            2>/dev/null | LC_ALL=C sort | head -n1 || true)"
+    [ -n "${f}" ] || f="$(find "${FIRMWARE_DIR}" -type f -iname '*.bin' \
+            2>/dev/null | LC_ALL=C sort | head -n1 || true)"
+    [ -n "${f}" ] || f="$(find "${FIRMWARE_DIR}" -type f -iname '*.elf' \
+            2>/dev/null | LC_ALL=C sort | head -n1 || true)"
+    [ -n "${f}" ] && printf '%s\n' "${f}"
+    return 0
+}
+
+# Download the community firmware zip and unzip it into FIRMWARE_DIR. Uses curl
+# or wget to fetch and unzip or python's zipfile module to extract, so it works
+# on macOS, Linux and Windows/MSYS2 without extra tooling.
+download_community_firmware() {
+    local url="$1" dir="$2" tmp zip
+    mkdir -p "${dir}"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/delugemu-fw.XXXXXX")" || die "mktemp failed"
+    zip="${tmp}/firmware.zip"
+
+    log "Downloading ${COMMUNITY_FW_NAME}..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --progress-bar -o "${zip}" "${url}" \
+            || { rm -rf "${tmp}"; die "download failed (curl): ${url}"; }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --show-progress -O "${zip}" "${url}" \
+            || { rm -rf "${tmp}"; die "download failed (wget): ${url}"; }
+    else
+        rm -rf "${tmp}"
+        die "neither curl nor wget found; cannot download firmware"
+    fi
+
+    log "Extracting into ${dir}"
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -o -q "${zip}" -d "${dir}" \
+            || { rm -rf "${tmp}"; die "failed to unzip firmware archive"; }
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -m zipfile -e "${zip}" "${dir}" \
+            || { rm -rf "${tmp}"; die "failed to extract firmware (python3)"; }
+    elif command -v python >/dev/null 2>&1; then
+        python -m zipfile -e "${zip}" "${dir}" \
+            || { rm -rf "${tmp}"; die "failed to extract firmware (python)"; }
+    else
+        rm -rf "${tmp}"
+        die "no unzip or python found to extract the firmware archive"
+    fi
+    rm -rf "${tmp}"
+}
+
 BIN="${QEMU_SYSTEM_BIN}"
 [ -x "${BIN}" ] || die "qemu-system-arm not built. Run ./scripts/build.sh first."
 
-FIRMWARE="${1:-}"
-case "${FIRMWARE}" in
+# Firmware is optional. Treat the first argument as a firmware path only when it
+# is present and not an option (an option, or nothing, means "auto-detect").
+FIRMWARE=""
+case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    ""|-*) ;;
+    *) FIRMWARE="$1"; shift ;;
 esac
-[ -n "${FIRMWARE}" ] || { usage; die "missing <firmware.elf>"; }
+
+# Resolve the firmware image when none was given on the command line: use one
+# from the firmware folder, or offer to download the community release.
+if [ -z "${FIRMWARE}" ]; then
+    FIRMWARE="$(find_local_firmware)"
+    if [ -n "${FIRMWARE}" ]; then
+        log "No firmware given; using ${FIRMWARE#"${REPO_ROOT}/"}"
+    elif [ -t 0 ]; then
+        printf '%s\n' "No firmware specified and none found in ${FIRMWARE_DIR}." >&2
+        printf '%s' "Download ${COMMUNITY_FW_NAME} (~900 KB) from Synthstrom and use it? [y/N] " >&2
+        read -r reply || reply=""
+        case "${reply}" in
+            [yY]|[yY][eE][sS])
+                download_community_firmware "${COMMUNITY_FW_URL}" "${FIRMWARE_DIR}"
+                FIRMWARE="$(find_local_firmware)"
+                [ -n "${FIRMWARE}" ] \
+                    || die "firmware download/extract produced no .bin image"
+                log "Using ${FIRMWARE#"${REPO_ROOT}/"}"
+                ;;
+            *)
+                usage
+                die "no firmware. Pass a firmware path or place a .bin in ${FIRMWARE_DIR}."
+                ;;
+        esac
+    else
+        usage
+        die "no firmware given and none found in ${FIRMWARE_DIR} (run interactively to fetch the community firmware, or pass a firmware path)"
+    fi
+fi
+
 [ -f "${FIRMWARE}" ] || die "Firmware not found: ${FIRMWARE}"
-shift
 
 MIDI=""
 USB_MIDI=""

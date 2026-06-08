@@ -127,6 +127,11 @@ DelugEmu — Synthstrom Deluge emulator (relocatable macOS ${ARCH} build)
 Run firmware (opens the front-panel window by default):
   ./delugemu path/to/deluge_firmware.elf
 
+No firmware image? Run with no arguments and DelugEmu will look for a .bin/.elf
+in the firmware/ folder, and if none is found, offer to download the open-source
+Deluge community firmware release from Synthstrom and use it from then on:
+  ./delugemu
+
 Attach an SD card image and hear audio (44.1 kHz stereo on your speakers):
   ./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
 

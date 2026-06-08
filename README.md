@@ -106,6 +106,11 @@ toolchain setup; the commands below are otherwise identical.
 # 4. Run firmware (opens the front-panel skin window by default)
 ./scripts/run.sh path/to/deluge_firmware.elf
 
+# No firmware handy? Run with no image: run.sh looks for a .bin/.elf in the
+# firmware/ folder and, if none is there, offers to download the open-source
+# Deluge community firmware release and use it from then on.
+./scripts/run.sh
+
 # Options: attach an SD image, route MIDI to a chardev, add an audio
 # backend, or pick a display mode (console/headless/none). See --help.
 ./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img
@@ -131,6 +136,33 @@ toolchain setup; the commands below are otherwise identical.
 # stream to CoreMIDI virtual ports.
 ./scripts/run.sh path/to/deluge_firmware.elf --usb-midi coremidi --midi coremidi
 ```
+
+### Firmware
+
+`run.sh` takes the firmware image as an optional first argument. When you run it
+without one, it resolves a firmware automatically:
+
+1. It looks for a `.bin` (or `.elf`) image in the firmware folder — `firmware/`
+   in the repo root by default, or wherever `DELUGEMU_FIRMWARE_DIR` points. If
+   several `.bin` files are present it prefers the OLED build (the emulator's
+   OLED display also renders the 7-segment UI).
+2. If the folder has no image **and** the terminal is interactive, it offers to
+   download the open-source [Deluge community firmware
+   release](https://github.com/SynthstromAudible/DelugeFirmware/releases/tag/release_1_2_1)
+   (~900 KB) from Synthstrom, unzips it into the firmware folder, and uses it.
+   The download is kept, so subsequent runs pick it up automatically.
+
+```sh
+# First run with no firmware: prompts to fetch the community release.
+./scripts/run.sh
+
+# Later runs reuse the downloaded image with no prompt.
+./scripts/run.sh --sd build/deluge_sd.img
+```
+
+The firmware is **not** redistributed with this project — it is fetched directly
+from Synthstrom's official release on demand. Pass an explicit path any time to
+override the auto-detected image.
 
 > On **Windows**, the `coremidi` shortcut is not available (it uses Apple's
 > CoreMIDI). Generic chardev MIDI routing (e.g. `--midi udp:127.0.0.1:1999`)
