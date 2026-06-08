@@ -15,6 +15,9 @@
 #                               the card are written back to the directory when
 #                               the emulator exits; otherwise the directory is
 #                               left untouched (read-only snapshot).
+#                           If omitted, run.sh auto-detects an 'sdcard_rw' or
+#                           'sdcard' directory in the current working directory
+#                           and uses it (the '_rw' variant takes precedence).
 #   --midi <chardev>        Back SCIF0 (the DIN MIDI UART) with a QEMU chardev
 #                           spec, e.g. --midi udp:127.0.0.1:1999 or --midi pty.
 #                           Pass the special value 'coremidi' to expose the
@@ -50,7 +53,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
-    sed -n '4,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '4,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # Resolve a --sd argument that may be either a raw image file or a directory.
@@ -202,6 +205,20 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# Default SD card: if no --sd was given, look for an 'sdcard_rw' or 'sdcard'
+# directory in the current working directory and use it automatically. The
+# '_rw' variant is preferred (it is checked first) so guest changes are written
+# back; otherwise the read-only 'sdcard' snapshot is used.
+if [ ${#SD_ARGS[@]} -eq 0 ]; then
+    for default_sd in sdcard_rw sdcard; do
+        if [ -d "${default_sd}" ]; then
+            log "No --sd given; defaulting to ./${default_sd}"
+            sd_setup "${default_sd}"
+            break
+        fi
+    done
+fi
 
 # 'coremidi' bridges a transport to a real host MIDI port via a standalone
 # helper (scripts/midi_bridge.c) connected to a QEMU UNIX-socket chardev.

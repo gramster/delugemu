@@ -130,6 +130,11 @@ card attached. The card is a raw FAT32 disk image passed with `--sd` (or a
 directory, which is snapshotted into one for you — see
 [Folder-backed card](#folder-backed-card-no-manual-image) below).
 
+If you don't pass `--sd`, `run.sh` automatically uses an `sdcard_rw` or `sdcard`
+directory in the current working directory if one exists (the writable `_rw`
+variant takes precedence). So from the repo root you can simply run with the
+bundled factory content with no `--sd` flag at all.
+
 QEMU's SD device requires the image to be **a power-of-two size** (e.g. 128 MiB,
 256 MiB, 512 MiB, 1 GiB); a non-power-of-two image is rejected with
 `Invalid SD card size`.
@@ -210,6 +215,11 @@ guest added or modified are copied in, files it deleted are removed), then the
 temporary image is discarded. Write-back is best-effort and only happens on a
 normal shutdown; if QEMU is killed, the folder is left as it was. On Linux,
 write-back requires `mtools` (`mcopy`).
+
+When invoked without `--sd`, `run.sh` looks for these folders by name in the
+current working directory and auto-attaches the first it finds — `sdcard_rw`
+(writable, changes mirrored back on exit) is tried before `sdcard`
+(read-only snapshot).
 
 ## Controls
 
