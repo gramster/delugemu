@@ -91,8 +91,8 @@ $CommunityFwName = 'Deluge community firmware 1.2.1 (Chopin)'
 # factory card contents offered for download when neither it nor an '<sd>_rw'
 # variant exists. Downloaded and unzipped, not redistributed.
 $SdDir         = if ($env:DELUGEMU_SD_DIR) { $env:DELUGEMU_SD_DIR } else { 'sdcard' }
-$FactorySdUrl  = 'https://s3.us-east-2.amazonaws.com/synthstrom-audible-deluge/Deluge+V2p1p0+factory+card+contents.zip'
-$FactorySdName = 'Deluge V2.1.0 factory card contents'
+$FactorySdUrl  = 'https://synthstrom-audible-deluge.s3.us-east-2.amazonaws.com/Deluge+OLED+V4p1p0+factory+card+contents.zip'
+$FactorySdName = 'Deluge OLED V4.1.0 factory card contents'
 
 # A bundled or on-PATH tool. Returns the resolved path or $null.
 function Find-Tool {

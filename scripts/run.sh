@@ -169,8 +169,8 @@ COMMUNITY_FW_NAME="Deluge community firmware 1.2.1 (Chopin)"
 # The Synthstrom factory SD-card contents offered when no card is given and no
 # default sdcard folder exists. Downloaded and unzipped into SD_DIR, not
 # redistributed. SD_DIR (overridable) is also the folder auto-detected below.
-FACTORY_SD_URL="https://s3.us-east-2.amazonaws.com/synthstrom-audible-deluge/Deluge+V2p1p0+factory+card+contents.zip"
-FACTORY_SD_NAME="Deluge V2.1.0 factory card contents"
+FACTORY_SD_URL="https://synthstrom-audible-deluge.s3.us-east-2.amazonaws.com/Deluge+OLED+V4p1p0+factory+card+contents.zip"
+FACTORY_SD_NAME="Deluge OLED V4.1.0 factory card contents"
 SD_DIR="${DELUGEMU_SD_DIR:-sdcard}"
 
 # Echo the path of a usable firmware image already present in FIRMWARE_DIR (or
