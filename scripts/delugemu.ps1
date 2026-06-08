@@ -394,14 +394,14 @@ if ($DisplayMode -eq 'console') {
     }
 }
 
-# Audio backend. The SSIF opens the OS default (dsound) on its own, so only pass
-# -audiodev when overriding.
+# Audio backend. On Windows QEMU's implicit default audiodev does not reliably
+# bind the SSIF to a working output, so we always pass an explicit -audiodev and
+# wire it to the SSIF. Defaults to dsound; override with --audio (e.g. sdl, wav,
+# none).
 $AudioArgs = @()
-if ($Audio) {
-    if ($Audio -eq 'auto') { $Audio = 'dsound'; Write-Log "Audio backend auto-selected: dsound" }
-    $AudioArgs = @('-audiodev', "$Audio,id=deluge0", '-global', 'rza1l-ssif.audiodev=deluge0')
-    Write-Log "Routing SSIF audio to backend: $Audio"
-}
+if (-not $Audio -or $Audio -eq 'auto') { $Audio = 'dsound' }
+$AudioArgs = @('-audiodev', "$Audio,id=deluge0", '-global', 'rza1l-ssif.audiodev=deluge0')
+Write-Log "Routing SSIF audio to backend: $Audio"
 if ($AudioBuffer) {
     if ($AudioBuffer -notmatch '^\d+$') { Die '--audio-buffer must be a non-negative integer (ms)' }
     $AudioArgs += @('-global', "rza1l-ssif.prime-ms=$AudioBuffer")
