@@ -1,0 +1,160 @@
+diff --git a/audio/coreaudio.m b/audio/coreaudio.m
+index e4ec1df971..3b74193660 100644
+--- a/audio/coreaudio.m
++++ b/audio/coreaudio.m
+@@ -156,6 +156,18 @@ static OSStatus coreaudio_get_out_isrunning(AudioDeviceID id, UInt32 *result)
+                                       result);
+ }
+ 
++static OSStatus coreaudio_get_out_nominal_rate(AudioDeviceID id, Float64 *rate)
++{
++    UInt32 size = sizeof(*rate);
++    AudioObjectPropertyAddress addr = {
++        kAudioDevicePropertyNominalSampleRate,
++        kAudioDevicePropertyScopeOutput,
++        kAudioObjectPropertyElementMain
++    };
++
++    return AudioObjectGetPropertyData(id, &addr, 0, NULL, &size, rate);
++}
++
+ static void coreaudio_logstatus(OSStatus status)
+ {
+     const char *str = "BUG";
+@@ -335,20 +347,68 @@ static OSStatus out_device_ioproc(
+         return 0;
+     }
+ 
+-    len = frame_size * hw->info.bytes_per_frame;
+-    while (len) {
+-        size_t write_len, start;
+-
+-        start = audio_ring_posb(hw->pos_emul, hw->pending_emul, hw->size_emul);
+-        assert(start < hw->size_emul);
+-
+-        write_len = MIN(MIN(hw->pending_emul, len),
+-                        hw->size_emul - start);
+-
+-        memcpy(out, hw->buf_emul + start, write_len);
+-        hw->pending_emul -= write_len;
+-        len -= write_len;
+-        out += write_len;
++    {
++        /*
++         * The device may expose more (or fewer) channels than we render. QEMU
++         * asks the device to adopt our channel count, but some hardware (e.g.
++         * multichannel pro interfaces) silently keeps its native layout, so the
++         * IOProc buffer can have a wider frame than hw->info.bytes_per_frame.
++         * Compare the buffer's actual frame stride to ours: if they match, copy
++         * the block straight through (fast path); otherwise place each of our
++         * frames into the first channels of the device frame and silence the
++         * rest, frame by frame, so stereo plays correctly on the first two
++         * outputs instead of being smeared across the channel layout.
++         */
++        const AudioBuffer *ab = &outOutputData->mBuffers[0];
++        UInt32 hw_frame = hw->info.bytes_per_frame;
++        UInt32 dev_frame = ab->mNumberChannels *
++                           (UInt32)(hw_frame / hw->info.nchannels);
++
++        if (dev_frame == 0 || dev_frame == hw_frame) {
++            len = frame_size * hw_frame;
++            while (len) {
++                size_t write_len, start;
++
++                start = audio_ring_posb(hw->pos_emul, hw->pending_emul,
++                                        hw->size_emul);
++                assert(start < hw->size_emul);
++
++                write_len = MIN(MIN(hw->pending_emul, len),
++                                hw->size_emul - start);
++
++                memcpy(out, hw->buf_emul + start, write_len);
++                hw->pending_emul -= write_len;
++                len -= write_len;
++                out += write_len;
++            }
++        } else {
++            UInt32 copy = MIN(hw_frame, dev_frame);
++            UInt32 f;
++
++            /* Silence channels we do not drive (and any frames we skip). */
++            memset(out, 0, (size_t)frame_size * dev_frame);
++
++            for (f = 0; f < frame_size; f++) {
++                uint8_t *dst = (uint8_t *)out + (size_t)f * dev_frame;
++                size_t start;
++
++                if (hw->pending_emul < hw_frame) {
++                    break;
++                }
++                start = audio_ring_posb(hw->pos_emul, hw->pending_emul,
++                                        hw->size_emul);
++                assert(start < hw->size_emul);
++
++                if (hw->size_emul - start >= copy) {
++                    memcpy(dst, hw->buf_emul + start, copy);
++                } else {
++                    size_t first = hw->size_emul - start;
++                    memcpy(dst, hw->buf_emul + start, first);
++                    memcpy(dst + first, hw->buf_emul, copy - first);
++                }
++                hw->pending_emul -= hw_frame;
++            }
++        }
+     }
+ 
+     coreaudio_voice_out_buf_unlock(core, "out_device_ioproc");
+@@ -445,6 +505,7 @@ static OSStatus init_out_device(CoreaudioVoiceOut *core)
+         return status;
+     }
+ 
++
+     /*
+      * set Callback.
+      *
+@@ -586,12 +647,44 @@ static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as)
+     obt_as = *as;
+     as = &obt_as;
+     as->fmt = AUDIO_FORMAT_F32;
++
++    /*
++     * Adopt the output device's current sample rate instead of forcing the
++     * device to ours. Some hardware (HDMI sinks, pro interfaces) silently
++     * refuses a rate change and keeps its native rate, which would leave our
++     * stream playing at the wrong clock (severe pitch/dropout distortion). By
++     * matching hw->info.freq to the device, QEMU's mixeng resamples our source
++     * rate to the device rate cleanly. If the query fails, fall back to the
++     * requested rate.
++     */
++    {
++        AudioDeviceID did;
++        Float64 dev_rate;
++        if (coreaudio_get_voice_out(&did) == kAudioHardwareNoError &&
++            did != kAudioDeviceUnknown &&
++            coreaudio_get_out_nominal_rate(did, &dev_rate) ==
++                kAudioHardwareNoError &&
++            dev_rate > 0) {
++            as->freq = (int)(dev_rate + 0.5);
++        }
++    }
++
+     audio_pcm_init_info(&hw->info, as);
+ 
+     core->frame_size_setting = audio_buffer_frames(
+         qapi_AudiodevCoreaudioPerDirectionOptions_base(cpdo), as, 11610);
+ 
+-    core->buffer_count = cpdo->has_buffer_count ? cpdo->buffer_count : 4;
++    /*
++     * Default to 8 device periods rather than 4. The IOProc consumes one
++     * period per callback on the real-time audio thread, while QEMU refills
++     * the HW buffer from the main loop (audio_run -> mixeng). The main loop is
++     * periodically blocked for a few milliseconds by the Cocoa display redraw,
++     * during which the IOProc keeps draining; a deeper default buffer gives
++     * that refill more slack so the device buffer does not approach empty on
++     * low-latency devices. Users can still override via the audiodev
++     * buffer-count option.
++     */
++    core->buffer_count = cpdo->has_buffer_count ? cpdo->buffer_count : 8;
+ 
+     status = AudioObjectAddPropertyListener(kAudioObjectSystemObject,
+                                             &voice_out_addr,

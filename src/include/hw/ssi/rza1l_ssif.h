@@ -49,7 +49,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSsifState, RZA1L_SSIF)
  * polled.
  */
 #define RZA1L_SSIF_PLAY_TICK_NS  1000000ull          /* 1 ms fallback tick   */
-#define RZA1L_SSIF_FIFO_SIZE     32768u              /* ~93 ms, power of two */
+#define RZA1L_SSIF_FIFO_SIZE     131072u             /* ~372 ms, power of two */
+
+/*
+ * Output latency cushion. The host voice consumes at a fixed real-time rate
+ * while the firmware renders in bursts (paced by emulated CPU time), so the
+ * staging FIFO must hold a buffer of finished audio to absorb that jitter. We
+ * withhold output until the FIFO has primed to this depth, then drain at the
+ * voice's pull rate, spending and refilling the cushion as bursts ebb and
+ * flow. Measured production stalls (emulation briefly pausing while the host
+ * keeps consuming, e.g. during the periodic display redraw) drain ~85 ms, so
+ * the cushion is sized well above that (~125 ms) to ride them without the FIFO
+ * ever reaching empty. A brief shortfall is handled softly (silence for that
+ * callback only) rather than by a disruptive full rebuild.
+ */
+#define RZA1L_SSIF_PRIME_BYTES   44100u             /* ~125 ms @ 44.1k stereo */
 
 struct RzA1lDmacState;
 
@@ -104,7 +118,9 @@ struct RzA1lSsifState {
 
     QEMUTimer *play_timer;       /* fine-grained ring sampler             */
     bool      play_anchored;     /* read_off seeded for the live ring     */
+    bool      out_primed;        /* output cushion built; draining at rate */
     uint32_t  read_off;          /* byte offset within the TX ring        */
+    uint32_t  drain_frac;        /* 16.16 resampler phase for drift trim   */
 
     /* Host-side staging FIFO between the ring sampler and the output voice. */
     uint8_t   fifo[RZA1L_SSIF_FIFO_SIZE];

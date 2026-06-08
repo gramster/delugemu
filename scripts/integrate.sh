@@ -25,6 +25,13 @@
 #   3. Append `subdir('deluge')` to qemu/hw/meson.build (at EOF, after the arch
 #      dirs, so arm_ss already exists).
 #   4. Append `source deluge/Kconfig` to qemu/hw/Kconfig.
+#   5. Apply the patches under qemu-patches/ to the upstream tree. A handful of
+#      changes genuinely belong to existing upstream files (e.g. the CoreAudio
+#      backend) and cannot be expressed as a new, symlinked source file. Rather
+#      than commit them into the submodule (which would make our pinned QEMU no
+#      longer vanilla upstream), we keep them as patches in THIS repo and apply
+#      them to the working tree here, marking the touched files --skip-worktree
+#      so the submodule still reports clean. `--undo` reverses them.
 #
 # Keeping the QEMU-side edits to two appended, marker-guarded lines makes
 # rebasing the submodule onto a newer QEMU painless.
@@ -54,6 +61,11 @@ HW_MESON="${QEMU_DIR}/hw/meson.build"
 HW_KCONFIG="${QEMU_DIR}/hw/Kconfig"
 QEMU_INC_HW="${QEMU_DIR}/include/hw"
 SRC_INC_HW="${SRC_DIR}/include/hw"
+
+# Patches against existing upstream QEMU files (applied to the submodule working
+# tree, then hidden with --skip-worktree). Stored in this repo so the pinned
+# submodule itself stays byte-for-byte vanilla upstream.
+QEMU_PATCH_DIR="${REPO_ROOT}/qemu-patches"
 
 MARKER="# >>> delugemu integration (managed by integrate script) <<<"
 MARKER_END="# <<< delugemu integration end >>>"
@@ -87,6 +99,55 @@ clear_skip_worktree() {
     local f
     for f in "${TRACKED_HOOK_FILES[@]}"; do
         git -C "${QEMU_DIR}" update-index --no-skip-worktree "${f}" 2>/dev/null || true
+    done
+}
+
+# List the files a patch touches (paths relative to the QEMU tree).
+patch_files() {
+    git -C "${QEMU_DIR}" apply --numstat "$1" 2>/dev/null | awk '{ print $3 }'
+}
+
+# Apply every qemu-patches/*.patch to the submodule working tree (idempotent),
+# then mark the touched files --skip-worktree so the submodule reports clean and
+# the local edits can never be staged into the QEMU repo by accident.
+apply_patches() {
+    [ -d "${QEMU_PATCH_DIR}" ] || return 0
+    local p f files
+    for p in "${QEMU_PATCH_DIR}"/*.patch; do
+        [ -e "${p}" ] || continue
+        files="$(patch_files "${p}")"
+        # Let git see the real working-tree state before we test/apply.
+        for f in ${files}; do
+            git -C "${QEMU_DIR}" update-index --no-skip-worktree "${f}" 2>/dev/null || true
+        done
+        if git -C "${QEMU_DIR}" apply --reverse --check "${p}" >/dev/null 2>&1; then
+            log "Patch $(basename "${p}") already applied."
+        elif git -C "${QEMU_DIR}" apply --check "${p}" >/dev/null 2>&1; then
+            git -C "${QEMU_DIR}" apply "${p}"
+            log "Applied patch $(basename "${p}")"
+        else
+            die "Patch $(basename "${p}") does not apply cleanly to the QEMU tree."
+        fi
+        for f in ${files}; do
+            git -C "${QEMU_DIR}" update-index --skip-worktree "${f}" 2>/dev/null || true
+        done
+    done
+}
+
+# Reverse every qemu-patches/*.patch, restoring the upstream files byte-for-byte.
+revert_patches() {
+    [ -d "${QEMU_PATCH_DIR}" ] || return 0
+    local p f files
+    for p in "${QEMU_PATCH_DIR}"/*.patch; do
+        [ -e "${p}" ] || continue
+        files="$(patch_files "${p}")"
+        for f in ${files}; do
+            git -C "${QEMU_DIR}" update-index --no-skip-worktree "${f}" 2>/dev/null || true
+        done
+        if git -C "${QEMU_DIR}" apply --reverse --check "${p}" >/dev/null 2>&1; then
+            git -C "${QEMU_DIR}" apply --reverse "${p}"
+            log "Reverted patch $(basename "${p}")"
+        fi
     done
 }
 
@@ -124,6 +185,9 @@ undo() {
     # 0. Let git track our hook files again before we revert their contents,
     #    so the reverted (== upstream) files show up as clean.
     clear_skip_worktree
+
+    # 0b. Reverse any applied qemu-patches/ so upstream files are byte-identical.
+    revert_patches
 
     # 1. Source tree symlink.
     [ -L "${LINK_PATH}" ] && rm -f "${LINK_PATH}"
@@ -231,6 +295,10 @@ write_git_exclude
 # 6. Hide our appends to the tracked hook files so the submodule stays clean
 #    and the edits can never be staged/committed by accident.
 set_skip_worktree
+
+# 7. Apply our patches to existing upstream files (CoreAudio, Cocoa, ...) and
+#    hide them too, so the pinned submodule stays vanilla upstream yet clean.
+apply_patches
 
 log "Integration complete. Next: ./scripts/build.sh"
 log "The qemu submodule now reports clean (git status -C qemu); run"

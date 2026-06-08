@@ -171,26 +171,92 @@ void rza1l_ssif_set_dma(RzA1lSsifState *s, struct RzA1lDmacState *dmac,
 }
 
 /*
- * Push staged samples into the output voice. Called both from the sampling
- * timer (after fresh frames are lifted from the ring) and from the backend's
- * pull callback (when mixer space frees up). audio_be_write accepts only what
- * currently fits in the mix buffer, so we drain as much of the FIFO as the
- * voice will take and leave the rest for the next opportunity.
+ * Drain up to max_bytes of staged audio into the output voice, returning the
+ * number of bytes actually accepted. Draining is bounded so the caller can
+ * pace it to the voice's consumption rate and keep the rest of the FIFO as a
+ * jitter cushion. audio_be_write accepts only what currently fits in the mix
+ * buffer, so we stop early if the voice is momentarily full.
  */
-static void rza1l_ssif_flush_fifo(RzA1lSsifState *s)
+/*
+ * Drift-correcting drain. The host audio device and the emulated guest each
+ * run their own ~44.1 kHz clock; they are not synchronised, so over time one
+ * outruns the other (measured ~0.5%). Left alone the staging FIFO would slowly
+ * empty (host faster) or overflow (host slower), and a momentary production
+ * stall would leave the cushion unable to recover. To lock the FIFO depth at a
+ * target we resample on the fly by a tiny, depth-dependent factor: when the
+ * FIFO is below target we advance through it slightly slower than we emit
+ * (occasionally repeating a stereo frame, stretching time), and when it is
+ * above target we advance slightly faster (consuming frames a touch quicker).
+ * The correction is proportional and clamped to +/-2%, so at steady state it is
+ * effectively zero and well under perceptible pitch change; its only job is to
+ * absorb clock drift and rebuild the cushion after a stall. We resample with
+ * linear interpolation between adjacent stereo frames (the FIFO holds S32
+ * stereo), so the fractional, sub-percent rate change is smooth and inaudible
+ * rather than the clicks that nearest-frame dup/drop would produce.
+ *
+ * out is filled with up to max_bytes of emitted audio; the function returns the
+ * number of bytes written to the voice (the device decides how much it takes).
+ */
+static void rza1l_ssif_drain(RzA1lSsifState *s, uint32_t max_bytes)
 {
-    while (s->fifo_len > 0) {
-        uint32_t to_end = RZA1L_SSIF_FIFO_SIZE - s->fifo_head;
-        uint32_t chunk = MIN(s->fifo_len, to_end);
-        size_t written = audio_be_write(s->audio_be, s->voice_out,
-                                        s->fifo + s->fifo_head, chunk);
-        if (written == 0) {
-            break; /* mix buffer full for now */
+    const uint32_t F = RZA1L_SSIF_BYTES_PER_FRAME;
+    int32_t target = RZA1L_SSIF_PRIME_BYTES;
+    int32_t err = (int32_t)s->fifo_len - target;
+    uint32_t step;                   /* 16.16 FIFO frames per emitted frame */
+    uint8_t out[4096];
+
+    /* Proportional, clamped to +/-2% (65536 == 1.0x). */
+    if (err > target) {
+        err = target;
+    } else if (err < -target) {
+        err = -target;
+    }
+    step = (uint32_t)(65536 + (int64_t)err * (65536 / 50) / target);
+
+    while (max_bytes >= F) {
+        uint32_t cap = MIN(max_bytes, (uint32_t)sizeof(out));
+        uint32_t built = 0;
+        size_t written;
+
+        while (built + F <= cap) {
+            uint32_t nxt;
+            int32_t l0, r0, l1, r1, lo, ro;
+            int64_t t;
+
+            if (s->fifo_len < 2 * F) {
+                break;          /* need a frame pair to interpolate */
+            }
+            nxt = (s->fifo_head + F) % RZA1L_SSIF_FIFO_SIZE;
+            memcpy(&l0, s->fifo + s->fifo_head, 4);
+            memcpy(&r0, s->fifo + s->fifo_head + 4, 4);
+            memcpy(&l1, s->fifo + nxt, 4);
+            memcpy(&r1, s->fifo + nxt + 4, 4);
+
+            /* Linear interpolation in S32 space (t in 16.16 fixed point). */
+            t = s->drain_frac;
+            lo = (int32_t)(l0 + ((((int64_t)l1 - l0) * t) >> 16));
+            ro = (int32_t)(r0 + ((((int64_t)r1 - r0) * t) >> 16));
+            memcpy(out + built, &lo, 4);
+            memcpy(out + built + 4, &ro, 4);
+            built += F;
+
+            s->drain_frac += step;
+            while (s->drain_frac >= 65536) {
+                s->drain_frac -= 65536;
+                if (s->fifo_len >= F) {
+                    s->fifo_head = (s->fifo_head + F) % RZA1L_SSIF_FIFO_SIZE;
+                    s->fifo_len -= F;
+                }
+            }
         }
-        s->fifo_head = (s->fifo_head + (uint32_t)written) % RZA1L_SSIF_FIFO_SIZE;
-        s->fifo_len -= (uint32_t)written;
-        if (written < chunk) {
+
+        if (built == 0) {
             break;
+        }
+        written = audio_be_write(s->audio_be, s->voice_out, out, built);
+        max_bytes -= (uint32_t)written;
+        if (written < built) {
+            break;              /* mix buffer full for now */
         }
     }
 }
@@ -336,16 +402,20 @@ static void rza1l_ssif_play_tick(void *opaque)
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     rza1l_ssif_pump(s);
-    rza1l_ssif_flush_fifo(s);
 
     timer_mod_ns(s->play_timer, now + RZA1L_SSIF_PLAY_TICK_NS);
 }
 
 /*
  * Audio output pull callback. The backend invokes this when its mix buffer can
- * accept more samples; we simply drain whatever the sampling timer has staged.
- * The actual ring sampling happens in rza1l_ssif_play_tick so that the small
- * guest ring is read finely enough never to be overwritten before we copy it.
+ * accept more samples, at the real-time consumption rate. We feed it from the
+ * staging FIFO, but only after a latency cushion has primed, and only up to
+ * the bytes it just asked for — the remainder of the FIFO stays as a reserve
+ * that absorbs the firmware's bursty, emulated-time-paced production. If the
+ * reserve is momentarily exhausted we simply deliver what we have and let the
+ * voice play silence for the shortfall (a sub-callback gap), then resume as
+ * soon as production catches up; the large cushion makes this rare and brief,
+ * and it is far less disruptive than withholding output to rebuild the buffer.
  */
 static void rza1l_ssif_out_cb(void *opaque, int free_bytes)
 {
@@ -354,7 +424,15 @@ static void rza1l_ssif_out_cb(void *opaque, int free_bytes)
     if (free_bytes <= 0) {
         return;
     }
-    rza1l_ssif_flush_fifo(s);
+
+    if (!s->out_primed) {
+        if (s->fifo_len < RZA1L_SSIF_PRIME_BYTES) {
+            return; /* still building the cushion; voice plays silence */
+        }
+        s->out_primed = true;
+    }
+
+    rza1l_ssif_drain(s, (uint32_t)free_bytes);
 }
 
 /*
@@ -424,7 +502,9 @@ static void rza1l_ssif_reset(DeviceState *dev)
     s->ssifcmr = 0;
     s->ssifcsr = 0;
     s->play_anchored = false;
+    s->out_primed = false;
     s->read_off = 0;
+    s->drain_frac = 0;
     s->fifo_head = 0;
     s->fifo_len = 0;
     s->rec_cursor = 0;
