@@ -51,6 +51,30 @@ log "Building with ${JOBS} jobs..."
 ninja -C "${QEMU_BUILD_DIR}"
 
 BIN="${QEMU_BUILD_DIR}/qemu-system-arm"
+
+# On macOS, QEMU's build system links `qemu-system-arm-unsigned` and then runs
+# `scripts/entitlement.sh` (via a Meson custom_target) to produce the final
+# `qemu-system-arm`.  Depending on the Meson version and host configuration,
+# that custom_target may not be included in the default ninja build graph.
+# Trigger it explicitly when the signed binary is absent after the main build.
+if [ "$(uname -s)" = "Darwin" ] && [ ! -x "${BIN}" ]; then
+    log "Requesting entitlement/signing target explicitly..."
+    ninja -C "${QEMU_BUILD_DIR}" qemu-system-arm 2>/dev/null || true
+fi
+
+# Final fallback: if the entitlement step is unavailable or broken (e.g.
+# SetFile was removed in Xcode 12+ and is absent on modern macOS runners),
+# promote the unsigned binary directly and apply an ad-hoc signature so the
+# kernel will execute it on Apple Silicon.
+if [ ! -x "${BIN}" ]; then
+    UNSIGNED="${QEMU_BUILD_DIR}/qemu-system-arm-unsigned"
+    if [ -x "${UNSIGNED}" ]; then
+        log "Icon/signing step unavailable; promoting unsigned binary to ${BIN}"
+        cp "${UNSIGNED}" "${BIN}"
+        codesign -s - "${BIN}" 2>/dev/null || true
+    fi
+fi
+
 if [ -x "${BIN}" ]; then
     log "Build complete: ${BIN}"
     log "Verify the Deluge machine is registered:"
