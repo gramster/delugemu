@@ -271,8 +271,8 @@ package_windows() {
     cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
 
     # Vendor the SD-folder helpers so the native launcher can build a FAT image
-    # from a directory without MSYS2: mkfs.fat (dosfstools, a MinGW .exe) and
-    # mcopy (mtools, an MSYS .exe that needs msys-2.0.dll alongside it). Both are
+    # from a directory without MSYS2: mkfs.fat (dosfstools, from /usr/bin in the
+    # MSYS repo) and mcopy (mingw-w64-mtools, a native MinGW .exe). Both are
     # best-effort: if absent, the launcher falls back to raw-image SD support.
     stage_windows_tool() {
         local tool="$1" found
