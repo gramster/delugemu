@@ -100,6 +100,7 @@ cp "${REPO_ROOT}/scripts/run.sh" \
    "${REPO_ROOT}/scripts/common.sh" \
    "${REPO_ROOT}/scripts/mksd.sh" \
    "${REPO_ROOT}/scripts/midi_bridge.c" \
+   "${REPO_ROOT}/scripts/midi_route.py" \
    "${STAGE}/scripts/"
 cp "${REPO_ROOT}/LICENSE" "${STAGE}/LICENSE" 2>/dev/null || true
 
