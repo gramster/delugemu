@@ -42,11 +42,12 @@
 #   --audio <driver>        Select a non-default host audio backend for the
 #                           SSIF (I2S) output (-audiodev <driver>). Audio is on
 #                           by default using the OS default backend (coreaudio
-#                           on macOS, pa on Linux, dsound on Windows), so this
-#                           flag is only needed to override it, e.g. --audio
-#                           sdl / wav / none. Use 'auto' to force the OS
-#                           default explicitly. Play a note in an instrument
-#                           clip to hear 44.1 kHz stereo output.
+#                           on macOS, pa on Linux) or sdl on Windows (where the
+#                           dsound default is unreliable), so this flag is only
+#                           needed to override it, e.g. --audio dsound / wav /
+#                           none. Use 'auto' to force the recommended backend
+#                           explicitly. Play a note in an instrument clip to
+#                           hear 44.1 kHz stereo output.
 #   --audio-buffer <ms>     Output buffer cushion in milliseconds (default 15).
 #                           Raise it if you hear dropouts; lower it to trim the
 #                           delay when playing the emulated Deluge live from
@@ -453,17 +454,29 @@ if [ "${DISPLAY_MODE}" = "console" ]; then
 fi
 
 # Optional audio backend override, routed to the SSIF (I2S) sink. The device
-# opens the OS default backend on its own, so this is only needed to select a
-# non-default driver. The SoC builds the SSIF internally, so -global binds the
-# audiodev to the device's property. 'auto' resolves to the recommended host
-# driver for this OS.
+# opens the OS default backend on its own, so this is normally only needed to
+# select a non-default driver. The SoC builds the SSIF internally, so -global
+# binds the audiodev to the device's property. 'auto' resolves to the
+# recommended host driver for this OS.
+#
+# On Windows the implicit default (dsound) is unreliable and frequently silent,
+# so when no --audio is given there we force the bundled SDL backend, which
+# works well. Other platforms keep the device's own default unless overridden.
+if [ -z "${AUDIO}" ]; then
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            AUDIO="sdl"
+            log "Defaulting Windows audio backend to sdl (dsound is unreliable)"
+            ;;
+    esac
+fi
 AUDIO_ARGS=()
 if [ -n "${AUDIO}" ]; then
     if [ "${AUDIO}" = "auto" ]; then
         case "$(uname -s)" in
             Darwin)  AUDIO="coreaudio" ;;
             Linux)   AUDIO="pa" ;;
-            MINGW*|MSYS*|CYGWIN*) AUDIO="dsound" ;;
+            MINGW*|MSYS*|CYGWIN*) AUDIO="sdl" ;;
             *)       AUDIO="sdl" ;;
         esac
         log "Audio backend auto-selected for $(uname -s): ${AUDIO}"

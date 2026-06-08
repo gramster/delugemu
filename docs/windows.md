@@ -7,7 +7,8 @@ QEMU project itself uses to build the official Windows binaries. WSL is also an
 option, but these instructions cover the native MSYS2 path so you get a real
 Windows `qemu-system-arm.exe` with a native GUI window.
 
-> Outgoing audio uses the `dsound` backend by default on Windows. The
+> Outgoing audio uses the `sdl` backend by default on Windows (the `dsound`
+> backend is unreliable and often silent). The
 > `coremidi` host-MIDI bridge (`--midi coremidi` / `--usb-midi coremidi`) is
 > macOS-only — see [MIDI on Windows](#midi-on-windows) for what works instead.
 
@@ -114,8 +115,9 @@ The resulting binary is `qemu/build/qemu-system-arm.exe`.
 ./scripts/run.sh path/to/deluge_firmware.elf --display headless
 ```
 
-Audio plays through `dsound` by default. Use `--audio <driver>` (e.g.
-`--audio sdl`, `--audio wav`, `--audio none`) only to override it.
+Audio plays through the bundled `sdl` backend by default (the `dsound` backend
+is unreliable on Windows and frequently produces no sound). Use `--audio
+<driver>` (e.g. `--audio dsound`, `--audio wav`, `--audio none`) to override it.
 
 ## Paths
 

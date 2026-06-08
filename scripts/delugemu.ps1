@@ -60,8 +60,8 @@ Options:
   --midi <chardev>      Back SCIF0 (DIN MIDI) with a QEMU chardev spec, e.g.
                         --midi udp:127.0.0.1:1999. ('coremidi' is macOS-only.)
   --usb-midi <chardev>  Attach a host USB-MIDI device on a QEMU chardev spec.
-  --audio <driver>      Select a host audio backend (default: dsound). e.g.
-                        --audio sdl / wav / none. 'auto' selects dsound.
+  --audio <driver>      Select a host audio backend (default: sdl). e.g.
+                        --audio dsound / wav / none. 'auto' selects sdl.
   --audio-buffer <ms>   Output buffer cushion in milliseconds (default 15).
   --display <mode>      console (front-panel window, default) | headless | none.
   -h, --help            Show this help and exit.
@@ -396,10 +396,11 @@ if ($DisplayMode -eq 'console') {
 
 # Audio backend. On Windows QEMU's implicit default audiodev does not reliably
 # bind the SSIF to a working output, so we always pass an explicit -audiodev and
-# wire it to the SSIF. Defaults to dsound; override with --audio (e.g. sdl, wav,
-# none).
+# wire it to the SSIF. Defaults to SDL (bundled SDL2.dll), which is far more
+# reliable than the dsound backend on Windows; override with --audio (e.g.
+# dsound, wav, none).
 $AudioArgs = @()
-if (-not $Audio -or $Audio -eq 'auto') { $Audio = 'dsound' }
+if (-not $Audio -or $Audio -eq 'auto') { $Audio = 'sdl' }
 $AudioArgs = @('-audiodev', "$Audio,id=deluge0", '-global', 'rza1l-ssif.audiodev=deluge0')
 Write-Log "Routing SSIF audio to backend: $Audio"
 if ($AudioBuffer) {
