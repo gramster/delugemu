@@ -57,18 +57,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSsifState, RZA1L_SSIF)
  * staging FIFO must hold a buffer of finished audio to absorb that jitter. We
  * withhold output until the FIFO has primed to this depth, then drain at the
  * voice's pull rate, spending and refilling the cushion as bursts ebb and
- * flow. Measured production stalls (emulation briefly pausing while the host
- * keeps consuming, e.g. during the periodic display redraw) drain ~85 ms, so
- * the default cushion is sized well above that (~125 ms) to ride them without
- * the FIFO ever reaching empty. A brief shortfall is handled softly (silence
+ * flow. Historically the periodic display redraw stalled emulation for ~85 ms
+ * while the host kept consuming, but the skin view now skips unchanged frames
+ * so that stall is gone in practice; a small cushion (~15 ms default) is enough
+ * to absorb ordinary burst jitter. A brief shortfall is handled softly (silence
  * for that callback only) rather than by a disruptive full rebuild.
  *
  * The depth is tunable at runtime via the "prime-ms" property (run.sh's
- * --audio-latency): lowering it cuts perceived latency (helpful when playing
- * the emulated Deluge live from external MIDI) at the cost of more frequent
- * soft dropouts during redraw stalls. The value is clamped to the FIFO size.
+ * --audio-buffer): raising it rides larger stalls at the cost of more latency,
+ * lowering it cuts perceived latency (helpful when playing the emulated Deluge
+ * live from external MIDI) at the risk of soft dropouts. Clamped to FIFO size.
  */
-#define RZA1L_SSIF_DEFAULT_PRIME_MS  125u           /* ~125 ms @ 44.1k stereo */
+#define RZA1L_SSIF_DEFAULT_PRIME_MS  15u            /* ~15 ms @ 44.1k stereo  */
 
 struct RzA1lDmacState;
 

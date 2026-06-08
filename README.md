@@ -111,11 +111,10 @@ first).
 # to select a non-default backend (e.g. sdl / wav / none).
 ./scripts/run.sh path/to/deluge_firmware.elf --sd build/deluge_sd.img
 
-# Output latency: the SSIF keeps a ~125 ms cushion so the periodic display
-# redraw can't starve the audio. Lower it with --audio-latency <ms> (e.g. 40)
-# to play the emulated Deluge live from external MIDI with less delay; too low
-# risks occasional dropouts during the redraw.
-./scripts/run.sh path/to/deluge_firmware.elf --midi coremidi --audio-latency 40
+# Output buffer: the SSIF keeps a small (~15 ms) cushion to absorb burst jitter.
+# Raise it with --audio-buffer <ms> if you hear dropouts, or lower it to trim
+# the delay when playing the emulated Deluge live from external MIDI.
+./scripts/run.sh path/to/deluge_firmware.elf --midi coremidi --audio-buffer 15
 
 # Run without a window (serial + monitor on the terminal):
 ./scripts/run.sh path/to/deluge_firmware.elf --display headless

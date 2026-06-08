@@ -37,11 +37,10 @@
 #                           sdl / wav / none. Use 'auto' to force the OS
 #                           default explicitly. Play a note in an instrument
 #                           clip to hear 44.1 kHz stereo output.
-#   --audio-latency <ms>    Output latency cushion in milliseconds (default
-#                           125). Lower it (e.g. 40) to reduce the delay when
-#                           playing the emulated Deluge live from external
-#                           MIDI; too low may cause occasional audio dropouts
-#                           during the periodic display redraw.
+#   --audio-buffer <ms>     Output buffer cushion in milliseconds (default 15).
+#                           Raise it if you hear dropouts; lower it to trim the
+#                           delay when playing the emulated Deluge live from
+#                           external MIDI.
 #   --display <mode>        Display mode:
 #                             console   open the front-panel skin window with
 #                                       the modelled OLED / pad-grid / 7-seg
@@ -58,7 +57,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
-    sed -n '4,57p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '4,55p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # Resolve a --sd argument that may be either a raw image file or a directory.
@@ -159,7 +158,7 @@ shift
 MIDI=""
 USB_MIDI=""
 AUDIO=""
-AUDIO_LATENCY=""
+AUDIO_BUFFER=""
 DISPLAY_MODE="console"
 
 SD_ARGS=()
@@ -199,11 +198,11 @@ while [ $# -gt 0 ]; do
             AUDIO="$2"; shift 2
             ;;
         --audio=*) AUDIO="${1#--audio=}"; shift ;;
-        --audio-latency)
-            [ -n "${2:-}" ] || die "--audio-latency requires a value in ms"
-            AUDIO_LATENCY="$2"; shift 2
+        --audio-buffer)
+            [ -n "${2:-}" ] || die "--audio-buffer requires a value in ms"
+            AUDIO_BUFFER="$2"; shift 2
             ;;
-        --audio-latency=*) AUDIO_LATENCY="${1#--audio-latency=}"; shift ;;
+        --audio-buffer=*) AUDIO_BUFFER="${1#--audio-buffer=}"; shift ;;
         --display)
             [ -n "${2:-}" ] || die "--display requires a mode"
             DISPLAY_MODE="$2"; shift 2
@@ -338,15 +337,15 @@ if [ -n "${AUDIO}" ]; then
     log "Routing SSIF audio to backend: ${AUDIO}"
 fi
 
-# Optional output latency cushion override (milliseconds), bound to the SSIF's
+# Optional output buffer cushion override (milliseconds), bound to the SSIF's
 # prime-ms property. Lower = less perceived delay when playing the emulator
-# live; too low risks dropouts during the display redraw.
-if [ -n "${AUDIO_LATENCY}" ]; then
-    case "${AUDIO_LATENCY}" in
-        ''|*[!0-9]*) die "--audio-latency must be a non-negative integer (ms)" ;;
+# live; raise it if you hear dropouts.
+if [ -n "${AUDIO_BUFFER}" ]; then
+    case "${AUDIO_BUFFER}" in
+        ''|*[!0-9]*) die "--audio-buffer must be a non-negative integer (ms)" ;;
     esac
-    AUDIO_ARGS+=(-global "rza1l-ssif.prime-ms=${AUDIO_LATENCY}")
-    log "SSIF output latency cushion: ${AUDIO_LATENCY} ms"
+    AUDIO_ARGS+=(-global "rza1l-ssif.prime-ms=${AUDIO_BUFFER}")
+    log "SSIF output buffer cushion: ${AUDIO_BUFFER} ms"
 fi
 
 [ ${#SD_ARGS[@]} -gt 0 ] && log "Attaching SD image"
