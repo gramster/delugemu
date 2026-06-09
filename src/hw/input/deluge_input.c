@@ -20,8 +20,31 @@
 #include "hw/display/deluge_skin_layout.h"
 #include "hw/input/deluge_input.h"
 #include "hw/display/deluge_skin_controls.h"
+#include "hw/display/deluge_skin.h"
 #include "hw/misc/deluge_pic.h"
 #include "hw/gpio/rza1l_gpio.h"
+
+/*
+ * Optional input tracing. Each call is a synchronous, unbuffered console write
+ * on the vCPU thread; on slow consoles (notably Windows) a burst of these while
+ * playing pads can stall emulation and disturb the audio ring, so they are off
+ * unless DELUGE_INPUT_DEBUG is set in the environment.
+ */
+static int deluge_input_debug(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        v = getenv("DELUGE_INPUT_DEBUG") != NULL;
+    }
+    return v;
+}
+
+#define INPUT_DBG(fmt, ...) \
+    do { \
+        if (deluge_input_debug()) { \
+            fprintf(stderr, "deluge_input: " fmt "\n", ##__VA_ARGS__); \
+        } \
+    } while (0)
 
 /*
  * Minimum time a pointer (mouse) press is held before its release is
@@ -204,7 +227,7 @@ static void deluge_input_wheel(DelugeInputState *s, int dir)
         return;
     }
 
-    fprintf(stderr, "deluge_input: wheel %s encoder %s -> step %+d\n",
+    INPUT_DBG("wheel %s encoder %s -> step %+d",
             ctrl->name, dir > 0 ? "up" : "down", dir);
     rza1l_gpio_encoder_step(s->gpio, enc, dir);
 }
@@ -237,7 +260,7 @@ static void deluge_input_encoder_begin_repeat(DelugeInputState *s, int enc,
     if (!s->gpio) {
         return;
     }
-    fprintf(stderr, "deluge_input: encoder %d triangle -> step %+d (hold-repeat)\n",
+    INPUT_DBG("encoder %d triangle -> step %+d (hold-repeat)",
             enc, dir);
     rza1l_gpio_encoder_step(s->gpio, enc, dir);
     s->enc_repeat_id = enc;
@@ -295,13 +318,13 @@ static void deluge_input_latch_toggle(DelugeInputState *s, int x, int y,
         deluge_input_emit(s, x, y, is_button, false);
         s->latched[idx] = s->latched[s->latched_count - 1];
         s->latched_count--;
-        fprintf(stderr, "deluge_input: unlatch %s (%d,%d)\n",
+        INPUT_DBG("unlatch %s (%d,%d)",
                 is_button ? "button" : "pad", x, y);
         return;
     }
 
     if (s->latched_count >= DELUGE_INPUT_MAX_LATCHED) {
-        fprintf(stderr, "deluge_input: latch table full, ignoring (%d,%d)\n",
+        INPUT_DBG("latch table full, ignoring (%d,%d)",
                 x, y);
         return;
     }
@@ -311,7 +334,7 @@ static void deluge_input_latch_toggle(DelugeInputState *s, int x, int y,
     s->latched[s->latched_count].y = y;
     s->latched[s->latched_count].is_button = is_button;
     s->latched_count++;
-    fprintf(stderr, "deluge_input: latch %s (%d,%d)\n",
+    INPUT_DBG("latch %s (%d,%d)",
             is_button ? "button" : "pad", x, y);
 }
 
@@ -319,7 +342,7 @@ static void deluge_input_latch_toggle(DelugeInputState *s, int x, int y,
 static void deluge_input_latch_release_all(DelugeInputState *s)
 {
     if (s->latched_count) {
-        fprintf(stderr, "deluge_input: releasing %d latched control(s)\n",
+        INPUT_DBG("releasing %d latched control(s)",
                 s->latched_count);
     }
     for (int i = 0; i < s->latched_count; i++) {
@@ -339,7 +362,7 @@ static void deluge_input_pointer_press(DelugeInputState *s)
         s->release_armed = false;
     }
 
-    fprintf(stderr, "deluge_input: pointer press at (%d,%d)\n",
+    INPUT_DBG("pointer press at (%d,%d)",
             s->pointer_x, s->pointer_y);
 
     /* Buttons/encoders sit above the pad grid; test them first. */
@@ -364,7 +387,7 @@ static void deluge_input_pointer_press(DelugeInputState *s)
             }
         }
 
-        fprintf(stderr, "deluge_input: press hit %s button (%d,%d)\n",
+        INPUT_DBG("press hit %s button (%d,%d)",
                 ctrl->name, ctrl->col, ctrl->row);
         if (s->latch_active) {
             deluge_input_latch_toggle(s, ctrl->col, ctrl->row, true);
@@ -379,13 +402,13 @@ static void deluge_input_pointer_press(DelugeInputState *s)
     }
 
     if (!deluge_input_hit_test_pad(s->pointer_x, s->pointer_y, &pad_x, &pad_y)) {
-        fprintf(stderr, "deluge_input: press miss (no pad/button hit)\n");
+        INPUT_DBG("press miss (no pad/button hit)");
         s->held_x = -1;
         s->held_y = -1;
         return;
     }
 
-    fprintf(stderr, "deluge_input: press hit pad (%d,%d)\n", pad_x, pad_y);
+    INPUT_DBG("press hit pad (%d,%d)", pad_x, pad_y);
 
     if (s->latch_active) {
         deluge_input_latch_toggle(s, pad_x, pad_y, false);
@@ -411,11 +434,11 @@ static void deluge_input_pointer_release_now(DelugeInputState *s)
     }
 
     if (s->held_is_button) {
-        fprintf(stderr, "deluge_input: pointer release button (%d,%d)\n",
+        INPUT_DBG("pointer release button (%d,%d)",
                 s->held_x, s->held_y);
         deluge_pic_button_event(s->pic, s->held_x, s->held_y, false);
     } else {
-        fprintf(stderr, "deluge_input: pointer release pad (%d,%d)\n",
+        INPUT_DBG("pointer release pad (%d,%d)",
                 s->held_x, s->held_y);
         deluge_pic_pad_event(s->pic, s->held_x, s->held_y, false);
     }
@@ -480,6 +503,25 @@ static void deluge_input_event(DeviceState *dev, QemuConsole *src,
             s->latch_active = key->down;
             if (!key->down) {
                 deluge_input_latch_release_all(s);
+            }
+            return;
+        }
+
+        /*
+         * Right Ctrl is a hold-to-suspend control: while it is held, the
+         * front-panel skin rendering is suspended so the host UI does no
+         * per-frame scaling/blit and the main loop stays free to feed audio
+         * during a performance; releasing it resumes rendering. Edge-detected
+         * so the key's auto-repeat does not re-trigger the transition.
+         */
+        if (qcode == Q_KEY_CODE_CTRL_R) {
+            if (key->down != s->render_key_down) {
+                s->render_key_down = key->down;
+                s->render_suspended = key->down;
+                if (s->skin) {
+                    deluge_skin_set_render_suspended(s->skin,
+                                                     s->render_suspended);
+                }
             }
             return;
         }
@@ -572,6 +614,13 @@ void deluge_input_set_gpio(DeviceState *dev, DeviceState *gpio)
     DelugeInputState *s = DELUGE_INPUT(dev);
 
     s->gpio = gpio;
+}
+
+void deluge_input_set_skin(DeviceState *dev, DeviceState *skin)
+{
+    DelugeInputState *s = DELUGE_INPUT(dev);
+
+    s->skin = skin;
 }
 
 static void deluge_input_realize(DeviceState *dev, Error **errp)

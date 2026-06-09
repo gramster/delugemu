@@ -114,6 +114,11 @@ The resulting binary is `qemu/build/qemu-system-arm.exe`.
 ./scripts/run.sh path/to/deluge_firmware.elf --display headless
 ```
 
+The native front panel is 2256x1584. run.sh detects your primary monitor and
+renders the panel down-sampled so the window fits the screen; zoom-to-fit
+scales it to any later window size. Override with `--skin-scale <percent|native>`
+(e.g. `--skin-scale native` for full size, `--skin-scale 50` for half).
+
 Audio plays through `dsound` by default. Use `--audio <driver>` (e.g.
 `--audio sdl`, `--audio wav`, `--audio none`) only to override it.
 

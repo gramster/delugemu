@@ -52,6 +52,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(RzA1lSsifState, RZA1L_SSIF)
 #define RZA1L_SSIF_FIFO_SIZE     131072u             /* ~372 ms, power of two */
 
 /*
+ * Minimum virtual-time spacing between actual ring copies. The firmware polls
+ * the DMA play head (CRSA) from a tight loop in its audio routine, and every
+ * such poll would otherwise drive a full ring scan plus a render-head DMA read
+ * on the vCPU thread — millions of times a second — stealing cycles from the
+ * very loop that renders the audio. The copy only needs to run often enough
+ * that the ~2.9 ms guest ring never laps unread, so we coalesce bursts of polls
+ * into one copy per this interval. Far finer than both the ring wrap and the
+ * host pull period, so output stays smooth while the per-poll overhead is gone.
+ */
+#define RZA1L_SSIF_PUMP_MIN_NS   250000ll            /* 250 us copy throttle */
+
+/*
  * Output latency cushion. The host voice consumes at a fixed real-time rate
  * while the firmware renders in bursts (paced by emulated CPU time), so the
  * staging FIFO must hold a buffer of finished audio to absorb that jitter. We
@@ -106,13 +118,27 @@ struct RzA1lSsifState {
      *
      * Because the guest ring (~2.9 ms) is far smaller than the backend's pull
      * period (~10 ms), rza1l_ssif_pump copies finished frames from the ring
-     * into a staging FIFO and the output voice drains that FIFO. The read
-     * position is bounded by the firmware's render write head
-     * (AudioEngine::i2sTXBufferPos): read_off advances up to that head, copying
-     * only frames the firmware has finished writing. The pump runs from the
-     * vCPU thread on every CRSA register read (plus a fallback timer), so it
-     * keeps pace with production even when the main loop stalls. play_anchored
-     * is false until the ring is armed and read_off has been seeded.
+     * into a staging FIFO and the output voice drains that FIFO. The copy is
+     * bounded by the firmware's render head, not the wall-clock DMA play head.
+     *
+     * The firmware's audio loop reads the DMA play head P (CRSA) and renders
+     * the backlog [W, P), advancing its render head W (AudioEngine::
+     * i2sTXBufferPos) forward toward P; so slots [W, P) hold the *previous*
+     * loop's audio until the firmware catches up. CRSA is synthesised from
+     * elapsed virtual time, so under TCG load P outruns W and the backlog grows
+     * toward a full ring — copying up to P then reads up to ~2.9 ms of
+     * last-loop audio, the harsh ring-lap distortion. Copying only up to W
+     * never reads an unrendered slot; when the firmware falls behind, the
+     * staging FIFO simply underruns into a brief, cushion-absorbed silence.
+     *
+     * W lives in guest memory at a firmware build-specific address, supplied
+     * out-of-band by the "tx-render-head" property (render_head_addr). When it
+     * is 0 (unset, or firmware whose symbol address is unknown) the copy falls
+     * back to the bare play head P: firmware-independent and never silent, but
+     * subject to the ring-lap distortion under heavy load. The pump runs from
+     * the vCPU thread on every CRSA register read (plus a fallback timer), so
+     * it keeps pace with production even when the main loop stalls.
+     * play_anchored is false until the ring is armed and read_off is seeded.
      */
     AudioBackend *audio_be;
     struct RzA1lDmacState *dmac;
@@ -125,7 +151,9 @@ struct RzA1lSsifState {
     bool      play_anchored;     /* read_off seeded for the live ring     */
     bool      out_primed;        /* output cushion built; draining at rate */
     uint32_t  read_off;          /* byte offset within the TX ring        */
+    uint32_t  render_head_addr;  /* guest addr of i2sTXBufferPos; 0=play-head */
     uint32_t  drain_frac;        /* 16.16 resampler phase for drift trim   */
+    int64_t   last_pump_ns;      /* virtual time of last ring copy (throttle) */
 
     /* Output latency cushion: "prime-ms" property -> derived byte depth. */
     uint32_t  prime_ms;          /* configured cushion in milliseconds    */

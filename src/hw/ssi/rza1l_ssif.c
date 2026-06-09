@@ -287,46 +287,103 @@ static void rza1l_ssif_fifo_push(RzA1lSsifState *s, const uint8_t *buf,
 /*
  * Copy played-out frames from the guest TX ring into the staging FIFO.
  *
- * The read position is bounded by the DMA play head (CRSA), the source address
- * the SSI transmit DMA channel reads as it streams the ring to the codec. The
- * DMAC synthesises CRSA from elapsed virtual time at the sample rate (see
- * rza1l_dmac_tx_audio_crsa), so every slot strictly *behind* CRSA has already
- * been clocked out to the DAC — that is exactly the audio the hardware would
- * play. We copy that span: from read_off forward up to CRSA, one slot at a
- * time, in order, delivering the device's true output stream frame-for-frame.
+ * The read position is bounded by the firmware's render head, not by the bare
+ * DMA play head. CRSA (the play head P) is synthesised from elapsed virtual
+ * time at the sample rate, so it advances on the wall clock; the firmware's
+ * audio loop reads P and renders the backlog [W, P), advancing its render head
+ * W (AudioEngine::i2sTXBufferPos) forward toward P. Slots [W, P) therefore hold
+ * the *previous* loop's samples until the firmware catches up. Under TCG load P
+ * outruns W and that backlog grows toward a full ring, so copying up to P reads
+ * up to ~2.9 ms of last-loop audio — the ring-lap distortion.
  *
- * This is deliberately firmware-independent: the ring base/size come from the
- * DMA descriptor the firmware programs, and CRSA comes from the virtual clock,
- * so no firmware build-specific symbol address is involved. (An earlier design
- * bounded the copy by the firmware's render write head, read from the hardcoded
- * symbol AudioEngine::i2sTXBufferPos; that produced silence for any firmware
- * whose link map placed the symbol elsewhere than the one build it was lifted
- * from.) Reading behind the play head can only read a stale ring slot if the
- * firmware underruns its own DMA — rare, and absorbed by the staging FIFO's
- * cushion rather than the gross tearing a misplaced symbol would cause.
+ * We instead copy only up to W: every slot in [read_off, W) is freshly
+ * rendered, so the output never tears. When the firmware falls behind, W stops
+ * advancing and the staging FIFO underruns into a brief, cushion-absorbed
+ * silence rather than into stale garbage.
+ *
+ * W lives in guest memory at a firmware build-specific address, supplied
+ * out-of-band by the "tx-render-head" property (render_head_addr). When it is 0
+ * — unset, or a firmware whose symbol address is unknown — the copy falls back
+ * to the bare play head P: firmware-independent and never silent, but subject
+ * to the ring-lap distortion under heavy load. (An earlier design hardcoded the
+ * i2sTXBufferPos symbol and produced silence for any firmware whose link map
+ * placed it elsewhere; making the address an explicit, optional property keeps
+ * the safe play-head behaviour as the default and enables the exact clamp only
+ * when the address is known.)
  *
  * Crucially this runs on the vCPU thread: the DMAC calls it from every CRSA
- * register read, which the firmware performs inside its audio loop (see
- * ssi.c getTxBufferCurrentPlace). That keeps the copy locked to production and
- * immune to main-loop stalls — the guest ring is only 128 frames (~2.9 ms), so
- * the periodic display redraw, which blocks the iothread timers for several
- * milliseconds, would otherwise let the play head lap an unread region and
- * tear the audio. A virtual-clock fallback timer also pumps it so the FIFO
- * keeps draining while the firmware is briefly not polling CRSA.
+ * register read, which the firmware performs inside its audio loop. That keeps
+ * the copy locked to production and immune to main-loop stalls — the guest ring
+ * is only 128 frames (~2.9 ms), so the periodic display redraw, which blocks
+ * the iothread timers for several milliseconds, would otherwise let the play
+ * head lap an unread region. A virtual-clock fallback timer also pumps it to
+ * keep the FIFO draining while the firmware is briefly not polling CRSA.
  */
+/*
+ * Read the firmware's render head (AudioEngine::i2sTXBufferPos) from the guest
+ * address configured by the "tx-render-head" property and reduce it to a
+ * frame-aligned ring byte offset. Returns false when the property is unset or
+ * the pointer does not currently land in this ring (e.g. before the firmware
+ * arms audio), so the caller falls back to the play head.
+ *
+ * The firmware keeps the pointer in the uncached 0x60000000 mirror of on-chip
+ * RAM while the DMAC reports the ring base in the 0x20000000 view; the aliases
+ * differ by 0x40000000, a whole multiple of the ring size, so reducing modulo
+ * size is alias-agnostic.
+ */
+static bool rza1l_ssif_render_head(RzA1lSsifState *s, uint32_t base,
+                                   uint32_t size, uint32_t *off_out)
+{
+    uint8_t b[4];
+    uint32_t head, rel, off, alias;
+
+    if (!s->render_head_addr) {
+        return false;
+    }
+    if (dma_memory_read(&address_space_memory, s->render_head_addr, b,
+                        sizeof(b), MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        return false;
+    }
+    head = ldl_le_p(b);
+    rel = head - base;
+    off = rel % size;
+    alias = rel - off;
+    if (alias != 0 && alias != 0x40000000u) {
+        return false;
+    }
+    *off_out = off & ~(RZA1L_SSIF_BYTES_PER_FRAME - 1);
+    return true;
+}
+
 static void rza1l_ssif_pump(RzA1lSsifState *s)
 {
     uint32_t base = 0, size = 0;
-    uint32_t crsa = 0, wpos, avail;
+    uint32_t crsa = 0, wpos, head_off = 0, target, avail;
+    int64_t now;
 
     if (!s->dmac ||
         !rza1l_dmac_get_tx_audio_ring(s->dmac, s->tx_dma_channel,
                                       &base, &size) ||
         size < RZA1L_SSIF_BYTES_PER_FRAME) {
-        /* Ring not armed yet: re-seed read_off when it appears. */
+        /* Ring not armed yet: re-seed the pointers when it appears. */
         s->play_anchored = false;
         return;
     }
+
+    /*
+     * Coalesce the firmware's bursty CRSA polling into at most one ring copy
+     * per RZA1L_SSIF_PUMP_MIN_NS of virtual time. The play head still advances
+     * on the wall clock (its value is computed in the DMAC, not here), so the
+     * firmware sees a live register; we only skip the redundant copy/DMA-read
+     * work, which is what was burning vCPU time in the audio loop. The first
+     * pump after the ring arms (!play_anchored) is never skipped, so seeding is
+     * immediate.
+     */
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->play_anchored && now - s->last_pump_ns < RZA1L_SSIF_PUMP_MIN_NS) {
+        return;
+    }
+    s->last_pump_ns = now;
 
     /*
      * Fetch the DMA play head (CRSA), an absolute address within the ring
@@ -340,14 +397,26 @@ static void rza1l_ssif_pump(RzA1lSsifState *s)
     wpos = (crsa - base) % size;
     wpos &= ~(RZA1L_SSIF_BYTES_PER_FRAME - 1);
 
-    if (!s->play_anchored) {
-        /* Seed the read head at the live play head: no backlog. */
-        s->play_anchored = true;
-        s->read_off = wpos;
+    /*
+     * Copy only up to the firmware's render head when its address is known,
+     * else fall back to the bare play head (firmware-independent, but tears
+     * under heavy load). The render head trails the play head by the firmware's
+     * unrendered backlog, so bounding by it never reads an unrendered slot.
+     */
+    if (rza1l_ssif_render_head(s, base, size, &head_off)) {
+        target = head_off;
+    } else {
+        target = wpos;
     }
 
-    /* Frames to copy now: distance from read_off forward to the play head. */
-    avail = (wpos + size - s->read_off) % size;
+    if (!s->play_anchored) {
+        /* Seed read_off at the current target: no backlog to copy yet. */
+        s->play_anchored = true;
+        s->read_off = target;
+    }
+
+    /* Frames to copy now: distance from read_off forward to the watermark. */
+    avail = (target + size - s->read_off) % size;
 
     /*
      * If we have somehow fallen more than a ring behind (a stall longer than
@@ -355,7 +424,7 @@ static void rza1l_ssif_pump(RzA1lSsifState *s)
      * is already overwritten; resync rather than read stale frames.
      */
     if (avail >= size - RZA1L_SSIF_BYTES_PER_FRAME) {
-        s->read_off = wpos;
+        s->read_off = target;
         avail = 0;
     }
 
@@ -498,6 +567,7 @@ static void rza1l_ssif_reset(DeviceState *dev)
     s->out_primed = false;
     s->read_off = 0;
     s->drain_frac = 0;
+    s->last_pump_ns = 0;
     s->fifo_head = 0;
     s->fifo_len = 0;
     s->rec_cursor = 0;
@@ -615,6 +685,7 @@ static const Property rza1l_ssif_properties[] = {
     DEFINE_PROP_BOOL("capture", RzA1lSsifState, capture, false),
     DEFINE_PROP_UINT32("prime-ms", RzA1lSsifState, prime_ms,
                        RZA1L_SSIF_DEFAULT_PRIME_MS),
+    DEFINE_PROP_UINT32("tx-render-head", RzA1lSsifState, render_head_addr, 0),
 };
 
 static void rza1l_ssif_class_init(ObjectClass *klass, const void *data)

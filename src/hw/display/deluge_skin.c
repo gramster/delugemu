@@ -696,6 +696,46 @@ static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
     return h;
 }
 
+/*
+ * Box-filter the native-resolution composited panel (src, DELUGE_SKIN_IMAGE_*)
+ * down into a smaller display surface (dst, dw x dh, dstride pixels per row).
+ * Each output pixel averages the rectangular block of source pixels it covers,
+ * preserving colour and avoiding the aliasing a nearest-neighbour shrink would
+ * produce. Alpha is forced opaque since the surface is the final composite.
+ */
+static void deluge_skin_box_downscale(const uint32_t *src, uint32_t *dst,
+                                      int dstride, int dw, int dh)
+{
+    for (int oy = 0; oy < dh; oy++) {
+        int sy0 = (int)((int64_t)oy * DELUGE_SKIN_IMAGE_HEIGHT / dh);
+        int sy1 = (int)((int64_t)(oy + 1) * DELUGE_SKIN_IMAGE_HEIGHT / dh);
+        if (sy1 <= sy0) {
+            sy1 = sy0 + 1;
+        }
+        for (int ox = 0; ox < dw; ox++) {
+            int sx0 = (int)((int64_t)ox * DELUGE_SKIN_IMAGE_WIDTH / dw);
+            int sx1 = (int)((int64_t)(ox + 1) * DELUGE_SKIN_IMAGE_WIDTH / dw);
+            uint32_t ar = 0, ag = 0, ab = 0, n = 0;
+
+            if (sx1 <= sx0) {
+                sx1 = sx0 + 1;
+            }
+            for (int sy = sy0; sy < sy1; sy++) {
+                const uint32_t *row = &src[sy * DELUGE_SKIN_IMAGE_WIDTH];
+                for (int sx = sx0; sx < sx1; sx++) {
+                    uint32_t p = row[sx];
+                    ar += (p >> 16) & 0xff;
+                    ag += (p >> 8) & 0xff;
+                    ab += p & 0xff;
+                    n++;
+                }
+            }
+            dst[oy * dstride + ox] = 0xff000000u |
+                ((ar / n) << 16) | ((ag / n) << 8) | (ab / n);
+        }
+    }
+}
+
 static void deluge_skin_render(DelugeSkinState *s)
 {
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -710,26 +750,40 @@ static void deluge_skin_render(DelugeSkinState *s)
     dst = (uint32_t *)surface_data(surface);
     stride = surface_stride(surface) / 4;
 
+    /*
+     * Composite at native resolution. When down-scaling, draw into the full-res
+     * scratch buffer (comp) and box-filter it down into the smaller display
+     * surface below; otherwise draw straight into the surface. All overlay
+     * geometry stays in native pixels regardless.
+     */
+    bool scaled = s->comp != NULL;
+    uint32_t *comp = scaled ? s->comp : dst;
+    int comp_stride = scaled ? DELUGE_SKIN_IMAGE_WIDTH : stride;
+
     if (s->bg_loaded) {
         for (int y = 0; y < DELUGE_SKIN_IMAGE_HEIGHT; y++) {
-            memcpy(&dst[y * stride],
+            memcpy(&comp[y * comp_stride],
                    &s->bg_argb[y * DELUGE_SKIN_IMAGE_WIDTH],
                    DELUGE_SKIN_IMAGE_WIDTH * sizeof(uint32_t));
         }
     } else {
-        for (int i = 0; i < DELUGE_SKIN_IMAGE_HEIGHT * stride; i++) {
-            dst[i] = 0xff101018u;
+        for (int y = 0; y < DELUGE_SKIN_IMAGE_HEIGHT; y++) {
+            for (int x = 0; x < DELUGE_SKIN_IMAGE_WIDTH; x++) {
+                comp[y * comp_stride + x] = 0xff101018u;
+            }
         }
     }
 
-    deluge_skin_draw_oled(s, dst, stride);
-    deluge_skin_draw_pads(s, dst, stride);
-    deluge_skin_draw_leds(s, dst, stride);
-    deluge_skin_draw_encoders(s, dst, stride);
+    deluge_skin_draw_oled(s, comp, comp_stride);
+    deluge_skin_draw_pads(s, comp, comp_stride);
+    deluge_skin_draw_leds(s, comp, comp_stride);
+    deluge_skin_draw_encoders(s, comp, comp_stride);
 
-    dpy_gfx_update(s->con, 0, 0,
-                   DELUGE_SKIN_IMAGE_WIDTH,
-                   DELUGE_SKIN_IMAGE_HEIGHT);
+    if (scaled) {
+        deluge_skin_box_downscale(comp, dst, stride, s->out_w, s->out_h);
+    }
+
+    dpy_gfx_update(s->con, 0, 0, s->out_w, s->out_h);
 
     /* Remember what we just drew so the timer can skip unchanged frames. */
     s->last_content_hash = deluge_skin_content_hash(s);
@@ -740,6 +794,18 @@ static void deluge_skin_render(DelugeSkinState *s)
 static void deluge_skin_refresh(void *opaque)
 {
     DelugeSkinState *s = opaque;
+
+    /*
+     * Audio-only mode: skip all compositing and the display upload, leaving the
+     * panel frozen, so the host UI does no per-frame scaling/blit and the main
+     * loop is free to keep audio fed. Keep the timer armed so toggling back on
+     * resumes immediately.
+     */
+    if (s->render_suspended) {
+        timer_mod(s->refresh_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + DELUGE_SKIN_REFRESH_MS);
+        return;
+    }
 
     /*
      * Only recomposite when the dynamic overlays actually changed. A static
@@ -769,6 +835,10 @@ static void deluge_skin_invalidate(void *opaque)
 static void deluge_skin_update(void *opaque)
 {
     DelugeSkinState *s = opaque;
+
+    if (s->render_suspended) {
+        return;
+    }
 
     if (s->dirty) {
         s->dirty = false;
@@ -813,6 +883,23 @@ void deluge_skin_set_gpio(DeviceState *dev, DeviceState *gpio)
     s->dirty = true;
 }
 
+void deluge_skin_set_render_suspended(DeviceState *dev, bool suspended)
+{
+    DelugeSkinState *s = DELUGE_SKIN(dev);
+
+    if (s->render_suspended == suspended) {
+        return;
+    }
+    s->render_suspended = suspended;
+
+    /* On resume, force a full recomposite so the frozen panel catches up. */
+    if (!suspended) {
+        s->have_content_hash = false;
+        s->dirty = true;
+        deluge_skin_render(s);
+    }
+}
+
 static void deluge_skin_reset(DeviceState *dev)
 {
     DelugeSkinState *s = DELUGE_SKIN(dev);
@@ -824,13 +911,29 @@ static void deluge_skin_realize(DeviceState *dev, Error **errp)
 {
     DelugeSkinState *s = DELUGE_SKIN(dev);
     const char *path = s->image_path ? s->image_path : "Deluge_Plain.png";
+    uint32_t scale = s->scale_percent;
+
+    if (scale < 10) {
+        scale = 10;
+    } else if (scale > 100) {
+        scale = 100;
+    }
+    s->scale_percent = scale;
+    s->out_w = (DELUGE_SKIN_IMAGE_WIDTH * (int)scale) / 100;
+    s->out_h = (DELUGE_SKIN_IMAGE_HEIGHT * (int)scale) / 100;
 
     s->bg_argb = g_new0(uint32_t, DELUGE_SKIN_IMAGE_WIDTH * DELUGE_SKIN_IMAGE_HEIGHT);
     s->bg_loaded = deluge_skin_load_png_argb(path, s->bg_argb);
     deluge_skin_prepare_padless_background(s);
 
+    if (scale != 100) {
+        /* Native-resolution scratch buffer to composite into before shrinking. */
+        s->comp = g_new0(uint32_t,
+                         DELUGE_SKIN_IMAGE_WIDTH * DELUGE_SKIN_IMAGE_HEIGHT);
+    }
+
     s->con = graphic_console_init(dev, 0, &deluge_skin_gfx_ops, s);
-    qemu_console_resize(s->con, DELUGE_SKIN_IMAGE_WIDTH, DELUGE_SKIN_IMAGE_HEIGHT);
+    qemu_console_resize(s->con, s->out_w, s->out_h);
 
     s->refresh_timer = timer_new_ms(QEMU_CLOCK_REALTIME, deluge_skin_refresh, s);
     timer_mod(s->refresh_timer,
@@ -849,10 +952,13 @@ static void deluge_skin_unrealize(DeviceState *dev)
 
     g_free(s->bg_argb);
     s->bg_argb = NULL;
+    g_free(s->comp);
+    s->comp = NULL;
 }
 
 static const Property deluge_skin_props[] = {
     DEFINE_PROP_STRING("image", DelugeSkinState, image_path),
+    DEFINE_PROP_UINT32("scale-percent", DelugeSkinState, scale_percent, 100),
 };
 
 static void deluge_skin_class_init(ObjectClass *klass, const void *data)

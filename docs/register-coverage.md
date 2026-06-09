@@ -157,6 +157,18 @@ e.g. via `run.sh --audio`), the device opens a 44.1 kHz stereo S32 output voice
 and mirrors the transmit DMA ring from guest memory to the host (silence until
 the firmware arms the ring). Without an audiodev the audio path is inactive.
 
+A staging FIFO between the guest ring and the host voice absorbs the firmware's
+bursty, emulated-time-paced production; its depth is set by the `prime-ms`
+property (`run.sh --audio-buffer`). By default the sampler reads up to the DMA
+play head (CRSA), which is firmware-independent but can re-read stale ring slots
+under load. Setting `tx-render-head` to the guest address of the firmware's
+render head (`AudioEngine::i2sTXBufferPos`; `run.sh --tx-render-head <addr>`)
+bounds reads by freshly-rendered data instead, so heavy load degrades to brief
+gaps rather than ring-lap distortion. Neither lever can manufacture throughput:
+when the emulated CPU renders below the 352,800 B/s real-time rate (a TCG limit,
+single-core Cortex-A9), `-icount` (`run.sh --icount`) is the only way to keep
+audio artifact-free, at the cost of capping the guest to ≤ real time.
+
 The receive channel is modelled symmetrically: ch7's CRDA advances from virtual
 time at the sample rate (so the firmware's input-latency resync tracks a live
 write pointer), and an input voice writes captured frames into the RX ring at

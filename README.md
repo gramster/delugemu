@@ -10,7 +10,7 @@ The goal is to boot unmodified Deluge firmware (the open-source
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; the build also runs on Windows via MSYS2/MinGW (see [docs/windows.md](docs/windows.md)), and a Linux port is pending.  Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option.
+> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; the build also runs on Windows via MSYS2/MinGW (see [docs/windows.md](docs/windows.md)), and a Linux port is pending.  Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option. Under heavy synthesis load the emulated Cortex-A9 can't always render audio at real time (a TCG throughput limit, not a buffering one), which can cause occasional breakup during dense playback; `run.sh --tx-render-head <addr>` keeps that graceful (brief gaps rather than distortion), and `run.sh --icount` eliminates the artifacts entirely at the cost of running slower-than-real-time under load (best for offline capture, not live play).
 
 
 ## Target hardware
@@ -157,6 +157,13 @@ toolchain setup; the commands below are otherwise identical.
 
 # Run without a window (serial + monitor on the terminal):
 ./scripts/run.sh path/to/deluge_firmware.elf --display headless
+
+# Window size: the native front panel is 2256x1584. run.sh detects your primary
+# monitor and renders the panel down-sampled so the window fits (within ~90% of
+# the screen); zoom-to-fit then scales it to any later window size. Force a
+# specific size with --skin-scale <percent|native>:
+./scripts/run.sh path/to/deluge_firmware.elf --skin-scale native   # full 2256x1584
+./scripts/run.sh path/to/deluge_firmware.elf --skin-scale 50        # half size
 
 # MIDI: on macOS, pass 'coremidi' to either MIDI flag to expose the Deluge as a
 # real host MIDI in/out device (it appears in your DAW as "DelugEmu DIN" and/or

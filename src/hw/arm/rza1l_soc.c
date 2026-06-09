@@ -450,6 +450,7 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     deluge_pic_set_padgrid(s->pic, &s->padgrid);
     deluge_input_set_pic(DEVICE(&s->input), s->pic);
     deluge_input_set_gpio(DEVICE(&s->input), DEVICE(&s->gpio));
+    deluge_input_set_skin(DEVICE(&s->input), DEVICE(&s->skin));
     deluge_skin_set_pic(DEVICE(&s->skin), s->pic);
     deluge_skin_set_gpio(DEVICE(&s->skin), DEVICE(&s->gpio));
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);

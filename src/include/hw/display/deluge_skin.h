@@ -42,6 +42,20 @@ struct DelugeSkinState {
     /* Optional image path; defaults to Deluge_Plain.png in cwd. */
     char *image_path;
 
+    /*
+     * Display down-scale. The native panel is 2256x1584, which is larger than
+     * many monitors; opening the host window at native size overflows the
+     * screen. scale_percent (10..100, default 100) renders the composited panel
+     * at that fraction of native size so the window opens small enough to fit,
+     * while zoom-to-fit still scales it to any later window size. When < 100 the
+     * panel is composited at native resolution into comp[] and box-filtered down
+     * to the (smaller) display surface; out_w/out_h are the scaled dimensions.
+     */
+    uint32_t scale_percent;
+    int out_w;
+    int out_h;
+    uint32_t *comp;
+
     bool dirty;
     QEMUTimer *refresh_timer;
 
@@ -56,6 +70,15 @@ struct DelugeSkinState {
     uint64_t last_content_hash;
     bool have_content_hash;
     uint32_t idle_ticks;
+
+    /*
+     * Audio-only mode. When set, the periodic refresh skips compositing and the
+     * full-frame display upload entirely, so the host UI does no per-frame
+     * surface scaling/blit. This frees the QEMU main loop (which also services
+     * the host audio voice on some backends) during a performance, at the cost
+     * of a frozen panel. Toggled live from the input layer.
+     */
+    bool render_suspended;
 };
 
 void deluge_skin_set_oled(DeviceState *dev, struct DelugeOledState *oled);
@@ -63,5 +86,6 @@ void deluge_skin_set_padgrid(DeviceState *dev,
                              struct DelugePadGridState *padgrid);
 void deluge_skin_set_pic(DeviceState *dev, struct Chardev *pic);
 void deluge_skin_set_gpio(DeviceState *dev, DeviceState *gpio);
+void deluge_skin_set_render_suspended(DeviceState *dev, bool suspended);
 
 #endif /* HW_DISPLAY_DELUGE_SKIN_H */

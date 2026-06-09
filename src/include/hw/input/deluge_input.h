@@ -88,6 +88,16 @@ struct DelugeInputState {
         int y;
         bool is_button;
     } latched[DELUGE_INPUT_MAX_LATCHED];
+
+    /*
+     * The composited skin device, toggled into/out of audio-only mode from the
+     * keyboard (Right Ctrl). May be NULL when no skin is attached (headless).
+     */
+    DeviceState *skin;
+
+    /* Audio-only toggle state and edge-detect for the Right Ctrl key. */
+    bool render_suspended;
+    bool render_key_down;
 };
 
 /* Bind the PIC whose input stream this device drives (board setup). */
@@ -95,5 +105,8 @@ void deluge_input_set_pic(DeviceState *dev, struct Chardev *pic);
 
 /* Bind the GPIO model that rotary-encoder turns are injected into. */
 void deluge_input_set_gpio(DeviceState *dev, DeviceState *gpio);
+
+/* Bind the skin device that the audio-only keyboard toggle suspends. */
+void deluge_input_set_skin(DeviceState *dev, DeviceState *skin);
 
 #endif /* HW_INPUT_DELUGE_INPUT_H */

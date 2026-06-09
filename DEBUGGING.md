@@ -205,14 +205,25 @@ gdb firmware2/deluge.elf -ex 'target remote :1234'
 ## Deterministic execution (-icount)
 
 `-icount` ties the virtual clock to an instruction count for reproducible,
-deterministic runs (useful when a bug depends on precise timing):
+deterministic runs (useful when a bug depends on precise timing). `run.sh` has
+an `--icount [shift]` convenience flag that wires it up with `sleep=on`:
 
 ```sh
+./scripts/run.sh firmware2/deluge.elf --sd build/deluge_sd.img --icount 0
+# equivalent to the raw form:
 ./scripts/run.sh firmware2/deluge.elf --sd build/deluge_sd.img -- -icount shift=0
 ```
 
 `shift=0` runs one virtual-clock tick per instruction; larger shifts trade
-precision for speed (`shift=auto` lets QEMU pick).
+precision for speed (`--icount auto` / `shift=auto` lets QEMU pick).
+
+Beyond determinism, `--icount` also paces the guest to a virtual clock locked to
+real time, which makes audio internally consistent — no stale-ring distortion or
+dropouts. The trade-off is that it caps the guest to **≤ real time**, so under
+heavy DSP load playback runs slow (lower pitch/tempo) instead of breaking up.
+That makes it good for clean offline capture, but not for live external-MIDI
+play. For live use, prefer the default free-running clock with the render-head
+clamp (`--tx-render-head`) and a generous `--audio-buffer`.
 
 ## QEMU trace events
 

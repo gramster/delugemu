@@ -51,12 +51,40 @@
 #                           Raise it if you hear dropouts; lower it to trim the
 #                           delay when playing the emulated Deluge live from
 #                           external MIDI.
+#   --tx-render-head <addr> Advanced: bound audio ring reads by the firmware's
+#                           render head (AudioEngine::i2sTXBufferPos) at this
+#                           guest address (hex, e.g. 0x20038fdc), eliminating
+#                           the ring-lap distortion under heavy load. The
+#                           address is firmware-build specific; with it unset
+#                           (default) reads track the DMA play head, which is
+#                           firmware-independent but can distort under load.
 #   --display <mode>        Display mode:
 #                             console   open the front-panel skin window with
 #                                       the modelled OLED / pad-grid / 7-seg
 #                                       overlays (default)
 #                             headless  no GUI; serial+monitor on stdio
 #                             none      graphics subsystem present but not shown
+#   --skin-scale <pct|auto|native>
+#                           Front-panel window size. The native panel is
+#                           2256x1584, larger than many monitors; rather than
+#                           opening at native size and overflowing the screen,
+#                           the panel is rendered (down-sampled) to a fraction of
+#                           native so the window fits. 'auto' (default) detects
+#                           the primary monitor and picks the largest scale that
+#                           fits within ~90% of it; 'native'/100 forces full
+#                           size; or give an explicit percent 10-100. zoom-to-fit
+#                           still scales the window to any later resize.
+#   --icount [<shift>]      Run the CPU on a deterministic instruction-counted
+#                           virtual clock locked to real time (-icount
+#                           shift=<shift>,sleep=on). This makes audio internally
+#                           consistent (no stale-ring distortion or dropouts)
+#                           by pacing the guest to the virtual clock, but it
+#                           also caps the guest to <= real time, so under heavy
+#                           DSP load playback runs slow (lower pitch/tempo)
+#                           rather than breaking up. Best for offline/clean
+#                           capture, not live external-MIDI play. <shift> is the
+#                           ns-per-instruction power of two; default 'auto' lets
+#                           QEMU tune it. Off by default.
 #   -h, --help              Show this help and exit.
 #
 # Anything after a literal `--`, or any unrecognised flag, is passed straight
@@ -275,7 +303,17 @@ MIDI=""
 USB_MIDI=""
 AUDIO=""
 AUDIO_BUFFER=""
+TX_RENDER_HEAD=""
 DISPLAY_MODE="console"
+ICOUNT=""
+SKIN_SCALE="auto"
+# Host-side playback buffer for the audio backend, in microseconds. On Windows
+# the dsound voice is serviced from QEMU's main loop, the same thread that
+# recomposites the front-panel skin; a periodic full-frame skin upload can
+# briefly stall that service, so the host buffer must hold enough audio for the
+# OS DMA to ride the stall without a gap. This is independent of the device's
+# own staging-FIFO cushion (prime-ms). Overridable for experimentation.
+AUDIO_HOST_BUFFER_US="${DELUGEMU_AUDIO_HOST_BUFFER_US:-80000}"
 
 SD_ARGS=()
 SD_FOLDER=""
@@ -319,11 +357,31 @@ while [ $# -gt 0 ]; do
             AUDIO_BUFFER="$2"; shift 2
             ;;
         --audio-buffer=*) AUDIO_BUFFER="${1#--audio-buffer=}"; shift ;;
+        --tx-render-head)
+            [ -n "${2:-}" ] || die "--tx-render-head requires a guest address"
+            TX_RENDER_HEAD="$2"; shift 2
+            ;;
+        --tx-render-head=*) TX_RENDER_HEAD="${1#--tx-render-head=}"; shift ;;
         --display)
             [ -n "${2:-}" ] || die "--display requires a mode"
             DISPLAY_MODE="$2"; shift 2
             ;;
         --display=*) DISPLAY_MODE="${1#--display=}"; shift ;;
+        --skin-scale)
+            [ -n "${2:-}" ] || die "--skin-scale requires a value (percent, 'auto', or 'native')"
+            SKIN_SCALE="$2"; shift 2
+            ;;
+        --skin-scale=*) SKIN_SCALE="${1#--skin-scale=}"; shift ;;
+        --icount)
+            # Optional shift argument. Treat a following token as the shift only
+            # if it is not another option (a bare --icount means shift=auto).
+            if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then
+                ICOUNT="$2"; shift 2
+            else
+                ICOUNT="auto"; shift
+            fi
+            ;;
+        --icount=*) ICOUNT="${1#--icount=}"; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
             EXTRA_ARGS+=("$1")
@@ -419,17 +477,19 @@ elif [ -n "${USB_MIDI}" ]; then
     log "Attaching host USB-MIDI device on chardev: ${USB_MIDI}"
 fi
 
-# Display mode.
+# Display mode. The console window always opens with zoom-to-fit enabled so the
+# full 2256x1584 front-panel surface is scaled to fit the window (and tracks
+# window resizes) instead of opening at native size and overflowing the screen.
 DISPLAY_ARGS=()
 case "${DISPLAY_MODE}" in
     headless) DISPLAY_ARGS=(-nographic) ;;
     console)
         case "$(uname -s)" in
             Darwin)
-                DISPLAY_ARGS=(-display cocoa,zoom-to-fit=off,show-cursor=on)
+                DISPLAY_ARGS=(-display cocoa,zoom-to-fit=on,show-cursor=on)
                 ;;
             *)
-                DISPLAY_ARGS=()    # let QEMU open its default GUI
+                DISPLAY_ARGS=(-display gtk,zoom-to-fit=on,show-menubar=off)
                 ;;
         esac
         ;;
@@ -452,14 +512,98 @@ if [ "${DISPLAY_MODE}" = "console" ]; then
     fi
 fi
 
+# Front-panel window scale. The native panel (2256x1584) is larger than many
+# monitors, so by default we render it down-sampled to whatever fits the primary
+# monitor (within ~90% of it). The skin device down-scales internally and opens
+# the host window at the reduced size; zoom-to-fit still tracks later resizes.
+SKIN_IMG_W=2256
+SKIN_IMG_H=1584
+
+# Print "<width> <height>" of the primary monitor in pixels, or nothing if it
+# cannot be determined. Best-effort and per-OS.
+detect_screen_size() {
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            powershell.exe -NoProfile -Command \
+                'Add-Type -AssemblyName System.Windows.Forms; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "$($b.Width) $($b.Height)"' \
+                2>/dev/null | tr -d '\r'
+            ;;
+        Darwin)
+            system_profiler SPDisplaysDataType 2>/dev/null \
+                | sed -n 's/.*Resolution: \([0-9]*\) x \([0-9]*\).*/\1 \2/p' \
+                | head -n 1
+            ;;
+        Linux)
+            if command -v xrandr >/dev/null 2>&1; then
+                xrandr 2>/dev/null \
+                    | sed -n 's/.*current \([0-9]*\) x \([0-9]*\).*/\1 \2/p' \
+                    | head -n 1
+            fi
+            ;;
+    esac
+}
+
+# Largest scale (percent, 10..100) at which the panel fits within ~90% of a
+# <width> <height> screen. Echoes the integer percent.
+compute_fit_scale() {
+    local sw="$1" sh="$2"
+    local usable_w=$(( sw * 90 / 100 ))
+    local usable_h=$(( sh * 90 / 100 ))
+    local scale_w=$(( usable_w * 100 / SKIN_IMG_W ))
+    local scale_h=$(( usable_h * 100 / SKIN_IMG_H ))
+    local scale="${scale_w}"
+    [ "${scale_h}" -lt "${scale}" ] && scale="${scale_h}"
+    [ "${scale}" -gt 100 ] && scale=100
+    [ "${scale}" -lt 10 ] && scale=10
+    printf '%s' "${scale}"
+}
+
+if [ "${DISPLAY_MODE}" = "console" ]; then
+    SKIN_SCALE_PCT=""
+    case "${SKIN_SCALE}" in
+        ''|auto|fit)
+            read -r _scr_w _scr_h < <(detect_screen_size) || true
+            if [ -n "${_scr_w:-}" ] && [ -n "${_scr_h:-}" ]; then
+                SKIN_SCALE_PCT="$(compute_fit_scale "${_scr_w}" "${_scr_h}")"
+                log "Primary monitor ${_scr_w}x${_scr_h}; scaling front panel to ${SKIN_SCALE_PCT}% to fit"
+            else
+                SKIN_SCALE_PCT="60"
+                log "Could not detect monitor size; defaulting front-panel scale to ${SKIN_SCALE_PCT}%"
+            fi
+            ;;
+        native|full|100) SKIN_SCALE_PCT="100" ;;
+        *[!0-9]*) die "--skin-scale must be a percent (10-100), 'auto', or 'native'" ;;
+        *)
+            SKIN_SCALE_PCT="${SKIN_SCALE}"
+            [ "${SKIN_SCALE_PCT}" -ge 10 ] && [ "${SKIN_SCALE_PCT}" -le 100 ] \
+                || die "--skin-scale percent must be between 10 and 100"
+            ;;
+    esac
+    if [ -n "${SKIN_SCALE_PCT}" ] && [ "${SKIN_SCALE_PCT}" != "100" ]; then
+        SKIN_ARGS+=(-global "deluge-skin.scale-percent=${SKIN_SCALE_PCT}")
+    fi
+fi
 # Optional audio backend override, routed to the SSIF (I2S) sink. The device
 # opens the OS default backend on its own, so this is only needed to select a
 # non-default driver. The SoC builds the SSIF internally, so -global binds the
 # audiodev to the device's property. 'auto' resolves to the recommended host
 # driver for this OS.
+# Resolve the host audio backend (auto-detect when unset) and route the SSIF
+# (I2S) output to it. We always pass an explicit -audiodev — rather than letting
+# the device open the OS default — so we can enlarge the host playback buffer
+# (out.buffer-length). On Windows the dsound voice is pumped from QEMU's main
+# loop, the same thread that recomposites the front-panel skin, so a periodic
+# full-frame skin upload can briefly stall the audio service; a generous host
+# buffer lets the OS audio DMA ride those stalls without an audible gap. 'auto'
+# (or unset) resolves to the recommended host driver for this OS; 'none' wires a
+# silent sink.
 AUDIO_ARGS=()
-if [ -n "${AUDIO}" ]; then
-    if [ "${AUDIO}" = "auto" ]; then
+if [ "${AUDIO}" = "none" ]; then
+    AUDIO_ARGS=(-audiodev "none,id=deluge0"
+                -global "rza1l-ssif.audiodev=deluge0")
+    log "Routing SSIF audio to backend: none"
+else
+    if [ -z "${AUDIO}" ] || [ "${AUDIO}" = "auto" ]; then
         case "$(uname -s)" in
             Darwin)  AUDIO="coreaudio" ;;
             Linux)   AUDIO="pa" ;;
@@ -468,9 +612,9 @@ if [ -n "${AUDIO}" ]; then
         esac
         log "Audio backend auto-selected for $(uname -s): ${AUDIO}"
     fi
-    AUDIO_ARGS=(-audiodev "${AUDIO},id=deluge0"
+    AUDIO_ARGS=(-audiodev "${AUDIO},id=deluge0,out.buffer-length=${AUDIO_HOST_BUFFER_US}"
                 -global "rza1l-ssif.audiodev=deluge0")
-    log "Routing SSIF audio to backend: ${AUDIO}"
+    log "Routing SSIF audio to backend: ${AUDIO} (host buffer ${AUDIO_HOST_BUFFER_US} us)"
 fi
 
 # Optional output buffer cushion override (milliseconds), bound to the SSIF's
@@ -482,6 +626,37 @@ if [ -n "${AUDIO_BUFFER}" ]; then
     esac
     AUDIO_ARGS+=(-global "rza1l-ssif.prime-ms=${AUDIO_BUFFER}")
     log "SSIF output buffer cushion: ${AUDIO_BUFFER} ms"
+fi
+
+# Optional render-head clamp (advanced), bound to the SSIF's tx-render-head
+# property. When set, the ring sampler bounds its reads by the firmware's render
+# head at this guest address instead of the wall-clock DMA play head, removing
+# the ring-lap distortion under heavy load. The address is firmware-build
+# specific, so this is opt-in; unset leaves the firmware-independent play-head
+# behaviour. Accepts hex (0x...) or decimal.
+if [ -n "${TX_RENDER_HEAD}" ]; then
+    case "${TX_RENDER_HEAD}" in
+        0x[0-9A-Fa-f]*|[0-9]*) : ;;
+        *) die "--tx-render-head must be a guest address (hex 0x..., or decimal)" ;;
+    esac
+    AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head=${TX_RENDER_HEAD}")
+    log "SSIF audio bounded by firmware render head at: ${TX_RENDER_HEAD}"
+fi
+
+# Optional deterministic instruction-counted clock (-icount). Locks the guest to
+# a virtual clock paced to real time: audio stays internally consistent (no
+# stale-ring distortion or dropouts) at the cost of capping the guest to <= real
+# time, so heavy DSP load slows playback instead of breaking it up. Off by
+# default. 'auto' lets QEMU tune the shift; otherwise it must be an integer
+# power-of-two ns-per-instruction exponent.
+ICOUNT_ARGS=()
+if [ -n "${ICOUNT}" ]; then
+    case "${ICOUNT}" in
+        auto|[0-9]|[0-9][0-9]) : ;;
+        *) die "--icount shift must be 'auto' or an integer (e.g. 0-20)" ;;
+    esac
+    ICOUNT_ARGS=(-icount "shift=${ICOUNT},sleep=on")
+    log "Deterministic icount clock enabled: shift=${ICOUNT} (guest capped to real time)"
 fi
 
 [ ${#SD_ARGS[@]} -gt 0 ] && log "Attaching SD image"
@@ -521,6 +696,7 @@ QEMU_CMD=("${BIN}"
     "${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"}"
     "${SKIN_ARGS[@]+"${SKIN_ARGS[@]}"}"
     "${AUDIO_ARGS[@]+"${AUDIO_ARGS[@]}"}"
+    "${ICOUNT_ARGS[@]+"${ICOUNT_ARGS[@]}"}"
     "${SD_ARGS[@]+"${SD_ARGS[@]}"}"
     "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}")
 

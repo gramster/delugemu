@@ -48,6 +48,30 @@
 #include "hw/misc/deluge_pic.h"
 
 /*
+ * Optional event tracing. These fire on hot guest paths — SET_COLOUR streams
+ * continuously as the firmware refreshes the pad LEDs, and send_event on every
+ * input — and each fprintf is a synchronous, unbuffered console write that runs
+ * on the vCPU thread under the BQL. On some hosts (notably Windows consoles)
+ * that write is slow enough to stall emulation and starve the audio ring, so
+ * the tracing is off unless DELUGE_PIC_DEBUG is set in the environment.
+ */
+static int deluge_pic_debug(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        v = getenv("DELUGE_PIC_DEBUG") != NULL;
+    }
+    return v;
+}
+
+#define PIC_DBG(fmt, ...) \
+    do { \
+        if (deluge_pic_debug()) { \
+            fprintf(stderr, "deluge_pic: " fmt "\n", ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+/*
  * Firmware-to-PIC command bytes (see firmware deluge/drivers/pic/pic.h
  * PIC::Message). Several commands occupy contiguous ranges where the low part
  * of the byte encodes an index added to the base value.
@@ -137,7 +161,7 @@ static void deluge_pic_heartbeat(void *opaque)
  */
 static void deluge_pic_send_event(DelugePicState *s, uint8_t index, bool pressed)
 {
-    fprintf(stderr, "deluge_pic: send_event index=%u pressed=%d held=%u\n",
+    PIC_DBG("send_event index=%u pressed=%d held=%u",
             index, pressed, s->held_count);
     if (!pressed) {
         deluge_pic_respond(s, PIC_RESP_NEXT_PAD_OFF);
@@ -208,8 +232,7 @@ static void deluge_pic_dispatch(DelugePicState *s)
         unsigned idx = cmd - PIC_MSG_SET_COLOUR_BASE;
         unsigned col0 = idx * 2;
 
-        fprintf(stderr, "deluge_pic: SET_COLOUR cmd=%u cols=%u,%u\n",
-                cmd, col0, col0 + 1);
+        PIC_DBG("SET_COLOUR cmd=%u cols=%u,%u", cmd, col0, col0 + 1);
 
         for (unsigned i = 0; i < DELUGE_PIC_GRID_ROWS * 2; i++) {
             unsigned col = col0 + (i / DELUGE_PIC_GRID_ROWS);
