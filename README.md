@@ -393,13 +393,44 @@ how large the buffer is set. This is a throughput limit, not a buffering one.
 In practice an **Apple M4 Pro (or better)** comfortably renders audio at real
 time with room to spare; development was done on an M4 Mac Mini. Slower machines
 may still boot and run the UI fine but struggle with dense synthesis. Two
-launcher options help when you hit the throughput wall:
+launcher options change what overload *sounds* like when you hit the throughput
+wall — neither makes samples arrive faster, they pick a nicer failure mode:
 
-- `run.sh --tx-render-head <addr>` keeps overload *graceful* — brief silences
-  instead of distortion — when the CPU falls behind.
-- `run.sh --icount` paces the guest to a virtual clock so audio stays internally
-  consistent, at the cost of running slower-than-real-time under load. Best for
-  offline/clean capture rather than live play.
+- **`run.sh --tx-render-head <addr>`** makes overload *graceful* (brief silences
+  instead of distortion). By default the emulator's audio sampler tracks the
+  hardware DMA play head, which advances on the host's wall clock; under load
+  the firmware hasn't finished rendering the ring slots the play head has
+  already passed, so those half-written samples get played as distortion.
+  Pointing the sampler at the firmware's own *render head* — the variable that
+  records how far it has actually rendered into the I²S ring — makes it read
+  only finished samples, turning that distortion into a short gap. `<addr>` is
+  the guest memory address of that variable (the `AudioEngine::i2sTXBufferPos`
+  symbol). It is firmware-build specific, so you look it up in the symbol table
+  of the exact firmware you are running, e.g.
+
+  ```bash
+  arm-none-eabi-nm firmware/deluge.elf | grep i2sTXBufferPos
+  # 20038fdc b _ZN11AudioEngine14i2sTXBufferPosE  -> --tx-render-head 0x20038fdc
+  ```
+
+  (or read it from the build's `.map` file). Pass it as hex, e.g.
+  `--tx-render-head 0x20038fdc`. A stripped release binary with no symbols
+  can't be looked up this way, which is why the option is opt-in and the
+  wall-clock play head is the firmware-independent default.
+
+- **`run.sh --icount`** trades *correct-speed-but-broken* audio for
+  *clean-but-slow* audio. Normally the guest runs as fast as the host allows
+  while the audio hardware clock ticks on real wall-clock time, so the two
+  clocks drift apart the moment the host can't keep up — that mismatch is what
+  produces the glitches. `--icount` makes the guest's instruction-counted
+  virtual clock the single timebase for everything, audio included, so the
+  sample producer (firmware) and consumer (audio device) advance in lockstep
+  and can never slip relative to each other. The catch is exactly what you'd
+  expect: when the host can't render fast enough, virtual time simply falls
+  behind real time, so the guest — and its audio — runs *slow*. You hear a
+  clean stream at a lower pitch/tempo rather than a correct-pitch stream full of
+  dropouts. That makes it ideal for rendering a clean capture offline on a slow
+  machine (just not in real time), but poor for live play.
 
 ## Repository layout
 
