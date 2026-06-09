@@ -364,6 +364,43 @@ driven by mouse and keyboard:
   keys 1–8 trigger the sidebar audition column. See
   [src/hw/input/deluge_input.c](src/hw/input/deluge_input.c) for the full map.
 
+## Performance
+
+Audio is the most performance-sensitive part of the emulator, and how well it
+runs depends on your host CPU.
+
+**Jitter and the audio buffer.** The emulated SoC produces audio in small bursts
+on the same thread that runs the guest CPU, so the rate at which finished samples
+reach the host is uneven — a periodic skin redraw, a GC pause in the guest, or
+the OS scheduling the QEMU thread out all introduce *jitter*. To stop that jitter
+from becoming audible gaps, the host audio backend buffers a cushion of samples
+ahead of playback (`run.sh --audio-buffer <ms>`, and the host-side
+`out.buffer-length`). A larger buffer rides out bigger scheduling hiccups, but
+every millisecond of buffer is also a millisecond of **latency** between pressing
+a pad (or sending a MIDI note) and hearing the sound. So the buffer is a direct
+trade-off: raise it if you hear dropouts, lower it for tighter, more playable
+response. The defaults are tuned per-platform (smaller on macOS/Linux, larger on
+Windows where the audio voice shares QEMU's main loop).
+
+**Raw CPU throughput.** The buffer only smooths out *jitter* — it cannot create
+throughput that isn't there. The Deluge's firmware expects a 400 MHz Cortex-A9
+rendering audio in real time, and QEMU emulates that core with TCG (dynamic
+binary translation). On an underpowered host the translated DSP code simply
+cannot generate 44.1 kHz of audio fast enough to keep up, so the buffer drains
+faster than it refills and you get **constant, unavoidable dropouts** no matter
+how large the buffer is set. This is a throughput limit, not a buffering one.
+
+In practice an **Apple M4 Pro (or better)** comfortably renders audio at real
+time with room to spare; development was done on an M4 Mac Mini. Slower machines
+may still boot and run the UI fine but struggle with dense synthesis. Two
+launcher options help when you hit the throughput wall:
+
+- `run.sh --tx-render-head <addr>` keeps overload *graceful* — brief silences
+  instead of distortion — when the CPU falls behind.
+- `run.sh --icount` paces the guest to a virtual clock so audio stays internally
+  consistent, at the cost of running slower-than-real-time under load. Best for
+  offline/clean capture rather than live play.
+
 ## Repository layout
 
 ```
