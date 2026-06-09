@@ -28,3 +28,7 @@ firmware/
 firmware2/
 sdcard/
 qemu/
+
+# Packaged release artifacts
+/DelugEmu-*.tar.gz
+/DelugEmu-*.zip

@@ -58,16 +58,16 @@ macOS equivalents.
 
 | Tool | Where | Role in this effort |
 |------|-------|---------------------|
-| **`-icount` (`run.sh --icount`)** | built in | Deterministic, instruction-exact, timing-independent runs so a fully-instrumented profile does not perturb results and is byte-for-byte reproducible. The benchmark backbone. |
-| **`libhwprofile.dll`** | `qemu/build/contrib/plugins/` | Per-address execution counts → bucketed into a **ranked per-function instruction profile**. The single most actionable artifact. |
-| **`libhowvec.dll`** | `qemu/build/contrib/plugins/` | Instruction-class mix (FP vs NEON vs scalar integer). Settles the float-vs-fixed-point question that decides the strategy. |
+| **`-icount` (`run.sh --icount`)** | built in | Deterministic, instruction-exact, timing-independent runs so a fully-instrumented profile does not perturb results and is byte-for-byte reproducible. Also the lever that **forces CPU saturation** (see the idle-dilution note below). The benchmark backbone. |
+| **`libhotblocks.dll`** | `qemu/build/contrib/plugins/` | **The primary hotspot tool.** Per-basic-block execution counts (`pc, tcount, icount, ecount`). Run with `limit=0` for the full table; weight each block by `icount × ecount` and bucket by `nm` symbol to get a gprof-style **ranked-by-%-of-guest-instructions** flat profile. (See `scripts/dz_bucket.py`.) |
+| **`libhowvec.dll`** | `qemu/build/contrib/plugins/` | Instruction-class mix (FP vs NEON vs scalar integer). **CAVEAT: its classifier is AArch64 (A64) only.** The Deluge is ARM32 Thumb-2, so every instruction shows "Unclassified" and it falls back to per-opcode counts — decode the top opcodes by hand to settle the FP-vs-fixed question. |
 | **`libips.dll`** | `qemu/build/contrib/plugins/` | Instructions-per-second / total instruction throughput for the baseline and for measuring each change. |
 | **`libuftrace.dll`** (+ `uftrace_symbols.py`) | `qemu/build/contrib/plugins/` | Call-graph / flamegraph for **inclusive** cost, so we find the heavy subtree, not just leaf functions. |
 | **`liblockstep.dll`** | `qemu/build/contrib/plugins/` | Run two builds in lockstep to **prove a change is bit-identical** (or locate the first divergence). The evidence a firmware PR needs. |
-| **`libhotblocks.dll` / `libhotpages.dll`** | `qemu/build/contrib/plugins/` | Cross-checks: hottest basic blocks and most-accessed pages. |
+| **`libhwprofile.dll` / `libhotpages.dll`** | `qemu/build/contrib/plugins/` | **NOTE: `hwprofile` is a *device-IO* access profiler, NOT a guest-PC profiler** — do not use it for instruction hotspots (use `hotblocks`). `hotpages` = most-accessed memory pages (cross-check). |
 | **`libcache.dll`** | `qemu/build/contrib/plugins/` | *Advisory only* — TCG does not model real A9 timing, but the cache simulator hints at memory-bound spots worth reasoning about for HW. |
-| **`DELUGEMU_SSIF_STATS` probe** | in-tree (SSIF device) | Measures actual guest audio production (B/s), underruns, FIFO occupancy — the real-world success signal. |
-| **`arm-none-eabi-nm` / `-objdump` / `-addr2line`** | toolchain | Map plugin output addresses back to firmware symbols/source. `firmware2/deluge.elf` carries debug symbols. |
+| **production B/s probe** | *to re-add (SSIF device)* | The real-world success signal (guest audio production B/s, underruns, FIFO occupancy). The earlier `DELUGEMU_SSIF_STATS` probe was removed in v0.4.2 and needs re-adding for the success gate. |
+| **`arm-none-eabi-nm` / `-objdump` / `-addr2line`** | toolchain | Map plugin output addresses back to firmware symbols/source. `firmware/deluge.elf` carries full `debug_info` (not stripped); source is in `firmware/DelugeFirmware/src`. |
 | **GDB (`-S -s`, `target remote :1234`)** | built in | Watchpoints on specific addresses; live inspection of DSP state and the memory map. |
 | **`scripts/press_key.py` + QMP** | in-tree | Scripted, repeatable note input so the benchmark exercises the same load every run. |
 | **`-audiodev wav`** | built in | Capture deterministic `.wav` output for A/B bit-exact comparison (pairs with `--icount`). |
@@ -81,15 +81,39 @@ macOS equivalents.
   a scripted note sequence (`press_key.py` over QMP) for a fixed virtual
   duration.
 - Capture the baseline: total guest instructions (`libips`), buffers rendered,
-  B/s production and underruns (`DELUGEMU_SSIF_STATS`), and a reference `.wav`
-  (`-audiodev wav`) for later bit-exact comparison.
+  B/s production and underruns (production probe, to re-add), and a reference
+  `.wav` (`-audiodev wav`) for later bit-exact comparison.
+
+### Idle-dilution caveat (important)
+
+On a fast dev host the emulated guest **keeps up** even with a dense song, so it
+spends most cycles **idle-spinning in the cooperative task scheduler** waiting
+for the next audio buffer. A raw profile is then ~70% scheduler and the DSP is
+buried. To get a representative render-path profile you must **saturate the
+CPU** so there is no idle: run under `--icount 2` (and cross-check `--icount 4`).
+Note that at deep saturation (`--icount 4`+) the firmware's **adaptive
+voice-culling** activates — synth voices drop out while always-on master-bus
+work (compressor, reverb send) remains — so read both a moderate- and a
+deep-saturation profile.
+
+### Reproducible load without encoder navigation
+
+Headless QMP key events (`input-send-event`, qcodes) are enough: boot ~6 s, then
+`l` (LOAD, PIC idx 159) → `ret` (SELECT-encoder click, idx 175) loads the
+highlighted song — the load UI opens on the first file alphabetically, so with
+`FAM1.XML` first that loads the dense 127-instrument worst case — then `spc`
+(PLAY, idx 179). `sdcard/SONGS/` worst-case ranking: FAM1 (127 sounds) > FAM3
+(129) > FAM2 (10) > SONG010 (2). Build the card with
+`./scripts/mksd.sh sdcard build/deluge_sd.img`.
 
 ## Phase 2 — Find where the instructions go
 
-1. **`libhwprofile.dll`** → per-address counts. Bucket addresses by symbol
-   ranges from `arm-none-eabi-nm`/`objdump` on `firmware2/deluge.elf` to produce
-   a gprof-style **ranked-by-%-of-guest-instructions** flat profile.
-2. **`libhowvec.dll`** → instruction-class mix. Resolves the strategic fork:
+1. **`libhotblocks.dll,limit=0`** → per-block counts. Weight by `icount ×
+   ecount` and bucket by `arm-none-eabi-nm` symbol ranges on `firmware/
+   deluge.elf` to produce a gprof-style **ranked-by-%-of-guest-instructions**
+   flat profile.
+2. **`libhowvec.dll`** → instruction-class mix (A64-only; decode top Thumb
+   opcodes by hand). Resolves the strategic fork:
    - **FP-heavy** → every VFP/NEON op is a softfloat helper; look hard at the
      FPSCR flush-to-zero / default-NaN state (denormals are catastrophic on
      softfloat *and* real VFP/NEON).
@@ -106,6 +130,47 @@ macOS equivalents.
 - Branch on `howvec`: float-bound → FPSCR/denormal + softfloat-shaped hotspots;
   integer-bound → instruction volume; NEON-bound → leave SIMD alone (it is a HW
   win even though TCG penalizes it).
+
+## First-pass results (FAM1, `--icount 2` & `--icount 4`)
+
+Measured against the dense `FAM1.XML` (127 synth instruments) under forced
+saturation. The render path is **overwhelmingly fixed-point** (top opcodes are
+all integer `cmp`/`ldr`/`b`/`bx`; float is a minor share). Three cost centres,
+ranked:
+
+1. **Cooperative task scheduler — the #1 cost, ~25–47% of *all* guest
+   instructions, persistent across every load level (fully portable).**
+   `Time::operator<=>` (19–27%) + `TaskManager::chooseBestTask` (15–21%) +
+   `Task::isReady`. Root: `src/OSLikeStuff/task_scheduler/task_scheduler.cpp`.
+   The dispatcher (`start`/`yield`) calls `chooseBestTask` **before every task
+   run**; it is `O(numActiveTasks)`, rescans the whole list each time, and does
+   several 64-bit `Time` comparisons per task. The audio engine yields
+   frequently, so this scan runs thousands of times/sec. `Time` is an
+   `int64_t` tick count (`clock_type.h`) with a *defaulted* `operator<=>` →
+   multi-instruction 64-bit compare on the 32-bit A9. The scheduler also mixes
+   `double` time constants (`Time(0.003)`, `*= 0.1`, `operator double`), which
+   pull in the libgcc soft-float helpers `__fixdfdi` / `__fixunsdfdi` /
+   `__udivmoddi4` (a further ~2–3%). Candidate levers (all portable HW wins):
+   maintain the next-deadline incrementally instead of an O(N) rescan; remove
+   `double` from the hot path (precompute `Time` constants once); render a
+   larger audio block before yielding to amortize dispatch (trades latency).
+2. **`RMSFeedbackCompressor` (master bus) — ~3–11%, always-on (portable).**
+   `render` + `calcRMS` + `AbsValueFollower::calcApproxRMS`, driven by `expf` /
+   `logf`. It runs on the master output regardless of voice count, so it is not
+   culled. Classic LUT/fixed-point-approximation candidate; gate the audible
+   delta with a lockstep/wav diff.
+3. **Per-voice DSP — cullable, dominates at realistic polyphony.** `Freeverb`
+   (`Comb::process` + `Freeverb::process`, the single biggest DSP item ~10% at
+   `--icount 2`), `Lp`/`HpLadderFilter::doFilter`/`doFilterStereo` (~7%),
+   `Voice::render` (~3%), and the oscillator/wavetable kernels
+   (`renderWave`/`waveRenderingFunctionGeneral`/`renderOsc`/`renderPulseWave`).
+   All fixed-point `long` (Q31). Wins here = raw instruction volume
+   (block-based vs per-sample), and they raise the polyphony ceiling.
+
+Strategic read: the scheduler is the largest single win and is independent of
+the synth workload, so it should be tackled first; the compressor is a clean,
+contained LUT win; the per-voice kernels are where instruction-volume work
+raises the voice count the box can sustain.
 
 ## Phase 4 — Optimization levers (cheapest × safest first)
 
