@@ -66,14 +66,15 @@
 #                             none      graphics subsystem present but not shown
 #   --skin-scale <pct|auto|native>
 #                           Front-panel window size. The native panel is
-#                           2256x1584, larger than many monitors; rather than
-#                           opening at native size and overflowing the screen,
-#                           the panel is rendered (down-sampled) to a fraction of
-#                           native so the window fits. 'auto' (default) detects
-#                           the primary monitor and picks the largest scale that
-#                           fits within ~90% of it; 'native'/100 forces full
-#                           size; or give an explicit percent 10-100. zoom-to-fit
-#                           still scales the window to any later resize.
+#                           2256x1584; on a HiDPI/Retina display the host shows
+#                           that surface at half its pixel count in points, a
+#                           well-sized, crisp window, so 'native' (default) opens
+#                           at full resolution with no down-sampling. On a
+#                           low-DPI monitor where native overflows, pass 'auto'
+#                           to detect the primary monitor and pick the largest
+#                           scale that fits within ~90% of it, or give an
+#                           explicit percent 10-100. The View > Zoom-to-fit menu
+#                           item makes the window resizable on demand.
 #   --icount [<shift>]      Run the CPU on a deterministic instruction-counted
 #                           virtual clock locked to real time (-icount
 #                           shift=<shift>,sleep=on). This makes audio internally
@@ -306,14 +307,27 @@ AUDIO_BUFFER=""
 TX_RENDER_HEAD=""
 DISPLAY_MODE="console"
 ICOUNT=""
-SKIN_SCALE="auto"
+# Front-panel window scale. Default to the native panel resolution (no
+# down-scale): it composites the skin at full 2256x1584 so the OLED and pads
+# stay crisp, and on a HiDPI/Retina display the host shows that surface at half
+# its pixel count in points, i.e. a well-sized window. 'auto' (opt-in) probes
+# the monitor and picks a fitting percent; an explicit percent forces a scale.
+SKIN_SCALE="native"
 # Host-side playback buffer for the audio backend, in microseconds. On Windows
 # the dsound voice is serviced from QEMU's main loop, the same thread that
 # recomposites the front-panel skin; a periodic full-frame skin upload can
 # briefly stall that service, so the host buffer must hold enough audio for the
-# OS DMA to ride the stall without a gap. This is independent of the device's
-# own staging-FIFO cushion (prime-ms). Overridable for experimentation.
-AUDIO_HOST_BUFFER_US="${DELUGEMU_AUDIO_HOST_BUFFER_US:-80000}"
+# OS DMA to ride the stall without a gap (80 ms). macOS (coreaudio) and Linux
+# (pa) service playback on their own callback/thread, independent of QEMU's main
+# loop, so a much smaller buffer rides skin stalls fine while cutting the
+# perceived press->sound latency; default to 30 ms there. This is independent of
+# the device's own staging-FIFO cushion (prime-ms). Overridable via
+# DELUGEMU_AUDIO_HOST_BUFFER_US for experimentation.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) _audio_host_buffer_default=80000 ;;
+    *)                    _audio_host_buffer_default=30000 ;;
+esac
+AUDIO_HOST_BUFFER_US="${DELUGEMU_AUDIO_HOST_BUFFER_US:-${_audio_host_buffer_default}}"
 
 SD_ARGS=()
 SD_FOLDER=""
@@ -477,16 +491,20 @@ elif [ -n "${USB_MIDI}" ]; then
     log "Attaching host USB-MIDI device on chardev: ${USB_MIDI}"
 fi
 
-# Display mode. The console window always opens with zoom-to-fit enabled so the
-# full 2256x1584 front-panel surface is scaled to fit the window (and tracks
-# window resizes) instead of opening at native size and overflowing the screen.
+# Display mode. On macOS the console window is left non-resizable so Cocoa sizes
+# it to the front-panel surface (2256x1584) divided by the display's backing
+# scale factor — i.e. a crisp 1:1 window (~1128x792 on a 2x Retina display).
+# Enabling zoom-to-fit there makes the window resizable, which makes Cocoa skip
+# that surface-sizing path and leave the window stuck at its tiny 640x480 init
+# frame; the View > Zoom-to-fit menu item still toggles it on demand. GTK sizes
+# correctly with zoom-to-fit, so keep it there.
 DISPLAY_ARGS=()
 case "${DISPLAY_MODE}" in
     headless) DISPLAY_ARGS=(-nographic) ;;
     console)
         case "$(uname -s)" in
             Darwin)
-                DISPLAY_ARGS=(-display cocoa,zoom-to-fit=on,show-cursor=on)
+                DISPLAY_ARGS=(-display cocoa,show-cursor=on)
                 ;;
             *)
                 DISPLAY_ARGS=(-display gtk,zoom-to-fit=on,show-menubar=off)
@@ -512,10 +530,12 @@ if [ "${DISPLAY_MODE}" = "console" ]; then
     fi
 fi
 
-# Front-panel window scale. The native panel (2256x1584) is larger than many
-# monitors, so by default we render it down-sampled to whatever fits the primary
-# monitor (within ~90% of it). The skin device down-scales internally and opens
-# the host window at the reduced size; zoom-to-fit still tracks later resizes.
+# Front-panel window scale. The native panel (2256x1584) renders 1:1 by default;
+# on a HiDPI/Retina display the host shows it at half its pixel count in points,
+# a well-sized crisp window. Only when 'auto' is requested (for a low-DPI monitor
+# where native would overflow) do we down-sample to whatever fits the primary
+# monitor (within ~90% of it); the skin device then down-scales internally and
+# opens the host window at the reduced size.
 SKIN_IMG_W=2256
 SKIN_IMG_H=1584
 
