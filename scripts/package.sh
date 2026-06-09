@@ -60,6 +60,16 @@ LAUNCH
     chmod +x "${stage}/delugemu"
 }
 
+# Fail packaging if a required runtime asset is missing from the staged bundle.
+# The skin PNG in particular has silently shipped missing before (a stale build
+# tree), leaving the front-panel window with no photo background; guard against
+# that so a broken bundle never gets archived/uploaded.
+verify_bundle_assets() {
+    local stage="$1"
+    [ -f "${stage}/Deluge_Plain.png" ] \
+        || die "Deluge_Plain.png missing from staged bundle at ${stage} — refusing to package an incomplete release."
+}
+
 # ---------------------------------------------------------------------------
 # macOS
 # ---------------------------------------------------------------------------
@@ -125,6 +135,7 @@ package_macos() {
 
     stage_unix_helpers "${stage}"
     write_readme_unix "${stage}" "macOS ${ARCH}" macos
+    verify_bundle_assets "${stage}"
 
     log "Verifying the bundle is self-contained..."
     local leftover
@@ -211,6 +222,7 @@ package_linux() {
 
     stage_unix_helpers "${stage}"
     write_readme_unix "${stage}" "Linux ${ARCH}" linux
+    verify_bundle_assets "${stage}"
 
     smoke_test "${bindir}/qemu-system-arm"
     local n; n="$(find "${libdir}" -name '*.so*' | wc -l | tr -d ' ')"
@@ -314,6 +326,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0delugemu.ps1" %*
 LAUNCH
 
     write_readme_windows "${stage}"
+    verify_bundle_assets "${stage}"
 
     smoke_test "${stage}/qemu-system-arm.exe"
     local n; n="$(find "${stage}" -maxdepth 1 -name '*.dll' | wc -l | tr -d ' ')"
