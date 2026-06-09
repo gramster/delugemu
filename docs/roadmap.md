@@ -49,6 +49,18 @@ smoke test green.
 - [x] Snapshot/savestate support for the custom devices (vmstate).
 - [x] Documentation of each device's register coverage.
 
+## M6 — Firmware performance (audio throughput)
+
+The emulator has reached its throughput ceiling for dense playback; remaining
+gains must come from the firmware. See
+[firmware-perf.md](firmware-perf.md) for the full plan, tools, and the
+portable-wins-only constraint.
+
+- [ ] Stand up a deterministic (`--icount`) benchmark + worst-case project.
+- [ ] Produce a ranked per-function guest-instruction profile (`hwprofile`).
+- [ ] Settle FP-vs-fixed-point via `howvec`.
+- [ ] Land portable wins (FPSCR/denormals, build flags, algorithmic) upstream.
+
 ## Open questions
 
 - Exact RZ/A1L peripheral register bases (need the hardware manual).
