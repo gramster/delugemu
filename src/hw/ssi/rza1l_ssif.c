@@ -59,6 +59,20 @@
 #define SSIFSR_RDF   0x00000001 /* receive FIFO has data   */
 #define SSIFSR_TDE   0x00010000 /* transmit FIFO empty     */
 
+/*
+ * Production-rate probe gate (DELUGEMU_SSIF_STATS). Lazily sampled once and
+ * cached; when unset the probe adds nothing to the audio path beyond a couple
+ * of predictably-not-taken branches.
+ */
+static int rza1l_ssif_stats_enabled(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        v = getenv("DELUGEMU_SSIF_STATS") != NULL;
+    }
+    return v;
+}
+
 static uint64_t rza1l_ssif_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lSsifState *s = opaque;
@@ -261,6 +275,16 @@ static void rza1l_ssif_fifo_push(RzA1lSsifState *s, const uint8_t *buf,
 {
     uint32_t tail;
 
+    /*
+     * Production counter: every byte handed here was freshly rendered by the
+     * firmware and copied from the guest TX ring (bounded by the render head),
+     * so this is the true guest audio production rate the perf effort targets.
+     * Count the full request before any overflow trim below.
+     */
+    if (rza1l_ssif_stats_enabled()) {
+        s->stats_prod_bytes += len;
+    }
+
     if (len >= RZA1L_SSIF_FIFO_SIZE) {
         /* Keep only the most recent FIFO-worth. */
         buf += len - (RZA1L_SSIF_FIFO_SIZE - RZA1L_SSIF_BYTES_PER_FRAME);
@@ -454,6 +478,47 @@ void rza1l_ssif_tx_crsa_read(void *opaque)
 }
 
 /*
+ * Emit the production-rate probe once per second of virtual time. Reports the
+ * freshly-rendered guest audio production rate (B/s) against the 352,800 B/s
+ * real-time target, the number of primed-FIFO underruns in the window, and the
+ * current staging-FIFO occupancy in milliseconds. Called from the fallback
+ * play timer; a no-op unless DELUGEMU_SSIF_STATS is set.
+ */
+static void rza1l_ssif_stats_report(RzA1lSsifState *s, int64_t now)
+{
+    int64_t elapsed_ns;
+    double secs, prod_bps, pct, fifo_ms;
+
+    if (!rza1l_ssif_stats_enabled()) {
+        return;
+    }
+    if (s->stats_window_ns == 0) {
+        s->stats_window_ns = now;
+        return;
+    }
+    elapsed_ns = now - s->stats_window_ns;
+    if (elapsed_ns < 1000000000ll) {
+        return;
+    }
+
+    secs = (double)elapsed_ns / 1e9;
+    prod_bps = (double)s->stats_prod_bytes / secs;
+    pct = prod_bps * 100.0 /
+          (RZA1L_SSIF_SAMPLE_RATE * RZA1L_SSIF_BYTES_PER_FRAME);
+    fifo_ms = (double)s->fifo_len * 1000.0 /
+              (RZA1L_SSIF_SAMPLE_RATE * RZA1L_SSIF_BYTES_PER_FRAME);
+
+    fprintf(stderr,
+            "ssif-stats: production %.0f B/s (%.1f%% of 352800), "
+            "underruns %llu/s, fifo %.1f ms\n",
+            prod_bps, pct, (unsigned long long)s->stats_underruns, fifo_ms);
+
+    s->stats_prod_bytes = 0;
+    s->stats_underruns = 0;
+    s->stats_window_ns = now;
+}
+
+/*
  * Fallback sampling/drain timer on the virtual clock. The vCPU-side pump above
  * does the bulk of the work; this keeps the FIFO draining (and catches up the
  * ring) during stretches where the firmware is not polling CRSA.
@@ -464,6 +529,7 @@ static void rza1l_ssif_play_tick(void *opaque)
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     rza1l_ssif_pump(s);
+    rza1l_ssif_stats_report(s, now);
 
     timer_mod_ns(s->play_timer, now + RZA1L_SSIF_PLAY_TICK_NS);
 }
@@ -492,6 +558,16 @@ static void rza1l_ssif_out_cb(void *opaque, int free_bytes)
             return; /* still building the cushion; voice plays silence */
         }
         s->out_primed = true;
+    }
+
+    /*
+     * Underrun probe: the cushion has primed but production has fallen behind
+     * far enough that the FIFO cannot satisfy what the voice is pulling, so the
+     * shortfall plays as silence. This is the audible failure mode the perf
+     * effort is trying to eliminate; count one event per starved callback.
+     */
+    if (rza1l_ssif_stats_enabled() && s->fifo_len < (uint32_t)free_bytes) {
+        s->stats_underruns++;
     }
 
     rza1l_ssif_drain(s, (uint32_t)free_bytes);
@@ -571,6 +647,9 @@ static void rza1l_ssif_reset(DeviceState *dev)
     s->fifo_head = 0;
     s->fifo_len = 0;
     s->rec_cursor = 0;
+    s->stats_prod_bytes = 0;
+    s->stats_underruns = 0;
+    s->stats_window_ns = 0;
 }
 
 static void rza1l_ssif_realize(DeviceState *dev, Error **errp)

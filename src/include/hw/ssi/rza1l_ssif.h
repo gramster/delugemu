@@ -164,6 +164,19 @@ struct RzA1lSsifState {
     uint32_t  fifo_head;         /* read index (mod RZA1L_SSIF_FIFO_SIZE)  */
     uint32_t  fifo_len;          /* bytes currently staged                */
 
+    /*
+     * Optional production-rate probe (DELUGEMU_SSIF_STATS). The real-world
+     * success signal for the firmware-performance effort: how many freshly
+     * rendered guest audio bytes per second reach the staging FIFO, against the
+     * 352,800 B/s real-time target, plus how often the output voice underran a
+     * primed FIFO. Counters accumulate over a one-second virtual-time window
+     * and are reported (and cleared) from the fallback play timer. Inert unless
+     * the environment variable is set, so default runs are unaffected.
+     */
+    uint64_t  stats_prod_bytes;  /* bytes pushed to FIFO this window       */
+    uint64_t  stats_underruns;   /* primed-FIFO shortfalls this window     */
+    int64_t   stats_window_ns;   /* virtual time the current window opened */
+
     uint32_t rec_cursor;    /* byte offset within the RX ring */
     bool     output_open;
     bool     input_open;

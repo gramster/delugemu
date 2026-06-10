@@ -66,7 +66,7 @@ macOS equivalents.
 | **`liblockstep.dll`** | `qemu/build/contrib/plugins/` | Run two builds in lockstep to **prove a change is bit-identical** (or locate the first divergence). The evidence a firmware PR needs. |
 | **`libhwprofile.dll` / `libhotpages.dll`** | `qemu/build/contrib/plugins/` | **NOTE: `hwprofile` is a *device-IO* access profiler, NOT a guest-PC profiler** — do not use it for instruction hotspots (use `hotblocks`). `hotpages` = most-accessed memory pages (cross-check). |
 | **`libcache.dll`** | `qemu/build/contrib/plugins/` | *Advisory only* — TCG does not model real A9 timing, but the cache simulator hints at memory-bound spots worth reasoning about for HW. |
-| **production B/s probe** | *to re-add (SSIF device)* | The real-world success signal (guest audio production B/s, underruns, FIFO occupancy). The earlier `DELUGEMU_SSIF_STATS` probe was removed in v0.4.2 and needs re-adding for the success gate. |
+| **`DELUGEMU_SSIF_STATS` probe** | SSIF device (built in) | The real-world success signal. Set `DELUGEMU_SSIF_STATS=1` in the environment and the SSIF device prints, once per second of virtual time, the freshly-rendered guest audio production rate (B/s and % of 352,800), primed-FIFO underruns/s, and staging-FIFO occupancy (ms). Production is counted where finished frames enter the staging FIFO, so with `--tx-render-head <addr>` it reflects what the firmware *actually rendered* (not the wall-clock play head). **Caveat:** this is a *wall-clock* delivery gate — on a host fast enough to keep the guest real-time it pins at ~100% even under heavy `--icount`, because the firmware really is meeting real-time. It drops below 100% (with underruns) only when the host cannot render in real time. Use it to confirm a change does not *regress* delivery and to gate on slower hosts / heavier songs; use `libhotblocks`/`libips` (instruction budget) as the primary day-to-day lever on a fast Mac. |
 | **`arm-none-eabi-nm` / `-objdump` / `-addr2line`** | toolchain | Map plugin output addresses back to firmware symbols/source. `firmware/deluge.elf` carries full `debug_info` (not stripped); source is in `firmware/DelugeFirmware/src`. |
 | **GDB (`-S -s`, `target remote :1234`)** | built in | Watchpoints on specific addresses; live inspection of DSP state and the memory map. |
 | **`scripts/press_key.py` + QMP** | in-tree | Scripted, repeatable note input so the benchmark exercises the same load every run. |
@@ -81,7 +81,7 @@ macOS equivalents.
   a scripted note sequence (`press_key.py` over QMP) for a fixed virtual
   duration.
 - Capture the baseline: total guest instructions (`libips`), buffers rendered,
-  B/s production and underruns (production probe, to re-add), and a reference
+  B/s production and underruns (`DELUGEMU_SSIF_STATS=1`), and a reference
   `.wav` (`-audiodev wav`) for later bit-exact comparison.
 
 ### Idle-dilution caveat (important)
@@ -205,7 +205,7 @@ guest-instructions-per-buffer and B/s. Target: cross 352,800 B/s sustained.
 
 - **DelugeFirmware source tree + `arm-none-eabi` toolchain** wired up locally so
   we can rebuild after each change (profiling alone needs only the existing
-  `firmware2/deluge.elf`).
+  `firmware/deluge.elf`).
 - A canonical **worst-case project file** on the SD card that reliably triggers
   the breakup, so the benchmark exercises the true bottleneck.
 - Decide the upstreaming path: land wins as DelugeFirmware PRs with the
