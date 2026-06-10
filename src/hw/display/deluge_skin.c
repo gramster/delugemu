@@ -237,6 +237,18 @@ static void led_tone_map(uint8_t *r, uint8_t *g, uint8_t *b)
     *b = (uint8_t)((*b * m_out) / m);
 }
 
+/*
+ * Lift a single 0..255 brightness/level through the same illumination curve the
+ * pads use, so dim indicator levels read at a visible intensity (0 stays off).
+ */
+static uint8_t led_tone_level(uint8_t level)
+{
+    if (!led_tone_lut_ready) {
+        led_tone_init_lut();
+    }
+    return led_tone_lut[level];
+}
+
 static void deluge_skin_fill_pad_slot(uint32_t *img, int stride,
                                       int cx, int cy, uint32_t bg)
 {
@@ -548,29 +560,84 @@ static void deluge_skin_blend_triangle(uint32_t *dst, int stride,
 }
 
 /*
+ * The gold "level" encoders. Two of them are the gold modal knobs that set the
+ * effect/parameter levels (MOD_ENCODER_0/1, flanked by the gold-knob LED
+ * stacks); they are turnable encoders in the controls table. The third is the
+ * far-right master OUTPUT LEVEL knob, which is a passive analogue volume pot
+ * (not a firmware-read encoder), so it has no entry in the controls table and
+ * no rotation affordance - we just paint it gold.
+ *
+ * All three are physically gold on the hardware, so we paint them gold ourselves
+ * rather than relying on the skin photo - that keeps them gold on the inverse
+ * (dark) skin too.
+ */
+#define DELUGE_MASTER_VOL_CX 2073
+#define DELUGE_MASTER_VOL_CY 195
+#define DELUGE_MASTER_VOL_R  62
+#define DELUGE_GOLD_R 201
+#define DELUGE_GOLD_G 162
+#define DELUGE_GOLD_B 56
+
+static bool deluge_skin_encoder_is_gold(const char *name)
+{
+    return !strcmp(name, "MOD_ENCODER_0") ||
+           !strcmp(name, "MOD_ENCODER_1");
+}
+
+/*
  * Draw the rotary-encoder rotation affordances: inside every encoder circle (a
  * control with no indicator LED) place a down-pointing triangle on the left and
  * an up-pointing triangle on the right, so the user can click to turn the
  * encoder either direction. Geometry is shared with the input layer through
  * deluge_skin_controls.h (DELUGE_ENC_TRI_OFFX / DELUGE_ENC_TRI_HALF).
+ *
+ * The two gold modal encoders are painted gold on every skin, as is the passive
+ * master OUTPUT LEVEL knob (which has no triangles). The triangle colour is
+ * chosen for contrast against the encoder body: dark on the gold knobs, light
+ * on the Normal skin (black encoder bodies) and dark on the Inverse skin (white
+ * encoder bodies).
  */
 static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
                                       int stride)
 {
+    /* Passive master OUTPUT LEVEL knob: gold on every skin, no affordance. */
+    deluge_skin_blend_disc(dst, stride,
+                           DELUGE_MASTER_VOL_CX, DELUGE_MASTER_VOL_CY,
+                           DELUGE_MASTER_VOL_R,
+                           DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B, 235);
+
     for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
         const DelugeSkinControl *c = &deluge_skin_controls[i];
+        uint8_t tr, tg, tb;
+        bool gold;
 
         if (c->has_led) {
             continue; /* only the six rotary encoders lack an indicator LED */
         }
+
+        gold = deluge_skin_encoder_is_gold(c->name);
+        if (gold) {
+            /* Solid gold knob; rim is softened by the disc helper. */
+            deluge_skin_blend_disc(dst, stride, c->cx, c->cy, c->radius,
+                                   DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B,
+                                   235);
+            tr = tg = tb = 40;          /* dark triangles read well on gold */
+        } else if (s->inverse) {
+            /* Inverse skin: encoder bodies are white, so use dark triangles. */
+            tr = tg = tb = 40;
+        } else {
+            /* Normal skin: encoder bodies are black, so use light triangles. */
+            tr = tg = tb = 210;
+        }
+
         deluge_skin_blend_triangle(dst, stride,
                                    c->cx - DELUGE_ENC_TRI_OFFX, c->cy,
                                    DELUGE_ENC_TRI_HALF, false,
-                                   40, 40, 40, 190);
+                                   tr, tg, tb, 190);
         deluge_skin_blend_triangle(dst, stride,
                                    c->cx + DELUGE_ENC_TRI_OFFX, c->cy,
                                    DELUGE_ENC_TRI_HALF, true,
-                                   40, 40, 40, 190);
+                                   tr, tg, tb, 190);
     }
 }
 
@@ -598,12 +665,19 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
     /* Indicator LEDs inside the circular buttons. */
     for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
         const DelugeSkinControl *c = &deluge_skin_controls[i];
+        uint8_t rr, gg, bb;
 
         if (!c->has_led || !deluge_pic_get_led(s->pic, c->col, c->row)) {
             continue;
         }
+        /* Lift the LED hue through the pad illumination curve so the colour
+         * reads at the same vibrancy as the RGB pads. */
+        rr = c->led_r;
+        gg = c->led_g;
+        bb = c->led_b;
+        led_tone_map(&rr, &gg, &bb);
         deluge_skin_blend_disc(dst, stride, c->cx, c->cy, c->radius,
-                               c->led_r, c->led_g, c->led_b, 205);
+                               rr, gg, bb, 205);
     }
 
     /* Gold-knob level LEDs. */
@@ -616,8 +690,10 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
             if (level == 0) {
                 continue;
             }
+            /* Lift the level through the illumination curve so dim steps stay
+             * visible, matching the pad brightness range. */
             deluge_skin_fill_led_square(dst, stride, k->cx, k->cy[led],
-                                        k->half, level);
+                                        k->half, led_tone_level(level));
         }
     }
 
