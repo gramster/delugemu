@@ -44,9 +44,11 @@ stage_unix_helpers() {
        "${REPO_ROOT}/scripts/midi_route.py" \
        "${stage}/scripts/"
     cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
-    # run.sh resolves the skin as ${REPO_ROOT}/Deluge_Plain.png; inside the
-    # bundle the helpers live at <stage>/scripts/, so REPO_ROOT == <stage>.
-    cp "${REPO_ROOT}/Deluge_Plain.png" "${stage}/Deluge_Plain.png"
+    # run.sh resolves the skin as ${REPO_ROOT}/Delugemu_Normal.png (or
+    # Delugemu_Inverse.png with --inverse); inside the bundle the helpers live
+    # at <stage>/scripts/, so REPO_ROOT == <stage>. Ship both skins.
+    cp "${REPO_ROOT}/Delugemu_Normal.png" "${stage}/Delugemu_Normal.png"
+    cp "${REPO_ROOT}/Delugemu_Inverse.png" "${stage}/Delugemu_Inverse.png"
 
     # Top-level launcher: point run.sh at the vendored binary.
     cat > "${stage}/delugemu" <<'LAUNCH'
@@ -66,8 +68,8 @@ LAUNCH
 # that so a broken bundle never gets archived/uploaded.
 verify_bundle_assets() {
     local stage="$1"
-    [ -f "${stage}/Deluge_Plain.png" ] \
-        || die "Deluge_Plain.png missing from staged bundle at ${stage} — refusing to package an incomplete release."
+    [ -f "${stage}/Delugemu_Normal.png" ] \
+        || die "Delugemu_Normal.png missing from staged bundle at ${stage} — refusing to package an incomplete release."
 }
 
 # ---------------------------------------------------------------------------
@@ -279,7 +281,8 @@ package_windows() {
         cp -R "${mingw}/lib/gdk-pixbuf-2.0" "${stage}/lib/" 2>/dev/null || true
     fi
 
-    cp "${REPO_ROOT}/Deluge_Plain.png" "${stage}/Deluge_Plain.png"
+    cp "${REPO_ROOT}/Delugemu_Normal.png" "${stage}/Delugemu_Normal.png"
+    cp "${REPO_ROOT}/Delugemu_Inverse.png" "${stage}/Delugemu_Inverse.png"
     cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
 
     # Vendor the SD-folder helpers so the native launcher can build a FAT image

@@ -64,6 +64,8 @@ Options:
                         --audio sdl / wav / none. 'auto' selects dsound.
   --audio-buffer <ms>   Output buffer cushion in milliseconds (default 15).
   --display <mode>      console (front-panel window, default) | headless | none.
+  --inverse             Use the dark skin (Delugemu_Inverse.png) with black
+                        unlit pads; default is the light skin with white pads.
   -h, --help            Show this help and exit.
 
 Anything after a literal `--`, or any unrecognised flag, is passed straight
@@ -81,7 +83,8 @@ if (-not (Test-Path -LiteralPath $Qemu)) {
     Die "qemu-system-arm.exe not found at $Qemu"
 }
 
-$SkinImage = if ($env:DELUGEMU_SKIN) { $env:DELUGEMU_SKIN } else { Join-Path $Here 'Deluge_Plain.png' }
+$SkinImage = if ($env:DELUGEMU_SKIN) { $env:DELUGEMU_SKIN } else { $null }
+$Inverse   = $false
 $FirmwareDir = if ($env:DELUGEMU_FIRMWARE_DIR) { $env:DELUGEMU_FIRMWARE_DIR } else { Join-Path $Here 'firmware' }
 
 $CommunityFwUrl  = 'https://github.com/SynthstromAudible/DelugeFirmware/releases/download/release_1_2_1/deluge-community-release-1_2_1.zip'
@@ -286,6 +289,7 @@ while ($i -lt $argv.Count) {
         '^--audio-buffer=(.+)$' { $AudioBuffer = $Matches[1]; $i += 1; break }
         '^--display$'     { if ($i + 1 -ge $argv.Count) { Die '--display requires a mode' }; $DisplayMode = $argv[$i + 1]; $i += 2; break }
         '^--display=(.+)$' { $DisplayMode = $Matches[1]; $i += 1; break }
+        '^--inverse$'     { $Inverse = $true; $i += 1; break }
         default           { $Extra += $a; $i += 1; break }
     }
 }
@@ -383,11 +387,18 @@ switch ($DisplayMode) {
     default    { Die "unknown --display mode '$DisplayMode' (console|headless|none)" }
 }
 
-# Front-panel skin image (console only).
+# Front-panel skin image (console only). Default to the light Normal skin;
+# --inverse selects the original dark skin with black unlit pads. An explicit
+# DELUGEMU_SKIN overrides the file choice (but --inverse still sets the theme).
+if (-not $SkinImage) {
+    $SkinImage = if ($Inverse) { Join-Path $Here 'Delugemu_Inverse.png' }
+                 else          { Join-Path $Here 'Delugemu_Normal.png' }
+}
 $SkinArgs = @()
 if ($DisplayMode -eq 'console') {
     if (Test-Path -LiteralPath $SkinImage) {
         $SkinArgs = @('-global', "deluge-skin.image=$SkinImage")
+        if ($Inverse) { $SkinArgs += @('-global', 'deluge-skin.inverse=on') }
     }
     else {
         Write-Warn "skin image not found at $SkinImage; the panel will render without its photo background"

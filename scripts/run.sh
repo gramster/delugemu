@@ -91,6 +91,11 @@
 #                           default, so a plain run shows only the serial console
 #                           and does not drop you at a '(qemu)' prompt; pass this
 #                           to drive the machine from the monitor.
+#   --inverse               Use the original dark front-panel skin
+#                           (Delugemu_Inverse.png) with black unlit pads. The
+#                           default is the light skin (Delugemu_Normal.png) with
+#                           white unlit pads; pad illumination is identical in
+#                           both. Ignored if DELUGEMU_SKIN is set.
 #   -h, --help              Show this help and exit.
 #
 # Anything after a literal `--`, or any unrecognised flag, is passed straight
@@ -313,6 +318,7 @@ TX_RENDER_HEAD=""
 DISPLAY_MODE="console"
 ICOUNT=""
 MONITOR=0
+INVERSE=0
 # Front-panel window scale. Default to the native panel resolution (no
 # down-scale): it composites the skin at full 2256x1584 so the OLED and pads
 # stay crisp, and on a HiDPI/Retina display the host shows that surface at half
@@ -403,6 +409,7 @@ while [ $# -gt 0 ]; do
             ;;
         --icount=*) ICOUNT="${1#--icount=}"; shift ;;
         --monitor) MONITOR=1; shift ;;
+        --inverse) INVERSE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
             EXTRA_ARGS+=("$1")
@@ -530,16 +537,24 @@ case "${DISPLAY_MODE}" in
     *) die "unknown --display mode '${DISPLAY_MODE}' (console|headless|none)" ;;
 esac
 
-# Front-panel skin image. The skin device loads "Deluge_Plain.png" from the
-# working directory by default, which breaks when run.sh is invoked from another
-# directory (or from a relocatable bundle). Resolve it next to the repo/bundle
-# root (REPO_ROOT, set by common.sh) and pass an absolute path so it loads
-# regardless of cwd. DELUGEMU_SKIN overrides the location.
+# Front-panel skin image. The default is the light "Normal" panel
+# (Delugemu_Normal.png) with white unlit pads; --inverse selects the original
+# dark panel (Delugemu_Inverse.png) with black unlit pads. The skin device
+# loads its image relative to the working directory by default, which breaks
+# when run.sh is invoked from another directory (or from a relocatable bundle),
+# so resolve it next to the repo/bundle root (REPO_ROOT, set by common.sh) and
+# pass an absolute path. DELUGEMU_SKIN overrides the location (and --inverse).
 SKIN_ARGS=()
-SKIN_IMAGE="${DELUGEMU_SKIN:-${REPO_ROOT}/Deluge_Plain.png}"
+if [ "${INVERSE}" -eq 1 ]; then
+    _default_skin="${REPO_ROOT}/Delugemu_Inverse.png"
+else
+    _default_skin="${REPO_ROOT}/Delugemu_Normal.png"
+fi
+SKIN_IMAGE="${DELUGEMU_SKIN:-${_default_skin}}"
 if [ "${DISPLAY_MODE}" = "console" ]; then
     if [ -f "${SKIN_IMAGE}" ]; then
         SKIN_ARGS=(-global "deluge-skin.image=${SKIN_IMAGE}")
+        [ "${INVERSE}" -eq 1 ] && SKIN_ARGS+=(-global "deluge-skin.inverse=on")
     else
         warn "skin image not found at ${SKIN_IMAGE}; the panel will render without its photo background"
     fi

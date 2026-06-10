@@ -285,6 +285,12 @@ static void deluge_skin_prepare_padless_background(DelugeSkinState *s)
 {
     uint32_t *img = s->bg_argb;
     int stride = DELUGE_SKIN_IMAGE_WIDTH;
+    /*
+     * Unlit pad colour: white for the default light "Normal" panel, black for
+     * the inverse (dark) panel. Lit pads blend over this slot the same way in
+     * either theme, so only the resting colour differs.
+     */
+    uint32_t slot = s->inverse ? 0xff000000u : 0xffffffffu;
 
     if (!s->bg_loaded || !img) {
         return;
@@ -295,12 +301,12 @@ static void deluge_skin_prepare_padless_background(DelugeSkinState *s)
 
         for (int col = 0; col < 16; col++) {
             int x = DELUGE_SKIN_PAD_MAIN_X0 + col * DELUGE_SKIN_PAD_MAIN_DX;
-            deluge_skin_fill_pad_slot(img, stride, x, y, 0xff000000u);
+            deluge_skin_fill_pad_slot(img, stride, x, y, slot);
         }
 
         for (int side = 0; side < 2; side++) {
             int x = DELUGE_SKIN_PAD_SIDE_X0 + side * DELUGE_SKIN_PAD_SIDE_DX;
-            deluge_skin_fill_pad_slot(img, stride, x, y, 0xff000000u);
+            deluge_skin_fill_pad_slot(img, stride, x, y, slot);
         }
     }
 }
@@ -390,7 +396,7 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             uint8_t gg = p->rgb[col][row][1];
             uint8_t bb = p->rgb[col][row][2];
 
-            /* Unlit pads stay black (the prepared slot); only draw lit ones. */
+            /* Unlit pads keep the prepared slot colour; only draw lit ones. */
             if (rr || gg || bb) {
                 led_tone_map(&rr, &gg, &bb);
                 deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 235);
@@ -910,7 +916,7 @@ static void deluge_skin_reset(DeviceState *dev)
 static void deluge_skin_realize(DeviceState *dev, Error **errp)
 {
     DelugeSkinState *s = DELUGE_SKIN(dev);
-    const char *path = s->image_path ? s->image_path : "Deluge_Plain.png";
+    const char *path = s->image_path ? s->image_path : "Delugemu_Normal.png";
     uint32_t scale = s->scale_percent;
 
     if (scale < 10) {
@@ -959,6 +965,7 @@ static void deluge_skin_unrealize(DeviceState *dev)
 static const Property deluge_skin_props[] = {
     DEFINE_PROP_STRING("image", DelugeSkinState, image_path),
     DEFINE_PROP_UINT32("scale-percent", DelugeSkinState, scale_percent, 100),
+    DEFINE_PROP_BOOL("inverse", DelugeSkinState, inverse, false),
 };
 
 static void deluge_skin_class_init(ObjectClass *klass, const void *data)

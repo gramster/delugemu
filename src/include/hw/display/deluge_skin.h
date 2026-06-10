@@ -39,8 +39,16 @@ struct DelugeSkinState {
     uint32_t *bg_argb;
     bool bg_loaded;
 
-    /* Optional image path; defaults to Deluge_Plain.png in cwd. */
+    /* Optional image path; defaults to Delugemu_Normal.png in cwd. */
     char *image_path;
+
+    /*
+     * Inverse (dark) theme. The default skin is the light "Normal" panel, on
+     * which an unlit pad slot is filled white; with inverse set (the original
+     * dark panel) an unlit pad slot is filled black. Lit pads blend their LED
+     * colour over the slot identically in both themes.
+     */
+    bool inverse;
 
     /*
      * Display down-scale. The native panel is 2256x1584, which is larger than
