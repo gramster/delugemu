@@ -70,6 +70,15 @@ struct RzA1lGpioState {
     uint16_t irqrr;
 
     /*
+     * True once the firmware has acknowledged an external IRQ by clearing a
+     * bit in IRQRR. Such firmwares hold the level-triggered line until that
+     * write, so the read-ack fallback (which releases the line when the ISR
+     * reads the encoder pin) must stay disabled for them. Firmwares that only
+     * acknowledge at the GIC never set this and rely on the read-ack.
+     */
+    bool irqrr_ack_seen;
+
+    /*
      * Host-injected input pin levels, overlaid on the output-latch loopback
      * when a port pin register (PPR_n) is read. in_mask marks which bits the
      * host drives; in_drive holds their levels. Indexed by port number (1..11).
@@ -80,13 +89,20 @@ struct RzA1lGpioState {
     /* External IRQ0..IRQ7 outputs to the INTC/GIC. */
     qemu_irq irq[RZA1L_GPIO_NUM_IRQ];
 
-    /* Current A-side pin level per encoder (bit e = encoder e). */
-    uint16_t enc_a_level;
+    /*
+     * Current quadrature phase per encoder: a 2-bit Gray-code index (0..3)
+     * packed two bits per encoder (encoder e at bits [2e+1:2e]). Stepping the
+     * phase by one changes exactly one of the A/B pins, so the firmware sees a
+     * real quadrature waveform (only one line transitions per edge) rather than
+     * a simultaneous A+B toggle. This matters for firmwares that decode with a
+     * stateful quadrature state machine (which rejects diagonal transitions).
+     */
+    uint16_t enc_phase;
 
     /*
-     * Deferred quadrature-edge queue. Each step enqueues two edges; a timer
-     * applies them one at a time so the firmware's IRQ handler runs (and the
-     * GIC's edge latch re-arms) between edges.
+     * Deferred quadrature-edge queue. Each detent enqueues four phase steps; a
+     * timer applies them one at a time so the firmware's IRQ handler runs (and
+     * the GIC's edge latch re-arms) between the two A-pin edges of the cycle.
      */
     struct {
         uint8_t enc;
@@ -99,8 +115,8 @@ struct RzA1lGpioState {
 
 /*
  * Host API: advance encoder `enc` (a DelugeEncoder) by one detent in direction
- * `dir` (+1 / -1). Generates a full A/B quadrature cycle (two A-pin edges) and
- * pulses the encoder's external IRQn so the firmware's ISR reads the direction.
+ * `dir` (+1 / -1). Generates a full Gray-code A/B quadrature cycle (two A-pin
+ * edges, one B transition between) so the firmware's ISR reads the direction.
  */
 void rza1l_gpio_encoder_step(DeviceState *dev, int enc, int dir);
 

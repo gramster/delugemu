@@ -64,6 +64,39 @@ static const RzA1lEncoderMap rza1l_encoder_map[DELUGE_ENC_COUNT] = {
 /* Spacing between successive quadrature edges (virtual time). */
 #define RZA1L_GPIO_EDGE_SPACING_NS 50000 /* 50us: ISR runs between edges */
 
+/*
+ * Acknowledge a pending edge-mode external IRQ when its handler reads the
+ * encoder pins through PPR1. Some firmwares configure the encoder IRQs as
+ * edge-detect (ICR1 != 0) and acknowledge only at the GIC, never writing
+ * IRQRR; for those the level-held line must be released some other way or the
+ * CPU storms on re-pend after every EOI. The ISR reads the encoder's A/B pins
+ * via PPR1, and because a pending+enabled IRQ is taken before the main loop's
+ * next poll, the first PPR1 read of a pending IRQ's pin byte is that ISR. Clear
+ * the pending bit and drop the line there. Low-level IRQs (ICR1 field 0) keep
+ * their held semantics and are untouched.
+ *
+ * port is 1-based; byte_in_word selects pins 0-7 (0) or 8-15 (1) of that port.
+ */
+static void rza1l_gpio_irq_read_ack(RzA1lGpioState *s, unsigned port,
+                                    unsigned byte_in_word)
+{
+    if (port != 1 || byte_in_word > 1 || !s->irqrr || s->irqrr_ack_seen) {
+        return;
+    }
+
+    for (unsigned e = 0; e < DELUGE_ENC_COUNT; e++) {
+        const RzA1lEncoderMap *m = &rza1l_encoder_map[e];
+        unsigned bit = 1u << m->irq_num;
+        unsigned field = (s->icr1 >> (2u * m->irq_num)) & 0x3u;
+
+        if ((s->irqrr & bit) && field != 0 &&
+            (m->irq_pin / 8u) == byte_in_word) {
+            s->irqrr &= (uint16_t)~bit;
+            qemu_set_irq(s->irq[m->irq_num], 0);
+        }
+    }
+}
+
 static uint64_t rza1l_gpio_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lGpioState *s = opaque;
@@ -98,6 +131,8 @@ static uint64_t rza1l_gpio_read(void *opaque, hwaddr offset, unsigned size)
                 uint8_t drive = (s->in_drive[port] >> (8 * byte_in_word)) & 0xff;
                 byte = (byte & ~mask) | (drive & mask);
             }
+            /* An ISR reading the encoder pin acknowledges its edge-mode IRQ. */
+            rza1l_gpio_irq_read_ack(s, port, byte_in_word);
         }
 
         val |= (uint64_t)byte << (8 * i);
@@ -140,50 +175,60 @@ static void rza1l_gpio_set_input_pin(RzA1lGpioState *s, unsigned port,
 }
 
 /*
- * Apply one quadrature edge for an encoder: toggle its A-side pin, set the
- * companion pin so the firmware's ISR decodes the requested direction, then
- * latch the external IRQn. The ISR computes
- *   cw = invert ? (a != b) : (a == b);  inc = cw ? +1 : -1
- * so we choose b to make inc == dir.
+ * Apply one quadrature phase step for an encoder. The encoder's (A,B) lines
+ * follow a 4-state Gray code:
  *
- * The firmware configures the IRQ0..IRQ7 SPIs as LEVEL-triggered in the GIC
- * (ICDICFR2 = 0x...5555). A momentary pulse would be lost, so we model the
- * real INTC pin latch: set the matching IRQRR bit and hold the GIC line high.
- * The firmware's ISR clears the bit via clearIRQInterrupt() (a write to
- * IRQRR), which deasserts the line — see rza1l_intc_write().
+ *   phase:  0     1     2     3
+ *   A:      0     1     1     0
+ *   B:      0     0     1     1
+ *
+ * so A = ((phase+1) >> 1) & 1 and B = (phase >> 1) & 1. Stepping the phase by
+ * +/-1 changes exactly one of A/B — a real quadrature transition. Only the
+ * steps that move the A (IRQ) pin raise the external IRQn; the firmware samples
+ * B at that A-edge to decode direction:
+ *   cw = invert ? (a != b) : (a == b);  inc = cw ? +1 : -1.
+ * Stepping the phase FORWARD makes both A-edges read a != b; stepping BACKWARD
+ * makes both read a == b. So to have the firmware register direction `dir` we
+ * step the phase by (invert ? dir : -dir).
+ *
+ * The IRQ line is held (not pulsed): the firmware configures these SPIs as
+ * level-triggered in the GIC, so a momentary pulse would be lost. It is
+ * deasserted either when the firmware clears IRQRR (rza1l_intc_write) or, for
+ * edge-detect firmwares that never touch IRQRR, when the ISR reads the encoder
+ * pin via PPR1 (rza1l_gpio_irq_read_ack).
  */
 static void rza1l_gpio_apply_edge(RzA1lGpioState *s, unsigned enc, int dir)
 {
     const RzA1lEncoderMap *m;
-    bool cur_a;
+    unsigned old_phase;
+    unsigned new_phase;
+    int pstep;
+    bool old_a;
     bool new_a;
-    bool b;
+    bool new_b;
 
     if (enc >= DELUGE_ENC_COUNT) {
         return;
     }
     m = &rza1l_encoder_map[enc];
 
-    cur_a = (s->enc_a_level >> enc) & 1;
-    new_a = !cur_a;
+    pstep = (m->invert ? dir : -dir) > 0 ? 1 : 3; /* +1 or -1 (mod 4) */
 
-    if (!m->invert) {
-        b = (dir > 0) ? new_a : !new_a;
-    } else {
-        b = (dir > 0) ? !new_a : new_a;
-    }
+    old_phase = (s->enc_phase >> (2u * enc)) & 0x3u;
+    new_phase = (old_phase + (unsigned)pstep) & 0x3u;
+
+    old_a = ((old_phase + 1) >> 1) & 1;
+    new_a = ((new_phase + 1) >> 1) & 1;
+    new_b = (new_phase >> 1) & 1;
 
     rza1l_gpio_set_input_pin(s, 1, m->irq_pin, new_a);
-    rza1l_gpio_set_input_pin(s, 1, m->comp_pin, b);
+    rza1l_gpio_set_input_pin(s, 1, m->comp_pin, new_b);
 
-    if (new_a) {
-        s->enc_a_level |= (uint16_t)(1u << enc);
-    } else {
-        s->enc_a_level &= (uint16_t)~(1u << enc);
-    }
+    s->enc_phase &= (uint16_t)~(0x3u << (2u * enc));
+    s->enc_phase |= (uint16_t)(new_phase << (2u * enc));
 
-    /* Latch the external IRQn pending bit and assert the level-held line. */
-    if (m->irq_num < RZA1L_GPIO_NUM_IRQ) {
+    /* Only an A-pin transition is an IRQ edge; B-only steps are silent. */
+    if (new_a != old_a && m->irq_num < RZA1L_GPIO_NUM_IRQ) {
         s->irqrr |= (uint16_t)(1u << m->irq_num);
         qemu_set_irq(s->irq[m->irq_num], 1);
     }
@@ -241,7 +286,12 @@ void rza1l_gpio_encoder_step(DeviceState *dev, int enc, int dir)
 
     dir = (dir > 0) ? 1 : -1;
 
-    /* One detent = one full quadrature cycle = two A-pin edges. */
+    /*
+     * One detent = one full quadrature cycle = four Gray-code phase steps,
+     * which produce two A-pin edges (IRQs) with a B transition between them.
+     */
+    rza1l_gpio_enqueue_edge(s, (unsigned)enc, dir);
+    rza1l_gpio_enqueue_edge(s, (unsigned)enc, dir);
     rza1l_gpio_enqueue_edge(s, (unsigned)enc, dir);
     rza1l_gpio_enqueue_edge(s, (unsigned)enc, dir);
 }
@@ -314,6 +364,10 @@ static void rza1l_intc_write(void *opaque, hwaddr offset, uint64_t value,
         uint16_t newv = (uint16_t)value;
         uint16_t cleared = s->irqrr & ~newv; /* bits going 1 -> 0 */
 
+        if (cleared) {
+            /* This firmware acks via IRQRR; disable the read-ack fallback. */
+            s->irqrr_ack_seen = true;
+        }
         s->irqrr = newv;
         /* Deassert the level-held line for each acknowledged IRQn. */
         for (int n = 0; n < RZA1L_GPIO_NUM_IRQ; n++) {
@@ -343,10 +397,11 @@ static void rza1l_gpio_reset(DeviceState *dev)
     memset(s->regs, 0, sizeof(s->regs));
     memset(s->in_drive, 0, sizeof(s->in_drive));
     memset(s->in_mask, 0, sizeof(s->in_mask));
-    s->enc_a_level = 0;
+    s->enc_phase = 0;
     s->icr0 = 0;
     s->icr1 = 0;
     s->irqrr = 0;
+    s->irqrr_ack_seen = false;
     s->edge_head = 0;
     s->edge_tail = 0;
     if (s->edge_timer) {
@@ -399,7 +454,7 @@ static const VMStateDescription vmstate_rza1l_gpio = {
         VMSTATE_UINT8_ARRAY(regs, RzA1lGpioState, RZA1L_GPIO_MMIO_SIZE),
         VMSTATE_UINT16_ARRAY(in_drive, RzA1lGpioState, RZA1L_GPIO_NUM_PORTS),
         VMSTATE_UINT16_ARRAY(in_mask, RzA1lGpioState, RZA1L_GPIO_NUM_PORTS),
-        VMSTATE_UINT16(enc_a_level, RzA1lGpioState),
+        VMSTATE_UINT16(enc_phase, RzA1lGpioState),
         VMSTATE_UINT16(icr0, RzA1lGpioState),
         VMSTATE_UINT16(icr1, RzA1lGpioState),
         VMSTATE_UINT16(irqrr, RzA1lGpioState),
