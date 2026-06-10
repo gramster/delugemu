@@ -35,6 +35,12 @@ struct DelugeSkinState {
     /* GPIO device, read for firmware-driven panel LEDs (Synced). May be NULL. */
     DeviceState *gpio;
 
+    /*
+     * SSIF audio device, read for the host monitor OUTPUT LEVEL so the skin can
+     * draw the level arc on the master volume knob. May be NULL (headless).
+     */
+    DeviceState *ssif;
+
     /* RGBA skin background, converted to 32-bit ARGB pixels. */
     uint32_t *bg_argb;
     bool bg_loaded;
@@ -94,6 +100,7 @@ void deluge_skin_set_padgrid(DeviceState *dev,
                              struct DelugePadGridState *padgrid);
 void deluge_skin_set_pic(DeviceState *dev, struct Chardev *pic);
 void deluge_skin_set_gpio(DeviceState *dev, DeviceState *gpio);
+void deluge_skin_set_ssif(DeviceState *dev, DeviceState *ssif);
 void deluge_skin_set_render_suspended(DeviceState *dev, bool suspended);
 
 #endif /* HW_DISPLAY_DELUGE_SKIN_H */

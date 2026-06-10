@@ -43,6 +43,12 @@ struct DelugeInputState {
     /* The GPIO model driven for rotary-encoder quadrature steps (board setup). */
     DeviceState *gpio;
 
+    /*
+     * The SSIF audio model whose host monitor OUTPUT LEVEL the master volume
+     * knob's triangles attenuate (board setup). May be NULL (headless).
+     */
+    DeviceState *ssif;
+
     /* The registered QEMU keyboard/pointer handler. */
     struct QemuInputHandlerState *handler;
 
@@ -105,6 +111,9 @@ void deluge_input_set_pic(DeviceState *dev, struct Chardev *pic);
 
 /* Bind the GPIO model that rotary-encoder turns are injected into. */
 void deluge_input_set_gpio(DeviceState *dev, DeviceState *gpio);
+
+/* Bind the SSIF model that the master OUTPUT LEVEL knob attenuates. */
+void deluge_input_set_ssif(DeviceState *dev, DeviceState *ssif);
 
 /* Bind the skin device that the audio-only keyboard toggle suspends. */
 void deluge_input_set_skin(DeviceState *dev, DeviceState *skin);

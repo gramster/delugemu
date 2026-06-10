@@ -125,6 +125,39 @@ static inline DelugeEncTriHit deluge_enc_tri_hit(const DelugeSkinControl *c,
 }
 
 /*
+ * Master OUTPUT LEVEL knob (the far-right gold knob). On hardware this is a
+ * passive analogue volume pot the firmware never reads, so in emulation it is
+ * repurposed as the host monitor-level control: its two triangles step the
+ * SSIF output attenuator (rza1l_ssif_output_level_step) rather than the guest.
+ * Geometry is shared between the renderer (deluge_skin.c draws the knob, its
+ * triangles and a level arc) and the input layer (deluge_input.c hit-tests the
+ * triangles). It is not a button-matrix control, so it lives here rather than
+ * in deluge_skin_controls[].
+ */
+#define DELUGE_MASTER_VOL_CX   2073
+#define DELUGE_MASTER_VOL_CY   195
+#define DELUGE_MASTER_VOL_R    62
+
+/* Classify a point against the master OUTPUT LEVEL knob's two triangles. */
+static inline DelugeEncTriHit deluge_master_vol_tri_hit(int px, int py)
+{
+    int dy = py - DELUGE_MASTER_VOL_CY;
+
+    if (dy < -DELUGE_ENC_TRI_HALF || dy > DELUGE_ENC_TRI_HALF) {
+        return DELUGE_ENC_HIT_NONE;
+    }
+    if (abs(px - (DELUGE_MASTER_VOL_CX - DELUGE_ENC_TRI_OFFX)) <=
+        DELUGE_ENC_TRI_HALF) {
+        return DELUGE_ENC_HIT_DOWN;
+    }
+    if (abs(px - (DELUGE_MASTER_VOL_CX + DELUGE_ENC_TRI_OFFX)) <=
+        DELUGE_ENC_TRI_HALF) {
+        return DELUGE_ENC_HIT_UP;
+    }
+    return DELUGE_ENC_HIT_NONE;
+}
+
+/*
  * Gold-knob level LEDs (the two vertical stacks of 4 square LEDs beside the
  * gold modal encoders). Driven by PIC SET_GOLD_KNOB0/1; brightness per LED is
  * gold_knob[which][0..3]. The meter fills from the bottom up, so index 0 is the

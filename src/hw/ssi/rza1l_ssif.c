@@ -174,6 +174,60 @@ void rza1l_ssif_set_dma(RzA1lSsifState *s, struct RzA1lDmacState *dmac,
 }
 
 /*
+ * Host monitor output-level ladder: index 0 = mute, index N = round(65536 *
+ * 10^(-2*(MAX-N)/20)) so each step is -2 dB and the top step is exactly unity
+ * (0 dB, no attenuation -> bit-exact pass-through). Precomputed so the drain
+ * stays integer-only and deterministic; MAX+1 entries.
+ */
+static const uint32_t rza1l_ssif_gain_ladder[RZA1L_SSIF_OUT_LEVEL_MAX + 1] = {
+        0,      /*  0: mute            */
+    1316,       /*  1: -30 dB          */
+    1657,       /*  2: -28 dB          */
+    2085,       /*  3: -26 dB          */
+    2625,       /*  4: -24 dB          */
+    3305,       /*  5: -22 dB          */
+    4161,       /*  6: -20 dB          */
+    5238,       /*  7: -18 dB          */
+    6594,       /*  8: -16 dB          */
+    8300,       /*  9: -14 dB          */
+    10448,      /* 10: -12 dB          */
+    13153,      /* 11: -10 dB          */
+    16557,      /* 12:  -8 dB          */
+    20842,      /* 13:  -6 dB          */
+    26235,      /* 14:  -4 dB          */
+    33025,      /* 15:  -2 dB          */
+    65536,      /* 16:   0 dB (unity)  */
+};
+
+static void rza1l_ssif_apply_out_level(RzA1lSsifState *s)
+{
+    if (s->out_level > RZA1L_SSIF_OUT_LEVEL_MAX) {
+        s->out_level = RZA1L_SSIF_OUT_LEVEL_MAX;
+    }
+    s->out_gain_q16 = rza1l_ssif_gain_ladder[s->out_level];
+}
+
+int rza1l_ssif_output_level_step(DeviceState *dev, int dir)
+{
+    RzA1lSsifState *s = RZA1L_SSIF(dev);
+
+    if (dir > 0 && s->out_level < RZA1L_SSIF_OUT_LEVEL_MAX) {
+        s->out_level++;
+    } else if (dir < 0 && s->out_level > 0) {
+        s->out_level--;
+    }
+    rza1l_ssif_apply_out_level(s);
+    return (int)s->out_level;
+}
+
+int rza1l_ssif_output_level(DeviceState *dev)
+{
+    RzA1lSsifState *s = RZA1L_SSIF(dev);
+
+    return (int)s->out_level;
+}
+
+/*
  * Drain up to max_bytes of staged audio into the output voice, returning the
  * number of bytes actually accepted. Draining is bounded so the caller can
  * pace it to the voice's consumption rate and keep the rest of the FIFO as a
@@ -239,6 +293,16 @@ static void rza1l_ssif_drain(RzA1lSsifState *s, uint32_t max_bytes)
             t = s->drain_frac;
             lo = (int32_t)(l0 + ((((int64_t)l1 - l0) * t) >> 16));
             ro = (int32_t)(r0 + ((((int64_t)r1 - r0) * t) >> 16));
+
+            /*
+             * Host monitor output level. out_gain_q16 <= 65536 (unity), so this
+             * only ever attenuates and can never overflow S32 or clip; at the
+             * unity default it is an exact pass-through.
+             */
+            if (s->out_gain_q16 != 65536) {
+                lo = (int32_t)(((int64_t)lo * s->out_gain_q16) >> 16);
+                ro = (int32_t)(((int64_t)ro * s->out_gain_q16) >> 16);
+            }
             memcpy(out + built, &lo, 4);
             memcpy(out + built + 4, &ro, 4);
             built += F;
@@ -677,6 +741,16 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(sbd, &s->irq_txi);
 
     /*
+     * Host monitor output level. Default to unity (no attenuation, bit-exact
+     * pass-through) so default runs are unchanged; the user lowers it with the
+     * front-panel OUTPUT LEVEL knob when a hot firmware overdrives the host
+     * interface. This is a host-UI setting, not guest state, so it is set up
+     * here (not in device reset) and survives a guest reset.
+     */
+    s->out_level = RZA1L_SSIF_OUT_LEVEL_MAX;
+    rza1l_ssif_apply_out_level(s);
+
+    /*
      * Derive the output latency cushion (bytes) from the configured prime-ms.
      * Clamp to just under the staging FIFO so the cushion can always be filled;
      * an unreachable target would leave the voice permanently silent.
@@ -774,7 +848,7 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
 
 static const VMStateDescription vmstate_rza1l_ssif = {
     .name = TYPE_RZA1L_SSIF,
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ssicr, RzA1lSsifState),
@@ -785,6 +859,8 @@ static const VMStateDescription vmstate_rza1l_ssif = {
         VMSTATE_UINT32(ssifcmr, RzA1lSsifState),
         VMSTATE_UINT32(ssifcsr, RzA1lSsifState),
         VMSTATE_UINT32(rec_cursor, RzA1lSsifState),
+        VMSTATE_UINT32_V(out_level, RzA1lSsifState, 4),
+        VMSTATE_UINT32_V(out_gain_q16, RzA1lSsifState, 4),
         VMSTATE_END_OF_LIST()
     },
 };

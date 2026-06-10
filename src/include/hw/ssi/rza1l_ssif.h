@@ -201,7 +201,22 @@ struct RzA1lSsifState {
      * capture-capable backend is explicitly requested via this property.
      */
     bool     capture;
+
+    /*
+     * Host-side monitor output level (an emulator-only attenuator, not a guest
+     * register). The Deluge's master OUTPUT LEVEL is an analog pot the firmware
+     * never reads, so in emulation it does nothing; we repurpose it as a
+     * software volume so a hot firmware (e.g. third-party builds that render
+     * ~10 dB louder) cannot overdrive the host audio interface. out_level is a
+     * step index 0..RZA1L_SSIF_OUT_LEVEL_MAX (0 = mute, MAX = unity/0 dB);
+     * out_gain_q16 is the matching 16.16 linear gain applied in the drain.
+     */
+    uint32_t out_level;
+    uint32_t out_gain_q16;
 };
+
+/* Output-level step ladder: index MAX = unity (0 dB), 0 = mute, -2 dB/step. */
+#define RZA1L_SSIF_OUT_LEVEL_MAX 16
 
 /*
  * Bind the SSI to the DMAC and the audio TX/RX channels (board setup). Enables
@@ -209,6 +224,16 @@ struct RzA1lSsifState {
  */
 void rza1l_ssif_set_dma(RzA1lSsifState *s, struct RzA1lDmacState *dmac,
                         int tx_channel, int rx_channel);
+
+/*
+ * Step the host monitor output level (master OUTPUT LEVEL knob). dir > 0 raises
+ * it (toward unity), dir < 0 lowers it (toward mute), clamped to the ladder.
+ * Returns the new step index. Safe to call from the input/UI thread.
+ */
+int rza1l_ssif_output_level_step(DeviceState *dev, int dir);
+
+/* Current output-level step index (0..RZA1L_SSIF_OUT_LEVEL_MAX). */
+int rza1l_ssif_output_level(DeviceState *dev);
 
 /*
  * vCPU-side ring pump invoked by the DMAC on each transmit CRSA register read.

@@ -23,6 +23,7 @@
 #include "hw/display/deluge_skin.h"
 #include "hw/misc/deluge_pic.h"
 #include "hw/gpio/rza1l_gpio.h"
+#include "hw/ssi/rza1l_ssif.h"
 
 /*
  * Optional input tracing. Each call is a synchronous, unbuffered console write
@@ -217,6 +218,20 @@ static void deluge_input_wheel(DelugeInputState *s, int dir)
     const DelugeSkinControl *ctrl;
     int enc;
 
+    /* A notch over the master OUTPUT LEVEL knob attenuates the monitor level. */
+    if (s->ssif) {
+        int dx = s->pointer_x - DELUGE_MASTER_VOL_CX;
+        int dy = s->pointer_y - DELUGE_MASTER_VOL_CY;
+
+        if (dx * dx + dy * dy <= DELUGE_MASTER_VOL_R * DELUGE_MASTER_VOL_R) {
+            int lvl = rza1l_ssif_output_level_step(s->ssif, dir);
+
+            INPUT_DBG("wheel master volume %s -> level %d",
+                    dir > 0 ? "up" : "down", lvl);
+            return;
+        }
+    }
+
     if (!s->gpio) {
         return;
     }
@@ -364,6 +379,25 @@ static void deluge_input_pointer_press(DelugeInputState *s)
 
     INPUT_DBG("pointer press at (%d,%d)",
             s->pointer_x, s->pointer_y);
+
+    /*
+     * The master OUTPUT LEVEL knob is a host-only monitor attenuator (a passive
+     * analogue pot on hardware), so its triangles drive the SSIF directly
+     * rather than the guest. Test them before the button/encoder matrix.
+     */
+    if (s->ssif) {
+        DelugeEncTriHit vhit = deluge_master_vol_tri_hit(s->pointer_x,
+                                                         s->pointer_y);
+
+        if (vhit != DELUGE_ENC_HIT_NONE) {
+            int dir = (vhit == DELUGE_ENC_HIT_UP) ? +1 : -1;
+            int lvl = rza1l_ssif_output_level_step(s->ssif, dir);
+
+            INPUT_DBG("master volume %s -> level %d",
+                    dir > 0 ? "up" : "down", lvl);
+            return;
+        }
+    }
 
     /* Buttons/encoders sit above the pad grid; test them first. */
     ctrl = deluge_input_hit_test_control(s->pointer_x, s->pointer_y);
@@ -614,6 +648,13 @@ void deluge_input_set_gpio(DeviceState *dev, DeviceState *gpio)
     DelugeInputState *s = DELUGE_INPUT(dev);
 
     s->gpio = gpio;
+}
+
+void deluge_input_set_ssif(DeviceState *dev, DeviceState *ssif)
+{
+    DelugeInputState *s = DELUGE_INPUT(dev);
+
+    s->ssif = ssif;
 }
 
 void deluge_input_set_skin(DeviceState *dev, DeviceState *skin)

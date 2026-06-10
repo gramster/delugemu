@@ -25,6 +25,7 @@
 #include "hw/display/deluge_skin_controls.h"
 #include "hw/misc/deluge_pic.h"
 #include "hw/gpio/rza1l_gpio.h"
+#include "hw/ssi/rza1l_ssif.h"
 
 #define DELUGE_SKIN_REFRESH_MS 33
 
@@ -563,17 +564,16 @@ static void deluge_skin_blend_triangle(uint32_t *dst, int stride,
  * The gold "level" encoders. Two of them are the gold modal knobs that set the
  * effect/parameter levels (MOD_ENCODER_0/1, flanked by the gold-knob LED
  * stacks); they are turnable encoders in the controls table. The third is the
- * far-right master OUTPUT LEVEL knob, which is a passive analogue volume pot
- * (not a firmware-read encoder), so it has no entry in the controls table and
- * no rotation affordance - we just paint it gold.
+ * far-right master OUTPUT LEVEL knob: on hardware a passive analogue volume
+ * pot, repurposed in emulation as the host monitor-level control. It has no
+ * entry in the button-matrix controls table (its geometry lives in
+ * deluge_skin_controls.h as DELUGE_MASTER_VOL_*), and unlike the rotary
+ * encoders its triangles step the SSIF output attenuator, not the guest.
  *
  * All three are physically gold on the hardware, so we paint them gold ourselves
  * rather than relying on the skin photo - that keeps them gold on the inverse
  * (dark) skin too.
  */
-#define DELUGE_MASTER_VOL_CX 2073
-#define DELUGE_MASTER_VOL_CY 195
-#define DELUGE_MASTER_VOL_R  62
 #define DELUGE_GOLD_R 201
 #define DELUGE_GOLD_G 162
 #define DELUGE_GOLD_B 56
@@ -585,26 +585,68 @@ static bool deluge_skin_encoder_is_gold(const char *name)
 }
 
 /*
+ * Draw the master OUTPUT LEVEL knob: a gold disc with the same down/up triangle
+ * affordances as the rotary encoders, plus a horizontal segment meter beneath
+ * it that fills (left to right) to show the current host monitor level. The
+ * level is read from the SSIF (0..RZA1L_SSIF_OUT_LEVEL_MAX); when no SSIF is
+ * attached (headless) the meter shows full (unity), the default.
+ */
+static void deluge_skin_draw_master_volume(DelugeSkinState *s, uint32_t *dst,
+                                           int stride)
+{
+    const int segs = RZA1L_SSIF_OUT_LEVEL_MAX;
+    const int half = 3;            /* half-size of each meter segment square  */
+    const int pitch = 9;           /* centre-to-centre spacing of segments    */
+    int level = segs;              /* default unity when no SSIF attached     */
+    int meter_w = (segs - 1) * pitch;
+    int x0 = DELUGE_MASTER_VOL_CX - meter_w / 2;
+    int my = DELUGE_MASTER_VOL_CY + DELUGE_MASTER_VOL_R + 16;
+
+    /* Gold knob body. */
+    deluge_skin_blend_disc(dst, stride,
+                           DELUGE_MASTER_VOL_CX, DELUGE_MASTER_VOL_CY,
+                           DELUGE_MASTER_VOL_R,
+                           DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B, 235);
+
+    /* Down (left) and up (right) triangles, dark for contrast on gold. */
+    deluge_skin_blend_triangle(dst, stride,
+                               DELUGE_MASTER_VOL_CX - DELUGE_ENC_TRI_OFFX,
+                               DELUGE_MASTER_VOL_CY,
+                               DELUGE_ENC_TRI_HALF, false, 40, 40, 40, 190);
+    deluge_skin_blend_triangle(dst, stride,
+                               DELUGE_MASTER_VOL_CX + DELUGE_ENC_TRI_OFFX,
+                               DELUGE_MASTER_VOL_CY,
+                               DELUGE_ENC_TRI_HALF, true, 40, 40, 40, 190);
+
+    if (s->ssif) {
+        level = rza1l_ssif_output_level(s->ssif);
+    }
+
+    /* Segment meter: lit gold up to the current level, dim beyond it. */
+    for (int i = 0; i < segs; i++) {
+        uint8_t lvl = (i < level) ? 255 : 40;
+
+        deluge_skin_fill_led_square(dst, stride, x0 + i * pitch, my, half, lvl);
+    }
+}
+
+/*
  * Draw the rotary-encoder rotation affordances: inside every encoder circle (a
  * control with no indicator LED) place a down-pointing triangle on the left and
  * an up-pointing triangle on the right, so the user can click to turn the
  * encoder either direction. Geometry is shared with the input layer through
  * deluge_skin_controls.h (DELUGE_ENC_TRI_OFFX / DELUGE_ENC_TRI_HALF).
  *
- * The two gold modal encoders are painted gold on every skin, as is the passive
- * master OUTPUT LEVEL knob (which has no triangles). The triangle colour is
- * chosen for contrast against the encoder body: dark on the gold knobs, light
- * on the Normal skin (black encoder bodies) and dark on the Inverse skin (white
- * encoder bodies).
+ * The two gold modal encoders are painted gold on every skin; the master
+ * OUTPUT LEVEL knob is drawn separately (deluge_skin_draw_master_volume). The
+ * triangle colour is chosen for contrast against the encoder body: dark on the
+ * gold knobs, light on the Normal skin (black encoder bodies) and dark on the
+ * Inverse skin (white encoder bodies).
  */
 static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
                                       int stride)
 {
-    /* Passive master OUTPUT LEVEL knob: gold on every skin, no affordance. */
-    deluge_skin_blend_disc(dst, stride,
-                           DELUGE_MASTER_VOL_CX, DELUGE_MASTER_VOL_CY,
-                           DELUGE_MASTER_VOL_R,
-                           DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B, 235);
+    deluge_skin_draw_master_volume(s, dst, stride);
 
     for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
         const DelugeSkinControl *c = &deluge_skin_controls[i];
@@ -773,6 +815,12 @@ static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
         uint8_t synced = rza1l_gpio_get_output_pin(s->gpio, 6, 7) ? 1u : 0u;
 
         h = deluge_skin_fnv1a(h, &synced, sizeof(synced));
+    }
+
+    if (s->ssif) {
+        uint8_t level = (uint8_t)rza1l_ssif_output_level(s->ssif);
+
+        h = deluge_skin_fnv1a(h, &level, sizeof(level));
     }
 
     return h;
@@ -962,6 +1010,14 @@ void deluge_skin_set_gpio(DeviceState *dev, DeviceState *gpio)
     DelugeSkinState *s = DELUGE_SKIN(dev);
 
     s->gpio = gpio;
+    s->dirty = true;
+}
+
+void deluge_skin_set_ssif(DeviceState *dev, DeviceState *ssif)
+{
+    DelugeSkinState *s = DELUGE_SKIN(dev);
+
+    s->ssif = ssif;
     s->dirty = true;
 }
 

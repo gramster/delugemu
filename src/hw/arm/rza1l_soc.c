@@ -451,8 +451,10 @@ static void rza1l_soc_realize(DeviceState *dev, Error **errp)
     deluge_input_set_pic(DEVICE(&s->input), s->pic);
     deluge_input_set_gpio(DEVICE(&s->input), DEVICE(&s->gpio));
     deluge_input_set_skin(DEVICE(&s->input), DEVICE(&s->skin));
+    deluge_input_set_ssif(DEVICE(&s->input), DEVICE(&s->ssif));
     deluge_skin_set_pic(DEVICE(&s->skin), s->pic);
     deluge_skin_set_gpio(DEVICE(&s->skin), DEVICE(&s->gpio));
+    deluge_skin_set_ssif(DEVICE(&s->skin), DEVICE(&s->ssif));
     qdev_prop_set_chr(DEVICE(&s->scif1), "chardev", s->pic);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->scif1), errp)) {
         return;
