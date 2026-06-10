@@ -285,6 +285,18 @@ static void rza1l_ssif_fifo_push(RzA1lSsifState *s, const uint8_t *buf,
         s->stats_prod_bytes += len;
     }
 
+    /*
+     * Raw render capture (DELUGEMU_SSIF_DUMP): write the freshly-rendered
+     * S32LE stereo frames exactly as they leave the guest TX ring, before the
+     * overflow trim below and before the output drift resampler. Flushed per
+     * write so an abrupt quit still leaves a complete capture. Deterministic
+     * under --icount: this is the bit-exact gate's reference stream.
+     */
+    if (s->dump_fp) {
+        fwrite(buf, 1, len, s->dump_fp);
+        fflush(s->dump_fp);
+    }
+
     if (len >= RZA1L_SSIF_FIFO_SIZE) {
         /* Keep only the most recent FIFO-worth. */
         buf += len - (RZA1L_SSIF_FIFO_SIZE - RZA1L_SSIF_BYTES_PER_FRAME);
@@ -711,6 +723,24 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
         }
         audio_be_set_active_out(s->audio_be, s->voice_out, true);
         s->output_open = true;
+
+        /*
+         * Optional raw render capture for the bit-exact gate. Open here so a
+         * misconfigured path fails the run loudly rather than silently
+         * producing no capture. The frames are written in rza1l_ssif_fifo_push.
+         */
+        {
+            const char *dump = getenv("DELUGEMU_SSIF_DUMP");
+            if (dump && *dump) {
+                s->dump_fp = fopen(dump, "wb");
+                if (!s->dump_fp) {
+                    error_setg(errp,
+                               "rza1l-ssif: cannot open DELUGEMU_SSIF_DUMP "
+                               "'%s': %s", dump, strerror(errno));
+                    return;
+                }
+            }
+        }
 
         /*
          * Start the fallback ring sampler/drain timer. The bulk of the ring

@@ -63,14 +63,14 @@ macOS equivalents.
 | **`libhowvec.dll`** | `qemu/build/contrib/plugins/` | Instruction-class mix (FP vs NEON vs scalar integer). **CAVEAT: its classifier is AArch64 (A64) only.** The Deluge is ARM32 Thumb-2, so every instruction shows "Unclassified" and it falls back to per-opcode counts — decode the top opcodes by hand to settle the FP-vs-fixed question. |
 | **`libips.dll`** | `qemu/build/contrib/plugins/` | Instructions-per-second / total instruction throughput for the baseline and for measuring each change. |
 | **`libuftrace.dll`** (+ `uftrace_symbols.py`) | `qemu/build/contrib/plugins/` | Call-graph / flamegraph for **inclusive** cost, so we find the heavy subtree, not just leaf functions. |
-| **`liblockstep.dll`** | `qemu/build/contrib/plugins/` | Run two builds in lockstep to **prove a change is bit-identical** (or locate the first divergence). The evidence a firmware PR needs. |
+| **`liblockstep.dll`** | `qemu/build/contrib/plugins/` | Run two builds in lockstep to find the first execution divergence. **Useful for emulator-change determinism, NOT a firmware-change audio gate** — two different firmware builds diverge immediately by construction. See Phase 5 “Validation reality” for the gates that actually work. |
 | **`libhwprofile.dll` / `libhotpages.dll`** | `qemu/build/contrib/plugins/` | **NOTE: `hwprofile` is a *device-IO* access profiler, NOT a guest-PC profiler** — do not use it for instruction hotspots (use `hotblocks`). `hotpages` = most-accessed memory pages (cross-check). |
 | **`libcache.dll`** | `qemu/build/contrib/plugins/` | *Advisory only* — TCG does not model real A9 timing, but the cache simulator hints at memory-bound spots worth reasoning about for HW. |
 | **`DELUGEMU_SSIF_STATS` probe** | SSIF device (built in) | The real-world success signal. Set `DELUGEMU_SSIF_STATS=1` in the environment and the SSIF device prints, once per second of virtual time, the freshly-rendered guest audio production rate (B/s and % of 352,800), primed-FIFO underruns/s, and staging-FIFO occupancy (ms). Production is counted where finished frames enter the staging FIFO, so with `--tx-render-head <addr>` it reflects what the firmware *actually rendered* (not the wall-clock play head). **Caveat:** this is a *wall-clock* delivery gate — on a host fast enough to keep the guest real-time it pins at ~100% even under heavy `--icount`, because the firmware really is meeting real-time. It drops below 100% (with underruns) only when the host cannot render in real time. Use it to confirm a change does not *regress* delivery and to gate on slower hosts / heavier songs; use `libhotblocks`/`libips` (instruction budget) as the primary day-to-day lever on a fast Mac. |
 | **`arm-none-eabi-nm` / `-objdump` / `-addr2line`** | toolchain | Map plugin output addresses back to firmware symbols/source. `firmware/deluge.elf` carries full `debug_info` (not stripped); source is in `firmware/DelugeFirmware/src`. |
 | **GDB (`-S -s`, `target remote :1234`)** | built in | Watchpoints on specific addresses; live inspection of DSP state and the memory map. |
 | **`scripts/press_key.py` + QMP** | in-tree | Scripted, repeatable note input so the benchmark exercises the same load every run. |
-| **`-audiodev wav`** | built in | Capture deterministic `.wav` output for A/B bit-exact comparison (pairs with `--icount`). |
+| **`-audiodev wav`** | built in | **Does NOT work for this stream:** QEMU's wav backend rejects 32-bit formats (the SSIF voice is S32) and captures *after* the host-timing-dependent output resampler. Use `DELUGEMU_SSIF_DUMP` (raw S32LE, pre-resampler) for a perceptual spot-check instead; see Phase 5. |
 | **DelugeFirmware source + `arm-none-eabi` toolchain** | *external (needed)* | Required to *act* on findings. Profiling needs only the existing ELF; rebuilding the firmware needs the source tree and cross-toolchain. |
 
 ## Phase 1 — Lock down a reproducible benchmark
@@ -81,8 +81,9 @@ macOS equivalents.
   a scripted note sequence (`press_key.py` over QMP) for a fixed virtual
   duration.
 - Capture the baseline: total guest instructions (`libips`), buffers rendered,
-  B/s production and underruns (`DELUGEMU_SSIF_STATS=1`), and a reference
-  `.wav` (`-audiodev wav`) for later bit-exact comparison.
+  B/s production and underruns (`DELUGEMU_SSIF_STATS=1`), and a raw render
+  capture (`DELUGEMU_SSIF_DUMP=<path>`) for later spectral/by-ear spot-checks
+  (see Phase 5 "Validation reality" — this is *not* a byte-exact reference).
 
 ### Idle-dilution caveat (important)
 
@@ -158,7 +159,7 @@ ranked:
    `render` + `calcRMS` + `AbsValueFollower::calcApproxRMS`, driven by `expf` /
    `logf`. It runs on the master output regardless of voice count, so it is not
    culled. Classic LUT/fixed-point-approximation candidate; gate the audible
-   delta with a lockstep/wav diff.
+   delta with an offline kernel null-test (Phase 5).
 3. **Per-voice DSP — cullable, dominates at realistic polyphony.** `Freeverb`
    (`Comb::process` + `Freeverb::process`, the single biggest DSP item ~10% at
    `--icount 2`), `Lp`/`HpLadderFilter::doFilter`/`doFilterStereo` (~7%),
@@ -185,21 +186,67 @@ raises the voice count the box can sustain.
    single largest realistic win in a polyphonic synth, and obviously correct on
    HW), reduce inaudible oversampling.
 4. **Fixed-point conversion** of a hot float path — *only* where it is a genuine
-   HW improvement, bounded by a lockstep/wav diff that quantifies any audible
-   change.
+   HW improvement, bounded by an offline kernel null-test (see Phase 5) that
+   quantifies any audible change.
 
 ## Phase 5 — Validate every change through two gates
 
 1. **Portability gate** — would this reduce work, or be neutral, on a real A9
    running this firmware? (LUT vs transcendental: yes. Skip-silent-voice: yes.
    Reorder for TCG block boundaries: no — rejected.)
-2. **Bit-exactness gate** — does it change the audio output? Diff two `--icount`
-   `.wav` captures (or use `liblockstep`) to prove a change is sample-identical,
-   or to quantify the delta for an intentional approximation (e.g. a LUT). This
-   is exactly the evidence a firmware PR needs.
+2. **Correctness gate** — does it change the audio output, and by how much? See
+   "Validation reality" below for *how* — a whole-system byte-exact `.wav`/raw
+   A/B diff does **not** work here, so the gate is per-change: sample-neutral by
+   construction (structural changes), or an **offline kernel null-test** with a
+   bounded error (intentional approximations like a LUT).
 
 Then re-run the **identical Phase-1 benchmark** and track
-guest-instructions-per-buffer and B/s. Target: cross 352,800 B/s sustained.
+guest-instructions-per-buffer and B/s (`DELUGEMU_SSIF_STATS=1`). Target: cross
+352,800 B/s sustained.
+
+### Validation reality (what actually works — measured)
+
+The plan above assumed a byte-exact A/B audio diff (two `--icount` captures, or
+`liblockstep`). **That does not work for firmware DSP changes here, for three
+independently-fatal reasons measured directly:**
+
+1. **QEMU's `wav` audiodev cannot capture this stream.** It rejects 32-bit
+   formats (the SSIF voice is `AUDIO_FORMAT_S32`) and it sits *after* the SSIF's
+   drift-correcting output resampler, which is host-timing dependent.
+2. **The raw render capture is not bit-reproducible run-to-run.** A
+   `DELUGEMU_SSIF_DUMP` capture (raw S32LE stereo, taken at the ring sampler
+   *before* the resampler) of two identical same-build `--icount` runs is **not
+   byte-identical** and not even uniformly lag-alignable (peak normalised
+   cross-correlation ≈ 0.69 on the music region, with a drifting lag). Cause:
+   `-icount …,sleep=on` **warps virtual time forward during guest idle**, so the
+   sampler emits a non-uniform number of play-head frames per real second (a
+   ~21 s run yielded ~140 *virtual*-seconds of audio); the warp pattern differs
+   between runs. `sleep=off` does not fix it (still ~5× real-time), because the
+   render-head clamp (`--tx-render-head`) does not bound the count in the
+   headless `--audio none` config — the capture falls back to the wall-clock
+   play head. (The per-*virtual*-second production rate is still correct: the
+   `DELUGEMU_SSIF_STATS` probe reads a steady 352 800 B/s.)
+3. **Even a perfect capture can't byte-match across firmware builds.** Oscillator
+   phase accumulators free-run from boot, so any change that shifts note-trigger
+   timing by one sample changes every subsequent sample — expected, not a
+   regression.
+
+**So the working correctness gates are:**
+
+- **Structural / scheduler changes (9se.3):** sample-neutral *by construction* —
+  they change *when* tasks run, not the DSP math or its inputs. Validate by code
+  review (DSP call order and arguments unchanged) plus the `DELUGEMU_SSIF_STATS`
+  production probe showing no throughput regression.
+- **Intentional DSP approximations / LUTs (9se.4, 9se.5):** **offline kernel
+  null-test** — drive the *old* and *new* math (e.g. `expf`/`logf` vs the LUT)
+  over the full input domain in isolation (a small host harness, no emulator),
+  and bound the worst-case error in dB / ULP. This is rigorous, deterministic,
+  and is exactly the evidence a DelugeFirmware PR needs. Build the harness
+  alongside the change it validates.
+- **`DELUGEMU_SSIF_DUMP=<path>`** (raw S32LE stereo render capture) remains
+  useful as a **spectral / by-ear spot-check** — confirm a change doesn't
+  grossly break the sound — but treat it as perceptual, not byte-exact, and
+  capture with `-icount …,sleep=off` to keep it closer to real time.
 
 ## Prerequisites / open items
 
@@ -209,4 +256,4 @@ guest-instructions-per-buffer and B/s. Target: cross 352,800 B/s sustained.
 - A canonical **worst-case project file** on the SD card that reliably triggers
   the breakup, so the benchmark exercises the true bottleneck.
 - Decide the upstreaming path: land wins as DelugeFirmware PRs with the
-  lockstep/wav evidence attached.
+  offline kernel null-test (or sample-neutrality) evidence attached.

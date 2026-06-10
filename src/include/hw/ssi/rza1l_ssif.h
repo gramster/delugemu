@@ -177,6 +177,17 @@ struct RzA1lSsifState {
     uint64_t  stats_underruns;   /* primed-FIFO shortfalls this window     */
     int64_t   stats_window_ns;   /* virtual time the current window opened */
 
+    /*
+     * Optional raw render capture (DELUGEMU_SSIF_DUMP=<path>). When set, every
+     * freshly-rendered S32LE stereo frame copied from the guest TX ring is
+     * written to this file *before* the drift resampler, so the capture is the
+     * firmware's exact rendered output. Under --icount the guest renders
+     * deterministically, so two runs with identical input produce byte-equal
+     * files: the bit-exact gate for validating a firmware DSP change. NULL when
+     * the variable is unset.
+     */
+    FILE     *dump_fp;
+
     uint32_t rec_cursor;    /* byte offset within the RX ring */
     bool     output_open;
     bool     input_open;
