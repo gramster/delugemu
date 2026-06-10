@@ -164,7 +164,10 @@ play head (CRSA), which is firmware-independent but can re-read stale ring slots
 under load. Setting `tx-render-head` to the guest address of the firmware's
 render head (`AudioEngine::i2sTXBufferPos`; `run.sh --tx-render-head <addr>`)
 bounds reads by freshly-rendered data instead, so heavy load degrades to brief
-gaps rather than ring-lap distortion. Neither lever can manufacture throughput:
+gaps rather than ring-lap distortion. For stripped firmware whose render-head
+address is unknown, `run.sh --tx-render-head auto` finds it at runtime by
+scanning on-chip RAM for the pointer that tracks the ring and trails the play
+head. Neither lever can manufacture throughput:
 when the emulated CPU renders below the 352,800 B/s real-time rate (a TCG limit,
 single-core Cortex-A9), `-icount` (`run.sh --icount`) is the only way to keep
 audio artifact-free, at the cost of capping the guest to ≤ real time.

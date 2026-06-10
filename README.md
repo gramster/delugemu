@@ -10,7 +10,7 @@ The goal is to boot unmodified Deluge firmware (the open-source
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; the build also runs on Windows via MSYS2/MinGW (see [docs/windows.md](docs/windows.md)), and a Linux port is pending.  Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option. Under heavy synthesis load the emulated Cortex-A9 can't always render audio at real time (a TCG throughput limit, not a buffering one), which can cause occasional breakup during dense playback; `run.sh --tx-render-head <addr>` keeps that graceful (brief gaps rather than distortion), and `run.sh --icount` eliminates the artifacts entirely at the cost of running slower-than-real-time under load (best for offline capture, not live play).
+> Status: **largely complete**. USB device/host support is not wired in to the host due to technical complexity. Development was done on a Mac Mini m4; the build also runs on Windows via MSYS2/MinGW (see [docs/windows.md](docs/windows.md)), and a Linux port is pending.  Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option. Under heavy synthesis load the emulated Cortex-A9 can't always render audio at real time (a TCG throughput limit, not a buffering one), which can cause occasional breakup during dense playback; `run.sh --tx-render-head <addr|auto>` keeps that graceful (brief gaps rather than distortion), and `run.sh --icount` eliminates the artifacts entirely at the cost of running slower-than-real-time under load (best for offline capture, not live play).
 
 
 ## Target hardware
@@ -396,11 +396,11 @@ may still boot and run the UI fine but struggle with dense synthesis. Two
 launcher options change what overload *sounds* like when you hit the throughput
 wall — neither makes samples arrive faster, they pick a nicer failure mode:
 
-- **`run.sh --tx-render-head <addr>`** makes overload *graceful* (brief silences
-  instead of distortion). By default the emulator's audio sampler tracks the
-  hardware DMA play head, which advances on the host's wall clock; under load
-  the firmware hasn't finished rendering the ring slots the play head has
-  already passed, so those half-written samples get played as distortion.
+- **`run.sh --tx-render-head <addr|auto>`** makes overload *graceful* (brief
+  silences instead of distortion). By default the emulator's audio sampler
+  tracks the hardware DMA play head, which advances on the host's wall clock;
+  under load the firmware hasn't finished rendering the ring slots the play head
+  has already passed, so those half-written samples get played as distortion.
   Pointing the sampler at the firmware's own *render head* — the variable that
   records how far it has actually rendered into the I²S ring — makes it read
   only finished samples, turning that distortion into a short gap. `<addr>` is
@@ -415,8 +415,14 @@ wall — neither makes samples arrive faster, they pick a nicer failure mode:
 
   (or read it from the build's `.map` file). Pass it as hex, e.g.
   `--tx-render-head 0x20038fdc`. A stripped release binary with no symbols
-  can't be looked up this way, which is why the option is opt-in and the
-  wall-clock play head is the firmware-independent default.
+  can't be looked up this way — for those, pass **`--tx-render-head auto`** and
+  the emulator finds the render head itself at runtime: after a short warmup it
+  scans on-chip RAM for the pointer that tracks the I²S ring and consistently
+  *trails* the play head (the render backlog), then clamps to it. It is
+  best-effort and engages once audio is flowing; until it resolves (or if it
+  can't), the firmware-independent wall-clock play head stands, so `auto` is
+  never worse than the default.
+
 
 - **`run.sh --icount`** trades *correct-speed-but-broken* audio for
   *clean-but-slow* audio. Normally the guest runs as fast as the host allows
@@ -431,6 +437,13 @@ wall — neither makes samples arrive faster, they pick a nicer failure mode:
   clean stream at a lower pitch/tempo rather than a correct-pitch stream full of
   dropouts. That makes it ideal for rendering a clean capture offline on a slow
   machine (just not in real time), but poor for live play.
+
+In practice, for **live play** under dense synthesis load pair
+`--tx-render-head auto` (stripped firmware) or `--tx-render-head <addr>`
+(symbols available) with a generous `--audio-buffer` (≈150–200 ms): the clamp
+keeps overload graceful and the deeper cushion rides out the bursty render
+stalls, both while still running at real time. Reserve `--icount` for offline
+capture, where the slower-than-real-time trade-off buys a perfectly clean stream.
 
 ## Repository layout
 

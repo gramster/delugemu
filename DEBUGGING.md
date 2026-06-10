@@ -223,7 +223,8 @@ dropouts. The trade-off is that it caps the guest to **≤ real time**, so under
 heavy DSP load playback runs slow (lower pitch/tempo) instead of breaking up.
 That makes it good for clean offline capture, but not for live external-MIDI
 play. For live use, prefer the default free-running clock with the render-head
-clamp (`--tx-render-head`) and a generous `--audio-buffer`.
+clamp (`--tx-render-head <addr>`, or `--tx-render-head auto` for stripped
+firmware) and a generous `--audio-buffer`.
 
 ## QEMU trace events
 
