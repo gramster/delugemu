@@ -62,7 +62,8 @@
 #                             console   open the front-panel skin window with
 #                                       the modelled OLED / pad-grid / 7-seg
 #                                       overlays (default)
-#                             headless  no GUI; serial+monitor on stdio
+#                             headless  no GUI; serial console + monitor muxed
+#                                       on stdio (Ctrl-A C switches)
 #                             none      graphics subsystem present but not shown
 #   --skin-scale <pct|auto|native>
 #                           Front-panel window size. The native panel is
@@ -86,6 +87,10 @@
 #                           capture, not live external-MIDI play. <shift> is the
 #                           ns-per-instruction power of two; default 'auto' lets
 #                           QEMU tune it. Off by default.
+#   --monitor               Expose the interactive QEMU monitor on stdio. Off by
+#                           default, so a plain run shows only the serial console
+#                           and does not drop you at a '(qemu)' prompt; pass this
+#                           to drive the machine from the monitor.
 #   -h, --help              Show this help and exit.
 #
 # Anything after a literal `--`, or any unrecognised flag, is passed straight
@@ -307,6 +312,7 @@ AUDIO_BUFFER=""
 TX_RENDER_HEAD=""
 DISPLAY_MODE="console"
 ICOUNT=""
+MONITOR=0
 # Front-panel window scale. Default to the native panel resolution (no
 # down-scale): it composites the skin at full 2256x1584 so the OLED and pads
 # stay crisp, and on a HiDPI/Retina display the host shows that surface at half
@@ -396,6 +402,7 @@ while [ $# -gt 0 ]; do
             fi
             ;;
         --icount=*) ICOUNT="${1#--icount=}"; shift ;;
+        --monitor) MONITOR=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
             EXTRA_ARGS+=("$1")
@@ -461,20 +468,28 @@ ensure_midi_bridge() {
     fi
 }
 
-# SCIF0 (DIN MIDI) and the monitor. With a MIDI backend, SCIF0 takes that
-# chardev and the monitor moves to its own stdio; otherwise the two share stdio.
+# SCIF0 (DIN MIDI) and the QEMU monitor. The interactive monitor is opt-in
+# (--monitor); by default stdio carries only the SCIF0 serial console so a plain
+# run does not drop the user at a '(qemu)' prompt. With a MIDI backend SCIF0
+# takes that chardev, so the monitor (when enabled) gets its own stdio.
 SERIAL_ARGS=()
 if [ "${MIDI}" = "coremidi" ]; then
     rm -f "${DIN_SOCK}"
     SERIAL_ARGS=(-chardev "socket,id=din,path=${DIN_SOCK},server=on,wait=off" \
-                 -serial chardev:din -monitor stdio)
+                 -serial chardev:din)
+    [ "${MONITOR}" -eq 1 ] && SERIAL_ARGS+=(-monitor stdio) || SERIAL_ARGS+=(-monitor none)
     BRIDGE_SPECS+=("DelugEmu DIN=${DIN_SOCK}")
     log "Bridging SCIF0/DIN-MIDI to a host CoreMIDI port (\"DelugEmu DIN\")"
 elif [ -n "${MIDI}" ]; then
-    SERIAL_ARGS=(-serial "${MIDI}" -monitor stdio)
+    SERIAL_ARGS=(-serial "${MIDI}")
+    [ "${MONITOR}" -eq 1 ] && SERIAL_ARGS+=(-monitor stdio) || SERIAL_ARGS+=(-monitor none)
     log "Routing SCIF0/MIDI to chardev: ${MIDI}"
-else
+elif [ "${MONITOR}" -eq 1 ] || [ "${DISPLAY_MODE}" = "headless" ]; then
+    # Headless (-nographic) naturally muxes the serial console and monitor on
+    # stdio; keep that. For a GUI run the monitor is opt-in via --monitor.
     SERIAL_ARGS=(-serial mon:stdio)
+else
+    SERIAL_ARGS=(-serial stdio)
 fi
 
 # Host USB-MIDI device: present the device on USB200 and route its bulk pipes

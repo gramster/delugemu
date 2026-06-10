@@ -97,8 +97,8 @@ static const DelugeSkinControl deluge_skin_controls[] = {
  *
  * Encoders are exactly the controls with no indicator LED (has_led == false).
  */
-#define DELUGE_ENC_TRI_HALF 13   /* half base width / height of each triangle  */
-#define DELUGE_ENC_TRI_OFFX 22   /* triangle centre offset from encoder centre */
+#define DELUGE_ENC_TRI_HALF 22   /* half base width / height of each triangle  */
+#define DELUGE_ENC_TRI_OFFX 26   /* triangle centre offset from encoder centre */
 
 typedef enum {
     DELUGE_ENC_HIT_NONE = 0, /* not on a triangle: depress the encoder      */
