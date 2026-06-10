@@ -455,6 +455,263 @@ static bool rza1l_ssif_render_head(RzA1lSsifState *s, uint32_t base,
     return true;
 }
 
+/*
+ * Render-head auto-detection (tx-render-head-auto).
+ *
+ * When the firmware's render-head address is not supplied up front, locate it
+ * by scanning guest RAM for the variable that holds it. The render head W
+ * (AudioEngine::i2sTXBufferPos) is a global pointer in on-chip SRAM whose value
+ * is always a pointer into the live TX ring and which advances continuously as
+ * the firmware renders (even silence is rendered at 44.1 kHz, so it never sits
+ * still). No other persistent SRAM word both (a) always reduces into the ring
+ * and (b) keeps moving, so that pair of properties identifies it.
+ *
+ * The search is two-phase and runs from the pump (vCPU thread), throttled to
+ * one step per RH_SCAN_INTERVAL_NS of virtual time:
+ *
+ *   Warmup: the search idles for RH_WARMUP_NS after the ring first arms so the
+ *           firmware's audio engine has come up and is advancing the head;
+ *           seeding at boot only catches coincidental matches that vanish.
+ *   Seed:   scan SRAM for every word whose value reduces into the ring (same
+ *           alias-tolerant reduction as rza1l_ssif_render_head); these are the
+ *           candidates. If none are live yet, rescanned later.
+ *   Verify: each step, re-read every candidate. Drop any that no longer point
+ *           into the ring (a coincidental match drifts out almost immediately);
+ *           a candidate that survives RH_ROUNDS_TO_LOCK checks AND has been
+ *           seen at more than one ring offset (i.e. it is moving) is the render
+ *           head, and its address is latched into render_head_addr. If every
+ *           candidate dies (seeded a touch too early) the set is dropped and
+ *           SRAM is rescanned.
+ *
+ * If no candidate qualifies within the budget the search gives up and the
+ * play-head fallback stands, so auto is never worse than the default. The whole
+ * thing is best-effort: an explicit tx-render-head address remains the exact,
+ * deterministic option.
+ */
+typedef struct RzA1lRhCand {
+    uint32_t addr;       /* guest address of the candidate word            */
+    uint32_t alias;      /* fixed view offset (0 or 0x40000000)            */
+    uint32_t first_off;  /* ring offset first seen, to detect movement     */
+    uint32_t max_gap;    /* largest trailing gap behind the play head seen */
+    int      rounds;     /* consecutive checks still pointing into the ring */
+    bool     moved;      /* observed at a second ring offset               */
+    bool     alive;      /* still a candidate                              */
+} RzA1lRhCand;
+
+/* SRAM window scanned for the render-head pointer (3 MB on-chip, cached view). */
+#define RH_SRAM_BASE          0x20000000u
+#define RH_SRAM_SIZE          (3u * 1024u * 1024u)
+#define RH_WARMUP_NS          (2 * 1000 * 1000 * 1000LL) /* settle before scan */
+#define RH_SCAN_INTERVAL_NS   (16 * 1000 * 1000)  /* 16 ms between verifies  */
+#define RH_RESEED_INTERVAL_NS (200 * 1000 * 1000) /* gap between SRAM rescans */
+#define RH_SEED_MAX_ATTEMPTS  40                  /* ~8 s of rescans then quit */
+#define RH_ROUNDS_TO_LOCK     8                   /* ~128 ms of confirmation */
+#define RH_MAX_ROUNDS         300                 /* hard stop on verify rounds */
+#define RH_MAX_CANDS          256                 /* too many -> ambiguous   */
+#define RH_MIN_LOCK_GAP       (4 * RZA1L_SSIF_BYTES_PER_FRAME) /* clear trail */
+
+/* Reduce a candidate's raw value to a ring offset; false if not in the ring. */
+static bool rza1l_ssif_rh_reduce(uint32_t value, uint32_t base, uint32_t size,
+                                 uint32_t *off_out, uint32_t *alias_out)
+{
+    uint32_t rel = value - base;
+    uint32_t off = rel % size;
+    uint32_t alias = rel - off;
+
+    if (alias != 0 && alias != 0x40000000u) {
+        return false;
+    }
+    *off_out = off;
+    *alias_out = alias;
+    return true;
+}
+
+/* Finish the search: latch the found address (or give up) and free state. */
+static void rza1l_ssif_rh_finish(RzA1lSsifState *s, uint32_t found_addr)
+{
+    g_free(s->rh_cands);
+    s->rh_cands = NULL;
+    s->rh_cand_count = 0;
+    s->rh_done = true;
+    if (found_addr) {
+        s->render_head_addr = found_addr;
+        qemu_log("rza1l-ssif: tx-render-head auto-detected at 0x%08x\n",
+                 found_addr);
+    } else {
+        qemu_log("rza1l-ssif: tx-render-head auto-detect gave up; "
+                 "using play-head fallback\n");
+    }
+}
+
+/* Scan SRAM once for words that currently reduce into the ring. */
+static void rza1l_ssif_rh_seed(RzA1lSsifState *s, uint32_t base, uint32_t size)
+{
+    uint8_t buf[16 * 1024];
+    RzA1lRhCand *cands = NULL;
+    int count = 0;
+
+    for (uint32_t pos = 0; pos < RH_SRAM_SIZE; pos += sizeof(buf)) {
+        uint32_t chunk = MIN((uint32_t)sizeof(buf), RH_SRAM_SIZE - pos);
+
+        if (dma_memory_read(&address_space_memory, RH_SRAM_BASE + pos, buf,
+                            chunk, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+            continue;
+        }
+        for (uint32_t o = 0; o + 4 <= chunk; o += 4) {
+            uint32_t value = ldl_le_p(buf + o);
+            uint32_t off, alias;
+
+            if (!rza1l_ssif_rh_reduce(value, base, size, &off, &alias)) {
+                continue;
+            }
+            if (count >= RH_MAX_CANDS) {
+                /* Filter is matching too much to be meaningful; abandon. */
+                g_free(cands);
+                rza1l_ssif_rh_finish(s, 0);
+                return;
+            }
+            cands = g_renew(RzA1lRhCand, cands, count + 1);
+            cands[count].addr = RH_SRAM_BASE + pos + o;
+            cands[count].alias = alias;
+            cands[count].first_off = off;
+            cands[count].max_gap = 0;
+            cands[count].rounds = 0;
+            cands[count].moved = false;
+            cands[count].alive = true;
+            count++;
+        }
+    }
+
+    if (count == 0) {
+        /* Ring pointer not live yet; retry a bounded number of times. */
+        if (++s->rh_seed_attempts >= RH_SEED_MAX_ATTEMPTS) {
+            rza1l_ssif_rh_finish(s, 0);
+        }
+        return;
+    }
+
+    s->rh_cands = cands;
+    s->rh_cand_count = count;
+    qemu_log("rza1l-ssif: tx-render-head auto-detect seeded %d candidate(s)\n",
+             count);
+}
+
+/*
+ * One verification step over the live candidate set.
+ *
+ * Two genuine ring pointers survive the "moving, in-ring" filter: the render
+ * head W (AudioEngine::i2sTXBufferPos) and the firmware's read-back copy of the
+ * DMA source/play head P (AudioEngine::saddr). They are distinguished by their
+ * position relative to the live play head wpos: the play-head copy sits on top
+ * of P (gap ~ 0, with occasional small-negative jitter that wraps near the ring
+ * size), while the render head consistently *trails* P by the firmware's render
+ * backlog. So each round we accumulate the largest trailing gap (wpos - off)
+ * each candidate exhibits, clamping the near-size wrap of a slightly-ahead
+ * pointer back to zero, and once a clear trailing signal has appeared we latch
+ * the candidate with the largest such gap. That is the render head.
+ */
+static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
+                                 uint32_t size, uint32_t wpos)
+{
+    RzA1lRhCand *best = NULL;
+    int alive = 0;
+
+    s->rh_rounds++;
+
+    for (int i = 0; i < s->rh_cand_count; i++) {
+        RzA1lRhCand *c = &s->rh_cands[i];
+        uint8_t b[4];
+        uint32_t off, alias, gap;
+
+        if (!c->alive) {
+            continue;
+        }
+        if (dma_memory_read(&address_space_memory, c->addr, b, sizeof(b),
+                            MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
+            !rza1l_ssif_rh_reduce(ldl_le_p(b), base, size, &off, &alias) ||
+            alias != c->alias) {
+            c->alive = false;        /* no longer a ring pointer */
+            continue;
+        }
+        if (off != c->first_off) {
+            c->moved = true;
+        }
+
+        /*
+         * Trailing gap behind the play head. A pointer that is momentarily
+         * ahead of wpos (timing jitter on the play-head copy) wraps to nearly
+         * size; treat that as "not trailing" so it never beats the render head.
+         */
+        gap = (wpos + size - off) % size;
+        if (gap > size / 2) {
+            gap = 0;
+        }
+        if (gap > c->max_gap) {
+            c->max_gap = gap;
+        }
+
+        c->rounds++;
+        alive++;
+
+        if (c->moved && (best == NULL || c->max_gap > best->max_gap)) {
+            best = c;
+        }
+    }
+
+    /*
+     * Once enough rounds have gone by to gather gap statistics, latch the
+     * clearest-trailing candidate - provided some candidate actually trailed
+     * (RH_MIN_LOCK_GAP). If none did yet (no audio load during the window),
+     * keep observing until the round budget runs out.
+     */
+    if (s->rh_rounds >= RH_ROUNDS_TO_LOCK && best != NULL &&
+        best->max_gap >= RH_MIN_LOCK_GAP) {
+        qemu_log("rza1l-ssif: tx-render-head auto-detect locked 0x%08x "
+                 "(trailing gap %u bytes)\n", best->addr, best->max_gap);
+        rza1l_ssif_rh_finish(s, best->addr);
+        return;
+    }
+
+    if (s->rh_rounds >= RH_MAX_ROUNDS) {
+        rza1l_ssif_rh_finish(s, 0);
+        return;
+    }
+    if (alive == 0) {
+        /* Seeded before the head was live; drop the set and rescan later. */
+        g_free(s->rh_cands);
+        s->rh_cands = NULL;
+        s->rh_cand_count = 0;
+        if (++s->rh_seed_attempts >= RH_SEED_MAX_ATTEMPTS) {
+            rza1l_ssif_rh_finish(s, 0);
+        }
+    }
+}
+
+/* Drive the render-head search; called from the pump while auto and unresolved. */
+static void rza1l_ssif_rh_search(RzA1lSsifState *s, uint32_t base,
+                                 uint32_t size, uint32_t wpos)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    /* Anchor and serve the warmup window on the first armed pump. */
+    if (s->rh_arm_ns == 0) {
+        s->rh_arm_ns = now;
+    }
+    if (now - s->rh_arm_ns < RH_WARMUP_NS || now < s->rh_next_scan_ns) {
+        return;
+    }
+
+    if (s->rh_cands == NULL) {
+        rza1l_ssif_rh_seed(s, base, size);
+        /* Space the expensive SRAM rescans more widely than verify polls. */
+        s->rh_next_scan_ns = now + (s->rh_cands ? RH_SCAN_INTERVAL_NS
+                                                : RH_RESEED_INTERVAL_NS);
+    } else {
+        rza1l_ssif_rh_verify(s, base, size, wpos);
+        s->rh_next_scan_ns = now + RH_SCAN_INTERVAL_NS;
+    }
+}
+
 static void rza1l_ssif_pump(RzA1lSsifState *s)
 {
     uint32_t base = 0, size = 0;
@@ -496,6 +753,15 @@ static void rza1l_ssif_pump(RzA1lSsifState *s)
     }
     wpos = (crsa - base) % size;
     wpos &= ~(RZA1L_SSIF_BYTES_PER_FRAME - 1);
+
+    /*
+     * If asked to auto-detect the render head, keep the search running until it
+     * resolves (latching render_head_addr) or gives up. The ring base/size are
+     * live now, which is what the scan needs.
+     */
+    if (s->render_head_auto && !s->rh_done) {
+        rza1l_ssif_rh_search(s, base, size, wpos);
+    }
 
     /*
      * Copy only up to the firmware's render head when its address is known,
@@ -751,6 +1017,14 @@ static void rza1l_ssif_realize(DeviceState *dev, Error **errp)
     rza1l_ssif_apply_out_level(s);
 
     /*
+     * An explicit tx-render-head address always wins over auto: mark the
+     * auto-search done so it never runs and never overwrites the user value.
+     */
+    if (s->render_head_addr) {
+        s->rh_done = true;
+    }
+
+    /*
      * Derive the output latency cushion (bytes) from the configured prime-ms.
      * Clamp to just under the staging FIFO so the cushion can always be filled;
      * an unreachable target would leave the voice permanently silent.
@@ -871,6 +1145,8 @@ static const Property rza1l_ssif_properties[] = {
     DEFINE_PROP_UINT32("prime-ms", RzA1lSsifState, prime_ms,
                        RZA1L_SSIF_DEFAULT_PRIME_MS),
     DEFINE_PROP_UINT32("tx-render-head", RzA1lSsifState, render_head_addr, 0),
+    DEFINE_PROP_BOOL("tx-render-head-auto", RzA1lSsifState, render_head_auto,
+                     false),
 };
 
 static void rza1l_ssif_class_init(ObjectClass *klass, const void *data)

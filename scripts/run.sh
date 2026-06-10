@@ -51,13 +51,17 @@
 #                           Raise it if you hear dropouts; lower it to trim the
 #                           delay when playing the emulated Deluge live from
 #                           external MIDI.
-#   --tx-render-head <addr> Advanced: bound audio ring reads by the firmware's
+#   --tx-render-head <addr|auto>
+#                           Advanced: bound audio ring reads by the firmware's
 #                           render head (AudioEngine::i2sTXBufferPos) at this
 #                           guest address (hex, e.g. 0x20038fdc), eliminating
 #                           the ring-lap distortion under heavy load. The
 #                           address is firmware-build specific; with it unset
 #                           (default) reads track the DMA play head, which is
 #                           firmware-independent but can distort under load.
+#                           Pass 'auto' to have the emulator locate the render
+#                           head itself by scanning guest RAM (best-effort; for
+#                           stripped firmware with no symbols).
 #   --display <mode>        Display mode:
 #                             console   open the front-panel skin window with
 #                                       the modelled OLED / pad-grid / 7-seg
@@ -683,14 +687,18 @@ fi
 # head at this guest address instead of the wall-clock DMA play head, removing
 # the ring-lap distortion under heavy load. The address is firmware-build
 # specific, so this is opt-in; unset leaves the firmware-independent play-head
-# behaviour. Accepts hex (0x...) or decimal.
+# behaviour. Accepts hex (0x...), decimal, or 'auto' to have the SSIF find the
+# render head itself at runtime (useful for stripped firmware with no symbols).
 if [ -n "${TX_RENDER_HEAD}" ]; then
     case "${TX_RENDER_HEAD}" in
-        0x[0-9A-Fa-f]*|[0-9]*) : ;;
-        *) die "--tx-render-head must be a guest address (hex 0x..., or decimal)" ;;
+        auto)
+            AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head-auto=on")
+            log "SSIF audio bounded by auto-detected firmware render head" ;;
+        0x[0-9A-Fa-f]*|[0-9]*)
+            AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head=${TX_RENDER_HEAD}")
+            log "SSIF audio bounded by firmware render head at: ${TX_RENDER_HEAD}" ;;
+        *) die "--tx-render-head must be a guest address (hex 0x..., decimal) or 'auto'" ;;
     esac
-    AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head=${TX_RENDER_HEAD}")
-    log "SSIF audio bounded by firmware render head at: ${TX_RENDER_HEAD}"
 fi
 
 # Optional deterministic instruction-counted clock (-icount). Locks the guest to

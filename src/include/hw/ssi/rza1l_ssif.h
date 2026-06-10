@@ -139,6 +139,14 @@ struct RzA1lSsifState {
      * the vCPU thread on every CRSA register read (plus a fallback timer), so
      * it keeps pace with production even when the main loop stalls.
      * play_anchored is false until the ring is armed and read_off is seeded.
+     *
+     * When the address is not known up front, the "tx-render-head-auto"
+     * property (render_head_auto) asks the device to find W itself: it scans
+     * on-chip SRAM for a word that persistently holds a pointer into the TX
+     * ring and advances with playback, and on success latches its address into
+     * render_head_addr (see rza1l_ssif_rh_search). Until the search resolves —
+     * or if it gives up — the play-head fallback is used, so auto never makes
+     * things worse than the unclamped default.
      */
     AudioBackend *audio_be;
     struct RzA1lDmacState *dmac;
@@ -154,6 +162,23 @@ struct RzA1lSsifState {
     uint32_t  render_head_addr;  /* guest addr of i2sTXBufferPos; 0=play-head */
     uint32_t  drain_frac;        /* 16.16 resampler phase for drift trim   */
     int64_t   last_pump_ns;      /* virtual time of last ring copy (throttle) */
+
+    /*
+     * Render-head auto-detection (tx-render-head-auto). render_head_auto is the
+     * property; the rest is transient search state, valid only while searching
+     * and not migrated. rh_cands is the candidate array (NULL before seeding,
+     * freed once the search resolves or gives up); rh_done is set when the
+     * search has finished (either render_head_addr is now latched, or it gave
+     * up and the play-head fallback stands).
+     */
+    bool      render_head_auto;
+    bool      rh_done;
+    int       rh_seed_attempts;
+    int       rh_rounds;
+    int64_t   rh_arm_ns;
+    int64_t   rh_next_scan_ns;
+    struct RzA1lRhCand *rh_cands;
+    int       rh_cand_count;
 
     /* Output latency cushion: "prime-ms" property -> derived byte depth. */
     uint32_t  prime_ms;          /* configured cushion in milliseconds    */
