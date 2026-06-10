@@ -25,6 +25,48 @@ less work. In TCG, execution cost is approximately proportional to *guest
 instructions retired + helper calls*, so **reducing guest instructions in the
 render path translates almost 1:1 into emulator speedup**.
 
+## Correction (2026-06-09): profile the Release build, and it is the scheduler
+
+The original first-pass profile below was taken against the **Debug** ELF
+(`-Og`, no `-flto`, inlining suppressed). That is *not* what real hardware runs.
+`firmware/deluge.elf` is byte-identical to `build/Debug/deluge.elf`; real Deluge
+hardware ships the **Release** build (`-O2 -flto=auto`). Re-profiling the
+Release build changes the conclusion materially:
+
+- At `-O2`, the scheduler helpers that dominated the Debug profile
+  (`Time::operator<=>`, `Task::isReady`, `Task::isRunnable`) are **fully
+  inlined** — they vanish as separate symbols. Verified by disassembling
+  `chooseBestTask` in both builds: Debug emits out-of-line `bl` calls to those
+  helpers plus VFP ops to zero 8-byte `Time` temporaries; Release has **zero**
+  out-of-line helper calls and **zero** VFP/soft-float in the hot path.
+- So "hand-inline the scheduler helpers" (the old Phase-4 lever) is **already
+  done by the compiler** on real hardware and would be rejected upstream.
+- The **complete** Release profile (FAM1, no `--icount`, `libhotblocks,limit=0`,
+  12,974 blocks, 48 B instructions) is overwhelmingly the scheduler:
+
+  | Symbol | % of guest instructions |
+  |--------|------------------------|
+  | `TaskManager::chooseBestTask` | **74.9%** |
+  | `checkConditionalTasks` | 7.5% |
+  | `getSecondsFromStart` | 7.1% |
+  | `runHighestPriTask` + `runTask` | ~1.6% |
+  | **scheduler subtotal** | **~91%** |
+  | all audio DSP combined (Freeverb, Sound::render, compressor, filters, oscillators, voices) | **~7%** |
+
+- This holds at both `--icount 2` and full host speed, and on both Debug and
+  Release — it is **not** an idle-throttle artifact. The cooperative scheduler
+  busy-spins: when no task is "ready", the dispatch loop re-runs `chooseBestTask`
+  (three O(N) passes over all tasks) + `checkConditionalTasks` (O(25)) +
+  `runHighestPriTask` and loops immediately.
+- **Consequence for this campaign:** the DSP levers (compressor LUT, per-voice
+  block processing) target a ~7% slice and cannot move the needle much. The only
+  material, portable lever is **`chooseBestTask` itself** — make an idle decision
+  cheap (early-out / incremental next-deadline) without changing which task is
+  selected. That is sample-neutral by construction and frees real-hardware
+  cycles (more polyphony / lower power).
+
+The sections below are retained for history; read them through this correction.
+
 ## Hard constraint: portable wins only
 
 **We will only pursue changes that also help on real Cortex-A9
@@ -132,46 +174,48 @@ highlighted song — the load UI opens on the first file alphabetically, so with
   integer-bound → instruction volume; NEON-bound → leave SIMD alone (it is a HW
   win even though TCG penalizes it).
 
-## First-pass results (FAM1, `--icount 2` & `--icount 4`)
+## First-pass results (Debug ELF — superseded; see Correction above)
+
+> These numbers came from the **Debug** build (`-Og`, no LTO). On the Release
+> build that real hardware runs, `Time::operator<=>` / `isReady` / `isRunnable`
+> are inlined into `chooseBestTask` and disappear as separate symbols. The
+> Release-verified split is in the **Correction** section: ~91% scheduler
+> (75% `chooseBestTask`), ~7% all DSP. Treat the items below as the Debug-view
+> history only.
 
 Measured against the dense `FAM1.XML` (127 synth instruments) under forced
 saturation. The render path is **overwhelmingly fixed-point** (top opcodes are
 all integer `cmp`/`ldr`/`b`/`bx`; float is a minor share). Three cost centres,
 ranked:
 
-1. **Cooperative task scheduler — the #1 cost, ~25–47% of *all* guest
-   instructions, persistent across every load level (fully portable).**
-   `Time::operator<=>` (19–27%) + `TaskManager::chooseBestTask` (15–21%) +
-   `Task::isReady`. Root: `src/OSLikeStuff/task_scheduler/task_scheduler.cpp`.
-   The dispatcher (`start`/`yield`) calls `chooseBestTask` **before every task
-   run**; it is `O(numActiveTasks)`, rescans the whole list each time, and does
-   several 64-bit `Time` comparisons per task. The audio engine yields
-   frequently, so this scan runs thousands of times/sec. `Time` is an
-   `int64_t` tick count (`clock_type.h`) with a *defaulted* `operator<=>` →
-   multi-instruction 64-bit compare on the 32-bit A9. The scheduler also mixes
-   `double` time constants (`Time(0.003)`, `*= 0.1`, `operator double`), which
-   pull in the libgcc soft-float helpers `__fixdfdi` / `__fixunsdfdi` /
-   `__udivmoddi4` (a further ~2–3%). Candidate levers (all portable HW wins):
-   maintain the next-deadline incrementally instead of an O(N) rescan; remove
-   `double` from the hot path (precompute `Time` constants once); render a
-   larger audio block before yielding to amortize dispatch (trades latency).
-2. **`RMSFeedbackCompressor` (master bus) — ~3–11%, always-on (portable).**
-   `render` + `calcRMS` + `AbsValueFollower::calcApproxRMS`, driven by `expf` /
-   `logf`. It runs on the master output regardless of voice count, so it is not
-   culled. Classic LUT/fixed-point-approximation candidate; gate the audible
-   delta with an offline kernel null-test (Phase 5).
-3. **Per-voice DSP — cullable, dominates at realistic polyphony.** `Freeverb`
-   (`Comb::process` + `Freeverb::process`, the single biggest DSP item ~10% at
-   `--icount 2`), `Lp`/`HpLadderFilter::doFilter`/`doFilterStereo` (~7%),
-   `Voice::render` (~3%), and the oscillator/wavetable kernels
-   (`renderWave`/`waveRenderingFunctionGeneral`/`renderOsc`/`renderPulseWave`).
-   All fixed-point `long` (Q31). Wins here = raw instruction volume
-   (block-based vs per-sample), and they raise the polyphony ceiling.
+1. **Cooperative task scheduler — the #1 cost (fully portable).** In the Debug
+   profile this split as `Time::operator<=>` (19–27%) + `chooseBestTask`
+   (15–21%) + `Task::isReady`; at `-O2` it is all one inlined
+   `chooseBestTask` (~75%). Root:
+   `src/OSLikeStuff/task_scheduler/task_scheduler.cpp`. The dispatcher
+   (`start`/`yield`) calls `chooseBestTask` **before every task run**; it is
+   `O(numActiveTasks)`, rescans the whole list each time, and does several
+   64-bit `Time` comparisons per task. When nothing is ready it then runs two
+   more O(N) fallback passes and `checkConditionalTasks`, then loops — a tight
+   busy-spin. `Time` is an `int64_t` tick count (`clock_type.h`). The Debug
+   `double` soft-float helpers (`__fixdfdi` etc.) noted earlier are **not**
+   present at `-O2` (the `double` constants fold at compile time). Candidate
+   lever (the one that survives the Release correction): make an idle decision
+   cheap — early-out to the always-ready highest-priority task and/or maintain
+   the next-deadline incrementally instead of three O(N) rescans — **without
+   changing which task is selected** (sample-neutral by construction).
+2. **`RMSFeedbackCompressor` (master bus) — always-on but only ~0.5% at `-O2`.**
+   `render` + `calcRMS`, driven by `expf` / `logf`. Still a clean LUT candidate
+   gated by an offline kernel null-test (Phase 5), but the ceiling is tiny.
+3. **Per-voice DSP — ~7% combined at `-O2`.** `Freeverb::process` (~1%),
+   `Sound::render` (~0.8%), `Lp`/`HpLadderFilter` (~0.6%), oscillator/wavetable
+   kernels, voices. All fixed-point `long` (Q31). Block-processing wins raise
+   the polyphony ceiling but cannot move the overall instruction budget much
+   while the scheduler is 91%.
 
-Strategic read: the scheduler is the largest single win and is independent of
-the synth workload, so it should be tackled first; the compressor is a clean,
-contained LUT win; the per-voice kernels are where instruction-volume work
-raises the voice count the box can sustain.
+Strategic read (corrected): the scheduler is not just the largest win, it is
+**almost the entire budget** on real hardware. Tackle `chooseBestTask` first;
+the DSP levers are secondary and bounded by their ~7% share.
 
 ## Phase 4 — Optimization levers (cheapest × safest first)
 
