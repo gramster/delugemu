@@ -65,6 +65,44 @@ Release build changes the conclusion materially:
   selected. That is sample-neutral by construction and frees real-hardware
   cycles (more polyphony / lower power).
 
+### Attempted `chooseBestTask` micro-optimizations (2026-06-09) — both failed
+
+Two sample-neutral attempts were made and reverted; the working tree and the
+Release binary are pristine again (a before-copy is kept locally at
+`build/perf-baseline/deluge-release-before.elf`, gitignored).
+
+The throughput gate is **wall-clock-bound**, so the raw `chooseBestTask`
+percentage and total instruction count are *not* valid A/B signals — a cheaper
+call simply lets the idle loop spin more times in the same wall-clock window.
+The only confound-free metric is **instructions per `chooseBestTask` call**
+(`chooseBestTask` total ÷ its entry-block execution count). Baseline ≈ **1300
+instr/call**.
+
+1. **Collapse `isReady()` → `isReleased()` after `isRunnable()` + CSE the
+   finish-time.** The reasoning is correct (`isRunnable()` already proves
+   `state == READY && resourcesAvailable()`, leaving only `isReleased()`), but in
+   the idle regime the original `isReady()` calls are **short-circuited to zero
+   evaluations** by the `maxInterval`/`idealCallTime` guards that precede them.
+   Computing `isReleased()` unconditionally therefore *adds* a 64-bit compare:
+   **≈1407 instr/call (+8%)**. Reverted.
+2. **O(1) idle early-out via a cached `min(earliestCallTime)`** (invalidated in
+   `createSortedList`). Every return path requires
+   `isReady → isReleased → currentTime > earliestCallTime`, so if
+   `currentTime ≤ min(earliestCallTime)` the scan must return −1. The guard
+   **never fired**: the busy-spin is not release-time-bound. The audio task
+   ([deluge.cpp](../firmware/DelugeFirmware/src/deluge/deluge.cpp#L524)) is
+   priority 0, `RESOURCE_NONE`, with `backOff ≈ 181 µs / target ≈ 1451 µs /
+   max ≈ 2902 µs`; overdue tasks keep `min(earliestCallTime) ≤ now`, and
+   readiness is gated by `idealCallTime`/`latestCallTime`/state/resources, not by
+   `earliestCallTime`. The only correct "is anything ready" test is the O(N) scan
+   itself.
+
+**Conclusion:** `chooseBestTask` cannot be made cheaper by a simple cache or
+early-out. A real win needs an **event-driven next-wake** redesign (compute the
+next time any task transitions to ready and skip dispatch until then) on the
+maintainers' core scheduler — a change with genuine timing-behavior risk, so it
+is deferred pending explicit direction rather than attempted speculatively.
+
 The sections below are retained for history; read them through this correction.
 
 ## Hard constraint: portable wins only
