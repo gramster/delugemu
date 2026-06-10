@@ -67,6 +67,53 @@ Memory bases for `x`/watchpoints (from
 - On-chip **SRAM**: `0x20000000` (firmware loads/executes here)
 - External **SDRAM**: `0x0C000000`
 
+### Debugging a stripped firmware image
+
+If you boot a **stripped** image (a release `.bin` with no symbols, e.g. a
+community build), the gdbstub still works but breakpoints and backtraces show
+raw addresses. If you have a *matching* unstripped ELF — same build — you can
+load its symbols against the running stripped image:
+
+```sh
+# Boot the stripped image, frozen, gdbstub open
+./scripts/run.sh firmware/deluge-release.bin -S -s
+
+# Attach with no executable, then layer in symbols
+gdb -ex 'target remote :1234' \
+    -ex 'add-symbol-file firmware/deluge.elf 0x20020000'
+```
+
+`0x20020000` is the load address of the firmware's main code segment (the SRAM
+text base; see `arm-none-eabi-readelf -l firmware/deluge.elf`). When no matching
+ELF exists, fall back to address breakpoints (`break *0xADDR`) and resolve hot
+PCs offline with `arm-none-eabi-addr2line`/`objdump`. (For audio specifically,
+`--tx-render-head auto` removes the need to *find* the render-head symbol at
+all — see the [main README](README.md).)
+
+### Handy firmware breakpoints
+
+These resolve by demangled name against `firmware2/deluge.elf` and cover the
+common subsystems:
+
+| Breakpoint | Catches |
+|------------|---------|
+| `AudioEngine::routine` | The per-block audio render loop |
+| `AudioEngine::renderAudio` | Sample rendering (DSP hot path) |
+| `Buttons::buttonAction` | A pad/button press reaching the app |
+| `StorageManager::initSD` / `f_mount` | SD card mount |
+| `OLED::sendMainImage` | A full OLED frame being pushed out |
+| `*0x0` *(via `watch`)* | Use a data **watchpoint** instead to catch a wild write |
+
+### TUI and stepping tips
+
+- `layout src` (or launch `gdb -tui`) shows source alongside the prompt; `Ctrl-X
+  A` toggles it.
+- `stepi`/`nexti` step one machine instruction; `step`/`next` step by source
+  line (needs debug info).
+- After a Data Abort, `bt` from the abort handler plus `info registers` (look at
+  `pc`, `lr`, and the faulting address) usually pinpoints the bad access. Cross
+  reference with `-d int` (see below) to confirm it was exception 4.
+
 ### Scripted (non-interactive) GDB
 
 For repeatable inspection, drive GDB in batch mode against a detached emulator:

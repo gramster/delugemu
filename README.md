@@ -467,6 +467,43 @@ Firmware developers can attach GDB, capture exception/IO logs, run TCG
 profiling plugins (hot blocks, hot pages, cache simulation), and drive the
 panel over QMP. See [DEBUGGING.md](DEBUGGING.md) for verified commands.
 
+### Source-level debugging with GDB
+
+The QEMU gdbstub is built in, so you can debug the running firmware with a
+normal source-level debugger — set breakpoints on C++ functions, single-step,
+inspect registers and memory, and watch variables change. An unstripped
+`firmware/deluge.elf` (built with debug info) gives you demangled symbols and
+backtraces.
+
+Launch the emulator with `-s` (open a gdbstub on `localhost:1234`) and, if you
+want to stop before the firmware runs, `-S` (freeze the CPU at reset):
+
+```bash
+# Terminal 1 — start the emulator, frozen at reset, waiting for a debugger
+./scripts/run.sh firmware/deluge.elf --sd build/deluge_sd.img -S -s
+```
+
+```bash
+# Terminal 2 — attach, break in the audio engine, and run
+gdb firmware/deluge.elf \
+    -ex 'target remote :1234' \
+    -ex 'break AudioEngine::routine' \
+    -ex 'continue'
+```
+
+Once attached you have the usual toolkit: `break <symbol>`,
+`watch *(uint32_t*)0xADDR` (data watchpoints), `stepi`/`nexti`, `info
+registers`, `bt`, and `x/32wx 0x20000000` to peek at on-chip SRAM (SDRAM lives
+at `0x0C000000`). `monitor <cmd>` bridges through to QEMU's own monitor for
+machine-level introspection (`monitor info mtree`, `monitor info qtree`). GDB
+can also be scripted in batch mode for repeatable, non-interactive probes.
+
+Because this is QEMU's TCG engine, debugging reflects *behaviour*, not
+cycle-accurate timing — ideal for logic and state bugs, but treat instruction
+counts as a proxy rather than a cycle model. The full walkthrough, including
+scripted GDB, watchpoint recipes, and profiling plugins, is in
+[DEBUGGING.md](DEBUGGING.md#gdb-source-level-debugging).
+
 ## License
 
 GPL-2.0-or-later, matching QEMU so the device models can link against it. See
