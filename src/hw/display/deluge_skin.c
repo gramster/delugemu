@@ -773,16 +773,24 @@ static inline uint64_t deluge_skin_fnv1a(uint64_t h, const void *data,
 }
 
 /*
- * Digest every dynamic source a render reads: the OLED framebuffer and mode
- * flags, the pad-grid colours, the indicator and gold-knob LEDs, and the
- * firmware-driven Synced LED. The static skin (background, encoder triangles,
- * power LED) is excluded because it never changes. Equal digests on two
- * consecutive ticks mean the panel is visually identical, so the refresh can
- * be skipped entirely.
+ * Digest the dynamic sources a render reads, split into three groups so the
+ * periodic refresh can restrict the downscale and display upload to just the
+ * part of the panel that moved (see deluge_skin_refresh):
+ *   - *oled : the OLED framebuffer and mode flags (small contiguous rect);
+ *   - *pad  : the pad-grid colours (main grid + sidebar rects);
+ *   - *misc : the scattered indicator/gold-knob/SYNCED LEDs and the master-
+ *             volume meter (these span the panel, so a change forces a full
+ *             update).
+ * The static skin (background, encoder triangles, power LED) is excluded
+ * because it never changes. Equal digests on two consecutive ticks mean that
+ * group is visually identical, so its repaint can be skipped.
  */
-static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
+static void deluge_skin_region_hashes(DelugeSkinState *s, uint64_t *oled,
+                                      uint64_t *pad, uint64_t *misc)
 {
-    uint64_t h = 0xcbf29ce484222325ULL;
+    uint64_t ho = 0xcbf29ce484222325ULL;
+    uint64_t hp = 0xcbf29ce484222325ULL;
+    uint64_t hm = 0xcbf29ce484222325ULL;
 
     if (s->oled) {
         DelugeOledState *o = s->oled;
@@ -790,13 +798,13 @@ static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
                         (o->enabled ? 2u : 0u) |
                         (o->inverted ? 4u : 0u);
 
-        h = deluge_skin_fnv1a(h, &flags, sizeof(flags));
-        h = deluge_skin_fnv1a(h, &o->page_start, sizeof(o->page_start));
-        h = deluge_skin_fnv1a(h, o->gddram, sizeof(o->gddram));
+        ho = deluge_skin_fnv1a(ho, &flags, sizeof(flags));
+        ho = deluge_skin_fnv1a(ho, &o->page_start, sizeof(o->page_start));
+        ho = deluge_skin_fnv1a(ho, o->gddram, sizeof(o->gddram));
     }
 
     if (s->padgrid) {
-        h = deluge_skin_fnv1a(h, s->padgrid->rgb, sizeof(s->padgrid->rgb));
+        hp = deluge_skin_fnv1a(hp, s->padgrid->rgb, sizeof(s->padgrid->rgb));
     }
 
     if (s->pic) {
@@ -808,7 +816,7 @@ static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
                 continue;
             }
             on = deluge_pic_get_led(s->pic, c->col, c->row) ? 1u : 0u;
-            h = deluge_skin_fnv1a(h, &on, sizeof(on));
+            hm = deluge_skin_fnv1a(hm, &on, sizeof(on));
         }
 
         for (size_t g = 0; g < ARRAY_SIZE(deluge_skin_knob_leds); g++) {
@@ -817,7 +825,7 @@ static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
             for (int led = 0; led < 4; led++) {
                 uint8_t level = deluge_pic_get_gold_knob(s->pic, k->which, led);
 
-                h = deluge_skin_fnv1a(h, &level, sizeof(level));
+                hm = deluge_skin_fnv1a(hm, &level, sizeof(level));
             }
         }
     }
@@ -825,16 +833,18 @@ static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
     if (s->gpio) {
         uint8_t synced = rza1l_gpio_get_output_pin(s->gpio, 6, 7) ? 1u : 0u;
 
-        h = deluge_skin_fnv1a(h, &synced, sizeof(synced));
+        hm = deluge_skin_fnv1a(hm, &synced, sizeof(synced));
     }
 
     if (s->ssif) {
         uint8_t level = (uint8_t)rza1l_ssif_output_level(s->ssif);
 
-        h = deluge_skin_fnv1a(h, &level, sizeof(level));
+        hm = deluge_skin_fnv1a(hm, &level, sizeof(level));
     }
 
-    return h;
+    *oled = ho;
+    *pad = hp;
+    *misc = hm;
 }
 
 /*
@@ -843,17 +853,21 @@ static uint64_t deluge_skin_content_hash(DelugeSkinState *s)
  * Each output pixel averages the rectangular block of source pixels it covers,
  * preserving colour and avoiding the aliasing a nearest-neighbour shrink would
  * produce. Alpha is forced opaque since the surface is the final composite.
+ *
+ * Only the output rectangle [ox0,ox1) x [oy0,oy1) is recomputed, so a partial
+ * refresh pays for downscaling just the part of the panel that moved.
  */
 static void deluge_skin_box_downscale(const uint32_t *src, uint32_t *dst,
-                                      int dstride, int dw, int dh)
+                                      int dstride, int dw, int dh,
+                                      int ox0, int oy0, int ox1, int oy1)
 {
-    for (int oy = 0; oy < dh; oy++) {
+    for (int oy = oy0; oy < oy1; oy++) {
         int sy0 = (int)((int64_t)oy * DELUGE_SKIN_IMAGE_HEIGHT / dh);
         int sy1 = (int)((int64_t)(oy + 1) * DELUGE_SKIN_IMAGE_HEIGHT / dh);
         if (sy1 <= sy0) {
             sy1 = sy0 + 1;
         }
-        for (int ox = 0; ox < dw; ox++) {
+        for (int ox = ox0; ox < ox1; ox++) {
             int sx0 = (int)((int64_t)ox * DELUGE_SKIN_IMAGE_WIDTH / dw);
             int sx1 = (int)((int64_t)(ox + 1) * DELUGE_SKIN_IMAGE_WIDTH / dw);
             uint32_t ar = 0, ag = 0, ab = 0, n = 0;
@@ -877,7 +891,57 @@ static void deluge_skin_box_downscale(const uint32_t *src, uint32_t *dst,
     }
 }
 
-static void deluge_skin_render(DelugeSkinState *s)
+/*
+ * A rectangle in display-surface (output) pixels, half-open [x0,x1) x [y0,y1).
+ */
+typedef struct DelugeSkinRect {
+    int x0, y0, x1, y1;
+} DelugeSkinRect;
+
+/*
+ * Map a rectangle given in native panel pixels to display-surface pixels,
+ * rounding outward (floor the top-left, ceil the bottom-right) so the mapped
+ * rectangle always fully covers the source region, then clamp to the surface.
+ * For the default native scale (out == native) this is the identity.
+ */
+static DelugeSkinRect deluge_skin_map_rect(DelugeSkinState *s,
+                                           int nx0, int ny0, int nx1, int ny1)
+{
+    DelugeSkinRect r;
+
+    r.x0 = (int)((int64_t)nx0 * s->out_w / DELUGE_SKIN_IMAGE_WIDTH);
+    r.y0 = (int)((int64_t)ny0 * s->out_h / DELUGE_SKIN_IMAGE_HEIGHT);
+    r.x1 = (int)(((int64_t)nx1 * s->out_w + DELUGE_SKIN_IMAGE_WIDTH - 1)
+                 / DELUGE_SKIN_IMAGE_WIDTH);
+    r.y1 = (int)(((int64_t)ny1 * s->out_h + DELUGE_SKIN_IMAGE_HEIGHT - 1)
+                 / DELUGE_SKIN_IMAGE_HEIGHT);
+
+    if (r.x0 < 0) {
+        r.x0 = 0;
+    }
+    if (r.y0 < 0) {
+        r.y0 = 0;
+    }
+    if (r.x1 > s->out_w) {
+        r.x1 = s->out_w;
+    }
+    if (r.y1 > s->out_h) {
+        r.y1 = s->out_h;
+    }
+    return r;
+}
+
+/*
+ * Recomposite the whole panel at native resolution, then publish only the given
+ * output rectangles: for a scaled panel each rectangle is box-filtered down
+ * individually, and in every case only those rectangles are handed to the
+ * display layer (dpy_gfx_update). The full recomposite keeps the composite
+ * correct by construction (no alpha accumulation), while bounding the two costs
+ * that scale with panel size - the downscale and the host texture upload - to
+ * the part of the panel that actually changed.
+ */
+static void deluge_skin_paint(DelugeSkinState *s,
+                              const DelugeSkinRect *rects, int nrects)
 {
     DisplaySurface *surface = qemu_console_surface(s->con);
     uint32_t *dst;
@@ -920,21 +984,39 @@ static void deluge_skin_render(DelugeSkinState *s)
     deluge_skin_draw_leds(s, comp, comp_stride);
     deluge_skin_draw_encoders(s, comp, comp_stride);
 
-    if (scaled) {
-        deluge_skin_box_downscale(comp, dst, stride, s->out_w, s->out_h);
-    }
+    for (int i = 0; i < nrects; i++) {
+        const DelugeSkinRect *r = &rects[i];
 
-    dpy_gfx_update(s->con, 0, 0, s->out_w, s->out_h);
+        if (r->x1 <= r->x0 || r->y1 <= r->y0) {
+            continue;
+        }
+        if (scaled) {
+            deluge_skin_box_downscale(comp, dst, stride, s->out_w, s->out_h,
+                                      r->x0, r->y0, r->x1, r->y1);
+        }
+        dpy_gfx_update(s->con, r->x0, r->y0, r->x1 - r->x0, r->y1 - r->y0);
+    }
+}
+
+static void deluge_skin_render(DelugeSkinState *s)
+{
+    DelugeSkinRect full = { 0, 0, s->out_w, s->out_h };
+
+    deluge_skin_paint(s, &full, 1);
 
     /* Remember what we just drew so the timer can skip unchanged frames. */
-    s->last_content_hash = deluge_skin_content_hash(s);
-    s->have_content_hash = true;
+    deluge_skin_region_hashes(s, &s->oled_hash, &s->pad_hash, &s->misc_hash);
+    s->have_region_hashes = true;
     s->idle_ticks = 0;
 }
 
 static void deluge_skin_refresh(void *opaque)
 {
     DelugeSkinState *s = opaque;
+    uint64_t oled_h, pad_h, misc_h;
+    bool first, oled_d, pad_d, misc_d, safety;
+    DelugeSkinRect rects[3];
+    int nrects = 0;
 
     /*
      * Audio-only mode: skip all compositing and the display upload, leaving the
@@ -949,17 +1031,59 @@ static void deluge_skin_refresh(void *opaque)
     }
 
     /*
-     * Only recomposite when the dynamic overlays actually changed. A static
-     * panel costs just the hash below (a few KB) instead of a full-frame
-     * memcpy and display upload, which removes the periodic stall that was
-     * adding latency when playing the emulated Deluge live. As a safety net
-     * against ever missing a dynamic source, force a refresh roughly once a
-     * second regardless.
+     * Only recomposite when the dynamic overlays actually changed, and then
+     * upload just the region(s) that moved. A static panel costs only the
+     * hashes below instead of a full-frame downscale and display upload, which
+     * removes the periodic stall that was adding latency when playing the
+     * emulated Deluge live. The OLED and pad grid are small contiguous areas,
+     * so they update in place; the scattered LEDs / master-volume meter fall
+     * back to a full-panel update (infrequent). As a safety net against ever
+     * missing a dynamic source, force a full refresh roughly once a second.
      */
-    if (!s->have_content_hash ||
-        deluge_skin_content_hash(s) != s->last_content_hash ||
-        ++s->idle_ticks >= s->safety_ticks) {
+    deluge_skin_region_hashes(s, &oled_h, &pad_h, &misc_h);
+
+    s->idle_ticks++;
+    first = !s->have_region_hashes;
+    safety = s->idle_ticks >= s->safety_ticks;
+    oled_d = first || oled_h != s->oled_hash;
+    pad_d = first || pad_h != s->pad_hash;
+    misc_d = first || misc_h != s->misc_hash;
+
+    if (first || safety || misc_d) {
+        /* Full repaint: the scattered LEDs/meter span the whole panel. */
         deluge_skin_render(s);
+    } else if (oled_d || pad_d) {
+        if (oled_d) {
+            rects[nrects++] = deluge_skin_map_rect(
+                s, DELUGE_SKIN_OLED_X, DELUGE_SKIN_OLED_Y,
+                DELUGE_SKIN_OLED_X + DELUGE_SKIN_OLED_W,
+                DELUGE_SKIN_OLED_Y + DELUGE_SKIN_OLED_H);
+        }
+        if (pad_d) {
+            /* Main 16-wide grid and the 2-wide sidebar, mapped separately so
+             * the wide gap between them is not uploaded. */
+            int pad_half = DELUGE_SKIN_PAD_SIZE / 2 + 1;
+            int main_x0 = DELUGE_SKIN_PAD_MAIN_X0 - pad_half;
+            int main_x1 = DELUGE_SKIN_PAD_MAIN_X0 + 15 * DELUGE_SKIN_PAD_MAIN_DX
+                          + pad_half;
+            int side_x0 = DELUGE_SKIN_PAD_SIDE_X0 - pad_half;
+            int side_x1 = DELUGE_SKIN_PAD_SIDE_X0 + DELUGE_SKIN_PAD_SIDE_DX
+                          + pad_half;
+            int pad_y0 = DELUGE_SKIN_PAD_SIDE_Y0 - pad_half;
+            int pad_y1 = DELUGE_SKIN_PAD_SIDE_Y0
+                         + (DELUGE_PADGRID_ROWS - 1) * DELUGE_SKIN_PAD_SIDE_DY
+                         + pad_half;
+
+            rects[nrects++] = deluge_skin_map_rect(s, main_x0, pad_y0,
+                                                   main_x1, pad_y1);
+            rects[nrects++] = deluge_skin_map_rect(s, side_x0, pad_y0,
+                                                   side_x1, pad_y1);
+        }
+        deluge_skin_paint(s, rects, nrects);
+        s->oled_hash = oled_h;
+        s->pad_hash = pad_h;
+        s->misc_hash = misc_h;
+        s->idle_ticks = 0;
     }
 
     timer_mod(s->refresh_timer,
@@ -1043,7 +1167,7 @@ void deluge_skin_set_render_suspended(DeviceState *dev, bool suspended)
 
     /* On resume, force a full recomposite so the frozen panel catches up. */
     if (!suspended) {
-        s->have_content_hash = false;
+        s->have_region_hashes = false;
         s->dirty = true;
         deluge_skin_render(s);
     }

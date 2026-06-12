@@ -88,12 +88,22 @@ struct DelugeSkinState {
      * Idle-skip state for the periodic refresh. The static skin (background,
      * encoder affordances, power LED) is only recomposited when the dynamic
      * overlays actually change, so a quiescent panel costs no full-frame
-     * memcpy or display upload. last_content_hash digests every dynamic source
-     * read during a render; idle_ticks bounds staleness with an occasional
-     * forced refresh in case a source is ever missed.
+     * memcpy or display upload. The dynamic sources are digested in three
+     * groups so the periodic refresh can restrict the (expensive) downscale
+     * and display upload to just the part of the panel that moved:
+     *   - oled_hash : the OLED framebuffer + mode flags (the high-frequency
+     *                 animator), a small contiguous rectangle;
+     *   - pad_hash  : the 18x8 RGB pad grid (main + sidebar rectangles);
+     *   - misc_hash : the scattered indicator/gold-knob/SYNCED LEDs and the
+     *                 master-volume meter, which fall back to a full-panel
+     *                 update since they span the whole front panel.
+     * idle_ticks bounds staleness with an occasional forced full refresh in
+     * case a source is ever missed.
      */
-    uint64_t last_content_hash;
-    bool have_content_hash;
+    uint64_t oled_hash;
+    uint64_t pad_hash;
+    uint64_t misc_hash;
+    bool have_region_hashes;
     uint32_t idle_ticks;
 
     /*
