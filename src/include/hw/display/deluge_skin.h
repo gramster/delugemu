@@ -74,6 +74,17 @@ struct DelugeSkinState {
     QEMUTimer *refresh_timer;
 
     /*
+     * Periodic refresh interval, in milliseconds (the "refresh-ms" property).
+     * A longer interval lowers the host UI frame rate, reducing the BQL/main-
+     * loop contention that competes with the host audio voice during a live
+     * performance, at the cost of a less smooth panel. Clamped to a sane range
+     * in realize(); safety_ticks is the matching number of intervals that
+     * approximates a ~1s forced full refresh regardless of the chosen rate.
+     */
+    uint32_t refresh_ms;
+    uint32_t safety_ticks;
+
+    /*
      * Idle-skip state for the periodic refresh. The static skin (background,
      * encoder affordances, power LED) is only recomposited when the dynamic
      * overlays actually change, so a quiescent panel costs no full-frame

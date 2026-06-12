@@ -80,6 +80,10 @@
 #                           scale that fits within ~90% of it, or give an
 #                           explicit percent 10-100. The View > Zoom-to-fit menu
 #                           item makes the window resizable on demand.
+#   --skin-refresh-ms <ms>  Front-panel UI refresh interval (default 50, ~20fps).
+#                           Raise it to lower the host redraw rate and free the
+#                           main loop for audio under heavy live load; lower it
+#                           for a smoother panel on a fast host. Range 10-1000.
 #   --icount [<shift>]      Run the CPU on a deterministic instruction-counted
 #                           virtual clock locked to real time (-icount
 #                           shift=<shift>,sleep=on). This makes audio internally
@@ -329,6 +333,11 @@ INVERSE=0
 # its pixel count in points, i.e. a well-sized window. 'auto' (opt-in) probes
 # the monitor and picks a fitting percent; an explicit percent forces a scale.
 SKIN_SCALE="native"
+# Front-panel UI refresh interval in milliseconds (empty = device default,
+# currently 50ms / 20fps). A longer interval lowers the host redraw rate, which
+# reduces the main-loop/BQL contention that competes with audio under live load;
+# a shorter one makes the panel smoother on a fast host.
+SKIN_REFRESH_MS=""
 # Host-side playback buffer for the audio backend, in microseconds. On Windows
 # the dsound voice is serviced from QEMU's main loop, the same thread that
 # recomposites the front-panel skin; a periodic full-frame skin upload can
@@ -402,6 +411,11 @@ while [ $# -gt 0 ]; do
             SKIN_SCALE="$2"; shift 2
             ;;
         --skin-scale=*) SKIN_SCALE="${1#--skin-scale=}"; shift ;;
+        --skin-refresh-ms)
+            [ -n "${2:-}" ] || die "--skin-refresh-ms requires a value in ms"
+            SKIN_REFRESH_MS="$2"; shift 2
+            ;;
+        --skin-refresh-ms=*) SKIN_REFRESH_MS="${1#--skin-refresh-ms=}"; shift ;;
         --icount)
             # Optional shift argument. Treat a following token as the shift only
             # if it is not another option (a bare --icount means shift=auto).
@@ -561,6 +575,12 @@ if [ "${DISPLAY_MODE}" = "console" ]; then
         [ "${INVERSE}" -eq 1 ] && SKIN_ARGS+=(-global "deluge-skin.inverse=on")
     else
         warn "skin image not found at ${SKIN_IMAGE}; the panel will render without its photo background"
+    fi
+    if [ -n "${SKIN_REFRESH_MS}" ]; then
+        case "${SKIN_REFRESH_MS}" in
+            *[!0-9]*|'') die "--skin-refresh-ms must be a positive integer (ms)" ;;
+        esac
+        SKIN_ARGS+=(-global "deluge-skin.refresh-ms=${SKIN_REFRESH_MS}")
     fi
 fi
 

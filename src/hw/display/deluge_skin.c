@@ -27,14 +27,25 @@
 #include "hw/gpio/rza1l_gpio.h"
 #include "hw/ssi/rza1l_ssif.h"
 
-#define DELUGE_SKIN_REFRESH_MS 33
+/*
+ * Periodic UI refresh interval (the "refresh-ms" property). The default is a
+ * deliberately modest 50 ms (20 fps): the panel only animates the OLED and the
+ * playhead, and a lower frame rate means fewer full-frame recomposites compete
+ * with the host audio voice for the BQL/main loop during live playback. Users
+ * on a fast host can lower it for smoother UI; a loaded host can raise it for
+ * more audio headroom. Clamped to [MIN, MAX] in realize().
+ */
+#define DELUGE_SKIN_REFRESH_MS_DEFAULT 50
+#define DELUGE_SKIN_REFRESH_MS_MIN 10
+#define DELUGE_SKIN_REFRESH_MS_MAX 1000
 
 /*
- * Force a full recomposite at least this often (in refresh ticks, ~1s) even if
- * the content hash is unchanged, so a missed dynamic source can never leave the
- * panel stale for long.
+ * Force a full recomposite at least this often even if the content hash is
+ * unchanged, so a missed dynamic source can never leave the panel stale for
+ * long. Expressed as a wall-clock target and converted to a tick count that
+ * tracks the chosen refresh interval (see safety_ticks).
  */
-#define DELUGE_SKIN_SAFETY_TICKS 30
+#define DELUGE_SKIN_SAFETY_MS 1000
 
 static bool deluge_skin_load_png_argb(const char *path, uint32_t *dst)
 {
@@ -933,7 +944,7 @@ static void deluge_skin_refresh(void *opaque)
      */
     if (s->render_suspended) {
         timer_mod(s->refresh_timer,
-                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + DELUGE_SKIN_REFRESH_MS);
+                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + s->refresh_ms);
         return;
     }
 
@@ -947,12 +958,12 @@ static void deluge_skin_refresh(void *opaque)
      */
     if (!s->have_content_hash ||
         deluge_skin_content_hash(s) != s->last_content_hash ||
-        ++s->idle_ticks >= DELUGE_SKIN_SAFETY_TICKS) {
+        ++s->idle_ticks >= s->safety_ticks) {
         deluge_skin_render(s);
     }
 
     timer_mod(s->refresh_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + DELUGE_SKIN_REFRESH_MS);
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + s->refresh_ms);
 }
 
 static void deluge_skin_invalidate(void *opaque)
@@ -1060,6 +1071,16 @@ static void deluge_skin_realize(DeviceState *dev, Error **errp)
     s->out_w = (DELUGE_SKIN_IMAGE_WIDTH * (int)scale) / 100;
     s->out_h = (DELUGE_SKIN_IMAGE_HEIGHT * (int)scale) / 100;
 
+    if (s->refresh_ms < DELUGE_SKIN_REFRESH_MS_MIN) {
+        s->refresh_ms = DELUGE_SKIN_REFRESH_MS_MIN;
+    } else if (s->refresh_ms > DELUGE_SKIN_REFRESH_MS_MAX) {
+        s->refresh_ms = DELUGE_SKIN_REFRESH_MS_MAX;
+    }
+    s->safety_ticks = (DELUGE_SKIN_SAFETY_MS + s->refresh_ms - 1) / s->refresh_ms;
+    if (s->safety_ticks < 1) {
+        s->safety_ticks = 1;
+    }
+
     s->bg_argb = g_new0(uint32_t, DELUGE_SKIN_IMAGE_WIDTH * DELUGE_SKIN_IMAGE_HEIGHT);
     s->bg_loaded = deluge_skin_load_png_argb(path, s->bg_argb);
     deluge_skin_prepare_padless_background(s);
@@ -1075,7 +1096,7 @@ static void deluge_skin_realize(DeviceState *dev, Error **errp)
 
     s->refresh_timer = timer_new_ms(QEMU_CLOCK_REALTIME, deluge_skin_refresh, s);
     timer_mod(s->refresh_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + DELUGE_SKIN_REFRESH_MS);
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + s->refresh_ms);
 }
 
 static void deluge_skin_unrealize(DeviceState *dev)
@@ -1097,6 +1118,8 @@ static void deluge_skin_unrealize(DeviceState *dev)
 static const Property deluge_skin_props[] = {
     DEFINE_PROP_STRING("image", DelugeSkinState, image_path),
     DEFINE_PROP_UINT32("scale-percent", DelugeSkinState, scale_percent, 100),
+    DEFINE_PROP_UINT32("refresh-ms", DelugeSkinState, refresh_ms,
+                       DELUGE_SKIN_REFRESH_MS_DEFAULT),
     DEFINE_PROP_BOOL("inverse", DelugeSkinState, inverse, false),
 };
 
