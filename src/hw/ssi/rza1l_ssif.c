@@ -73,6 +73,30 @@ static int rza1l_ssif_stats_enabled(void)
     return v;
 }
 
+/*
+ * Where the production-rate probe writes. DELUGEMU_SSIF_STATS=1 (or any short
+ * flag value) reports to stderr; DELUGEMU_SSIF_STATS=<path> writes to that file
+ * instead, so an automated benchmark can read a clean stats stream without
+ * scraping it out of the serial console / QEMU logging on stderr. Resolved once
+ * and cached; the FILE lives for the process lifetime (a debug probe).
+ */
+static FILE *rza1l_ssif_stats_file(void)
+{
+    static FILE *fp = (FILE *)-1;   /* sentinel: not yet resolved */
+    if (fp == (FILE *)-1) {
+        const char *v = getenv("DELUGEMU_SSIF_STATS");
+        if (v && *v && strcmp(v, "0") && strcmp(v, "1")) {
+            fp = fopen(v, "w");
+            if (!fp) {
+                fp = stderr;        /* fall back rather than lose stats */
+            }
+        } else {
+            fp = stderr;
+        }
+    }
+    return fp;
+}
+
 static uint64_t rza1l_ssif_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lSsifState *s = opaque;
@@ -268,7 +292,57 @@ static void rza1l_ssif_drain(RzA1lSsifState *s, uint32_t max_bytes)
     } else if (err < -target) {
         err = -target;
     }
-    step = (uint32_t)(65536 + (int64_t)err * (65536 / 50) / target);
+
+    /*
+     * Deadband: within a couple of frames of the target the proportional
+     * correction rounds to a fraction of a step anyway, so snap to exactly 1.0x
+     * and reset the interpolation phase. This lets the common steady state take
+     * the bulk-copy fast path below (no per-frame interpolation), which matters
+     * most on Windows where this drain runs in QEMU's main loop. The one-time
+     * sub-sample phase snap on entry is inaudible; outside the band the drift
+     * correction is unchanged.
+     */
+    if (err >= -2 * (int32_t)F && err <= 2 * (int32_t)F) {
+        step = 65536;
+        s->drain_frac = 0;
+    } else {
+        step = (uint32_t)(65536 + (int64_t)err * (65536 / 50) / target);
+    }
+
+    /*
+     * Steady-state fast path: at unity rate, zero interpolation phase and unity
+     * output gain, each emitted frame is a staged frame verbatim, so copy
+     * straight from the staging FIFO into the voice with no per-frame
+     * interpolation or gain multiply. Keep one frame in reserve (matching the
+     * slow path's frame-pair lookahead) so the two paths hand off seamlessly.
+     */
+    if (step == 65536 && s->drain_frac == 0 && s->out_gain_q16 == 65536) {
+        while (max_bytes >= F && s->fifo_len >= 2 * F) {
+            uint32_t drainable = s->fifo_len - F;
+            uint32_t to_end = RZA1L_SSIF_FIFO_SIZE - s->fifo_head;
+            uint32_t chunk = MIN(max_bytes, MIN(drainable, to_end));
+            size_t written;
+
+            chunk &= ~(F - 1);                  /* whole stereo frames only */
+            if (chunk == 0) {
+                break;
+            }
+            written = audio_be_write(s->audio_be, s->voice_out,
+                                     s->fifo + s->fifo_head, chunk);
+            written &= ~(size_t)(F - 1);        /* advance by whole frames */
+            if (written == 0) {
+                break;
+            }
+            s->fifo_head = (s->fifo_head + (uint32_t)written) %
+                           RZA1L_SSIF_FIFO_SIZE;
+            s->fifo_len -= (uint32_t)written;
+            max_bytes -= (uint32_t)written;
+            if (written < chunk) {
+                break;                          /* mix buffer full for now */
+            }
+        }
+        return;
+    }
 
     while (max_bytes >= F) {
         uint32_t cap = MIN(max_bytes, (uint32_t)sizeof(out));
@@ -850,10 +924,14 @@ static void rza1l_ssif_stats_report(RzA1lSsifState *s, int64_t now)
     fifo_ms = (double)s->fifo_len * 1000.0 /
               (RZA1L_SSIF_SAMPLE_RATE * RZA1L_SSIF_BYTES_PER_FRAME);
 
-    fprintf(stderr,
-            "ssif-stats: production %.0f B/s (%.1f%% of 352800), "
-            "underruns %llu/s, fifo %.1f ms\n",
-            prod_bps, pct, (unsigned long long)s->stats_underruns, fifo_ms);
+    {
+        FILE *fp = rza1l_ssif_stats_file();
+        fprintf(fp,
+                "ssif-stats: production %.0f B/s (%.1f%% of 352800), "
+                "underruns %llu/s, fifo %.1f ms\n",
+                prod_bps, pct, (unsigned long long)s->stats_underruns, fifo_ms);
+        fflush(fp);
+    }
 
     s->stats_prod_bytes = 0;
     s->stats_underruns = 0;
