@@ -10,7 +10,7 @@ The goal is to boot unmodified Deluge firmware (the open-source
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **essentially complete**. USB device/host support is not wired in to the host due to technical complexity. Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option. Under heavy synthesis load the emulated Cortex-A9 can't always render audio at real time (a TCG throughput limit, not a buffering one), which can cause occasional breakup during dense playback; `run.sh --tx-render-head <addr|auto>` keeps that graceful (brief gaps rather than distortion), and `run.sh --icount` eliminates the artifacts entirely at the cost of running slower-than-real-time under load (best for offline capture, not live play).
+> Status: **essentially complete**. USB device/host support is not wired in to the host due to technical complexity. Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option. Under heavy synthesis load the emulated Cortex-A9 can't always render audio at real time (a TCG throughput limit, not a buffering one), which can cause occasional breakup during dense playback; the render-head clamp (`run.sh --tx-render-head`, now **on by default** as `auto`) keeps that graceful (brief gaps rather than distortion), and `run.sh --icount` eliminates the artifacts entirely at the cost of running slower-than-real-time under load (best for offline capture, not live play).
 
 
 ## Target hardware
@@ -396,11 +396,12 @@ may still boot and run the UI fine but struggle with dense synthesis. Two
 launcher options change what overload *sounds* like when you hit the throughput
 wall — neither makes samples arrive faster, they pick a nicer failure mode:
 
-- **`run.sh --tx-render-head <addr|auto>`** makes overload *graceful* (brief
-  silences instead of distortion). By default the emulator's audio sampler
-  tracks the hardware DMA play head, which advances on the host's wall clock;
-  under load the firmware hasn't finished rendering the ring slots the play head
-  has already passed, so those half-written samples get played as distortion.
+- **`run.sh --tx-render-head <addr|auto|off>`** makes overload *graceful* (brief
+  silences instead of distortion). The launcher enables this by default as
+  `auto`; pass `off` to fall back to tracking the raw hardware DMA play head,
+  which advances on the host's wall clock — under load the firmware hasn't
+  finished rendering the ring slots the play head has already passed, so those
+  half-written samples get played as distortion.
   Pointing the sampler at the firmware's own *render head* — the variable that
   records how far it has actually rendered into the I²S ring — makes it read
   only finished samples, turning that distortion into a short gap. `<addr>` is

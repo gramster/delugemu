@@ -56,7 +56,9 @@ gains must come from the firmware. See
 [firmware-perf.md](firmware-perf.md) for the full plan, tools, and the
 portable-wins-only constraint.
 
-- [ ] Stand up a deterministic (`--icount`) benchmark + worst-case project.
+- [x] Stand up a deterministic (`--icount`) benchmark + worst-case project
+      (`tests/audio-bench.sh`: drives the FAM1 worst-case load and reports SSIF
+      production %, underruns, and host wall-clock; `--icount` for determinism).
 - [ ] Produce a ranked per-function guest-instruction profile (`hwprofile`).
 - [ ] Settle FP-vs-fixed-point via `howvec`.
 - [ ] Land portable wins (FPSCR/denormals, build flags, algorithmic) upstream.

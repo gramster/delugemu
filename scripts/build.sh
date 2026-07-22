@@ -59,8 +59,15 @@ BIN="${QEMU_BUILD_DIR}/qemu-system-arm${EXE_SUFFIX}"
 # `qemu-system-arm`.  Depending on the Meson version and host configuration,
 # that custom_target may not be included in the default ninja build graph.
 # Trigger it explicitly when the signed binary is absent after the main build.
-if [ "$(uname -s)" = "Darwin" ] && [ ! -x "${BIN}" ]; then
-    log "Requesting entitlement/signing target explicitly..."
+# The signing custom_target is often outside the default `all` graph, so after
+# an incremental rebuild the signed `qemu-system-arm` can be not just absent but
+# *stale* — older than a freshly relinked `qemu-system-arm-unsigned`. Re-run the
+# signing target whenever the signed binary is missing OR older than the unsigned
+# one, otherwise an incremental build silently keeps running the previous code.
+UNSIGNED_BIN="${QEMU_BUILD_DIR}/qemu-system-arm-unsigned${EXE_SUFFIX}"
+if [ "$(uname -s)" = "Darwin" ] && \
+   { [ ! -x "${BIN}" ] || [ "${UNSIGNED_BIN}" -nt "${BIN}" ]; }; then
+    log "Signing qemu-system-arm (signed binary missing or stale)..."
     ninja -C "${QEMU_BUILD_DIR}" qemu-system-arm 2>/dev/null || true
 fi
 

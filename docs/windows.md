@@ -122,6 +122,25 @@ scales it to any later window size. Override with `--skin-scale <percent|native>
 Audio plays through `dsound` by default. Use `--audio <driver>` (e.g.
 `--audio sdl`, `--audio wav`, `--audio none`) only to override it.
 
+### Choppy or broken audio on Windows
+
+On Windows the `dsound` output voice is serviced from QEMU's main loop — the
+same thread that recomposites the front-panel skin — so a periodic skin upload
+can briefly stall audio delivery. The launcher gives the OS audio DMA a generous
+host-side buffer (default **80 ms**) to ride out those stalls; this is separate
+from the device staging cushion set by `--audio-buffer`. If you still hear
+dropouts, try, in order:
+
+- raise the host buffer: `set DELUGEMU_AUDIO_HOST_BUFFER_US=150000` (150 ms),
+- lower the panel redraw rate: `--skin-refresh-ms 100`,
+- keep the render-head clamp on (it is on by default; `--tx-render-head auto`)
+  so overload degrades to brief clean gaps instead of distortion,
+- try a different backend: `--audio sdl`.
+
+If the audio is not just choppy but slow/low-pitched under dense synthesis, the
+emulated CPU cannot render in real time on that host; `--icount 2` trades that
+for a clean-but-slower stream (good for offline capture, not live play).
+
 ## Paths
 
 The scripts accept normal MSYS2/Unix-style paths (e.g.

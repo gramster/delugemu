@@ -94,14 +94,19 @@ struct DelugeSkinState {
      *   - oled_hash : the OLED framebuffer + mode flags (the high-frequency
      *                 animator), a small contiguous rectangle;
      *   - pad_hash  : the 18x8 RGB pad grid (main + sidebar rectangles);
-     *   - misc_hash : the scattered indicator/gold-knob/SYNCED LEDs and the
-     *                 master-volume meter, which fall back to a full-panel
-     *                 update since they span the whole front panel.
+     *   - dyn_hash  : the tempo-flashing SYNCED LED and the two gold-knob level
+     *                 stacks — small, fixed regions updated via their own tiny
+     *                 rects so the SYNCED blink does not force a full repaint
+     *                 during playback;
+     *   - misc_hash : the scattered button indicator LEDs and the master-volume
+     *                 meter, which fall back to a full-panel update since they
+     *                 span the whole front panel (rare: user interaction only).
      * idle_ticks bounds staleness with an occasional forced full refresh in
      * case a source is ever missed.
      */
     uint64_t oled_hash;
     uint64_t pad_hash;
+    uint64_t dyn_hash;
     uint64_t misc_hash;
     bool have_region_hashes;
     uint32_t idle_ticks;

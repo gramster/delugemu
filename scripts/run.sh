@@ -51,17 +51,16 @@
 #                           Raise it if you hear dropouts; lower it to trim the
 #                           delay when playing the emulated Deluge live from
 #                           external MIDI.
-#   --tx-render-head <addr|auto>
-#                           Advanced: bound audio ring reads by the firmware's
-#                           render head (AudioEngine::i2sTXBufferPos) at this
-#                           guest address (hex, e.g. 0x20038fdc), eliminating
-#                           the ring-lap distortion under heavy load. The
-#                           address is firmware-build specific; with it unset
-#                           (default) reads track the DMA play head, which is
-#                           firmware-independent but can distort under load.
-#                           Pass 'auto' to have the emulator locate the render
-#                           head itself by scanning guest RAM (best-effort; for
-#                           stripped firmware with no symbols).
+#   --tx-render-head <addr|auto|off>
+#                           Bound audio ring reads by the firmware's render head
+#                           (AudioEngine::i2sTXBufferPos) so overload degrades to
+#                           brief clean gaps instead of ring-lap distortion.
+#                           Defaults to 'auto': the emulator locates the render
+#                           head itself by scanning guest RAM (best-effort, falls
+#                           back to the play head, so never worse than 'off').
+#                           Pass a guest address (hex, e.g. 0x20038fdc) for
+#                           symbol-built firmware, or 'off' to track the raw
+#                           wall-clock DMA play head.
 #   --display <mode>        Display mode:
 #                             console   open the front-panel skin window with
 #                                       the modelled OLED / pad-grid / 7-seg
@@ -322,7 +321,12 @@ MIDI=""
 USB_MIDI=""
 AUDIO=""
 AUDIO_BUFFER=""
-TX_RENDER_HEAD=""
+# Render-head clamp. Defaults to 'auto': the SSIF locates the firmware's render
+# head at runtime and bounds ring reads by it, so overload becomes brief clean
+# gaps rather than distortion. It is best-effort and falls back to the wall-clock
+# play head when it can't resolve, so it is never worse than the raw default.
+# Pass --tx-render-head off (or an explicit address) to override.
+TX_RENDER_HEAD="auto"
 DISPLAY_MODE="console"
 ICOUNT=""
 MONITOR=0
@@ -711,13 +715,15 @@ fi
 # render head itself at runtime (useful for stripped firmware with no symbols).
 if [ -n "${TX_RENDER_HEAD}" ]; then
     case "${TX_RENDER_HEAD}" in
+        off|none)
+            log "SSIF audio tracks the raw wall-clock play head (render-head clamp off)" ;;
         auto)
             AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head-auto=on")
             log "SSIF audio bounded by auto-detected firmware render head" ;;
         0x[0-9A-Fa-f]*|[0-9]*)
             AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head=${TX_RENDER_HEAD}")
             log "SSIF audio bounded by firmware render head at: ${TX_RENDER_HEAD}" ;;
-        *) die "--tx-render-head must be a guest address (hex 0x..., decimal) or 'auto'" ;;
+        *) die "--tx-render-head must be a guest address (hex 0x..., decimal), 'auto', or 'off'" ;;
     esac
 fi
 
