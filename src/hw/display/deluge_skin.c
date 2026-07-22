@@ -47,6 +47,28 @@
  */
 #define DELUGE_SKIN_SAFETY_MS 1000
 
+/* Synced LED (GPIO P6_7), beside the SWING/SYNCED label. Flashed at tempo. */
+#define DELUGE_SKIN_SYNCED_CX 1911
+#define DELUGE_SKIN_SYNCED_CY 242
+#define DELUGE_SKIN_SYNCED_R  7
+
+/*
+ * A rectangle in *native* panel pixels (2256x1584), half-open [x0,x1) x
+ * [y0,y1). Used both as the clip passed to the compositing primitives (so a
+ * partial refresh only touches the pixels that moved) and as the region list
+ * handed to deluge_skin_paint.
+ */
+typedef struct DelugeSkinRect {
+    int x0, y0, x1, y1;
+} DelugeSkinRect;
+
+/* True if [x0,x1) x [y0,y1) overlaps the clip rectangle at all. */
+static inline bool deluge_skin_rect_hits(const DelugeSkinRect *c,
+                                         int x0, int y0, int x1, int y1)
+{
+    return x1 > c->x0 && x0 < c->x1 && y1 > c->y0 && y0 < c->y1;
+}
+
 static bool deluge_skin_load_png_argb(const char *path, uint32_t *dst)
 {
     FILE *fp;
@@ -143,20 +165,30 @@ out:
     return ok;
 }
 
-static void deluge_skin_draw_oled(DelugeSkinState *s, uint32_t *dst, int stride)
+static void deluge_skin_draw_oled(DelugeSkinState *s, uint32_t *dst, int stride,
+                                  const DelugeSkinRect *clip)
 {
     DelugeOledState *o = s->oled;
+    int dy0, dy1, dx0, dx1;
 
     if (!o) {
         return;
     }
 
-    for (int y = 0; y < DELUGE_SKIN_OLED_H; y++) {
+    /* Intersect the OLED viewport with the clip (both in native pixels). */
+    dy0 = MAX(DELUGE_SKIN_OLED_Y, clip->y0);
+    dy1 = MIN(DELUGE_SKIN_OLED_Y + DELUGE_SKIN_OLED_H, clip->y1);
+    dx0 = MAX(DELUGE_SKIN_OLED_X, clip->x0);
+    dx1 = MIN(DELUGE_SKIN_OLED_X + DELUGE_SKIN_OLED_W, clip->x1);
+
+    for (int dy = dy0; dy < dy1; dy++) {
+        int y = dy - DELUGE_SKIN_OLED_Y;
         int sy = (y * DELUGE_OLED_HEIGHT) / DELUGE_SKIN_OLED_H;
         int page = o->page_start + (sy >> 3);
         int bit = sy & 7;
 
-        for (int x = 0; x < DELUGE_SKIN_OLED_W; x++) {
+        for (int dx = dx0; dx < dx1; dx++) {
+            int x = dx - DELUGE_SKIN_OLED_X;
             int sx = (x * DELUGE_OLED_WIDTH) / DELUGE_SKIN_OLED_W;
             bool on = false;
             uint32_t argb;
@@ -169,8 +201,7 @@ static void deluge_skin_draw_oled(DelugeSkinState *s, uint32_t *dst, int stride)
             }
 
             argb = on ? 0xffd8ffd8u : 0xff000000u;
-            dst[(DELUGE_SKIN_OLED_Y + y) * stride + (DELUGE_SKIN_OLED_X + x)] =
-                argb;
+            dst[dy * stride + dx] = argb;
         }
     }
 }
@@ -338,7 +369,7 @@ static void deluge_skin_prepare_padless_background(DelugeSkinState *s)
 static void deluge_skin_blend_pad(uint32_t *dst, int stride,
                                   int cx, int cy,
                                   uint8_t rr, uint8_t gg, uint8_t bb,
-                                  uint8_t alpha)
+                                  uint8_t alpha, const DelugeSkinRect *clip)
 {
     int half = DELUGE_SKIN_PAD_SIZE / 2;
     int round = DELUGE_SKIN_PAD_ROUND;
@@ -347,11 +378,15 @@ static void deluge_skin_blend_pad(uint32_t *dst, int stride,
     int x1 = cx + half;
     int y1 = cy + half;
 
-    for (int py = y0; py < y1; py++) {
+    if (!deluge_skin_rect_hits(clip, x0, y0, x1, y1)) {
+        return;
+    }
+
+    for (int py = MAX(y0, clip->y0); py < MIN(y1, clip->y1); py++) {
         if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
             continue;
         }
-        for (int px = x0; px < x1; px++) {
+        for (int px = MAX(x0, clip->x0); px < MIN(x1, clip->x1); px++) {
             int dx = 0, dy = 0;
             uint32_t p;
             uint8_t pr, pg, pb;
@@ -398,7 +433,8 @@ static void deluge_skin_blend_pad(uint32_t *dst, int stride,
     }
 }
 
-static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
+static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride,
+                                  const DelugeSkinRect *clip)
 {
     DelugePadGridState *p = s->padgrid;
 
@@ -423,7 +459,7 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
             /* Unlit pads keep the prepared slot colour; only draw lit ones. */
             if (rr || gg || bb) {
                 led_tone_map(&rr, &gg, &bb);
-                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 235);
+                deluge_skin_blend_pad(dst, stride, x, y, rr, gg, bb, 235, clip);
             }
         }
 
@@ -437,7 +473,8 @@ static void deluge_skin_draw_pads(DelugeSkinState *s, uint32_t *dst, int stride)
 
             if (rr || gg || bb) {
                 led_tone_map(&rr, &gg, &bb);
-                deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, 235);
+                deluge_skin_blend_pad(dst, stride, x, side_y, rr, gg, bb, 235,
+                                      clip);
             }
         }
     }
@@ -462,15 +499,22 @@ static const DelugeSkinKnobLeds deluge_skin_knob_leds[] = {
 static void deluge_skin_blend_disc(uint32_t *dst, int stride,
                                    int cx, int cy, int radius,
                                    uint8_t rr, uint8_t gg, uint8_t bb,
-                                   uint8_t alpha)
+                                   uint8_t alpha, const DelugeSkinRect *clip)
 {
     int r2 = radius * radius;
 
-    for (int py = cy - radius; py <= cy + radius; py++) {
+    if (!deluge_skin_rect_hits(clip, cx - radius, cy - radius,
+                               cx + radius + 1, cy + radius + 1)) {
+        return;
+    }
+
+    for (int py = MAX(cy - radius, clip->y0);
+         py <= MIN(cy + radius, clip->y1 - 1); py++) {
         if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
             continue;
         }
-        for (int px = cx - radius; px <= cx + radius; px++) {
+        for (int px = MAX(cx - radius, clip->x0);
+             px <= MIN(cx + radius, clip->x1 - 1); px++) {
             int dx = px - cx;
             int dy = py - cy;
             int d2 = dx * dx + dy * dy;
@@ -502,13 +546,20 @@ static void deluge_skin_blend_disc(uint32_t *dst, int stride,
 /* Fill a small square LED at full brightness scaled by level (0..255). */
 static void deluge_skin_fill_led_square(uint32_t *dst, int stride,
                                         int cx, int cy, int half,
-                                        uint8_t level)
+                                        uint8_t level, const DelugeSkinRect *clip)
 {
-    for (int py = cy - half; py <= cy + half; py++) {
+    if (!deluge_skin_rect_hits(clip, cx - half, cy - half,
+                               cx + half + 1, cy + half + 1)) {
+        return;
+    }
+
+    for (int py = MAX(cy - half, clip->y0);
+         py <= MIN(cy + half, clip->y1 - 1); py++) {
         if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
             continue;
         }
-        for (int px = cx - half; px <= cx + half; px++) {
+        for (int px = MAX(cx - half, clip->x0);
+             px <= MIN(cx + half, clip->x1 - 1); px++) {
             uint32_t p;
             uint8_t pr, pg, pb;
 
@@ -538,11 +589,17 @@ static void deluge_skin_fill_led_square(uint32_t *dst, int stride,
 static void deluge_skin_blend_triangle(uint32_t *dst, int stride,
                                        int cx, int cy, int half, bool up,
                                        uint8_t rr, uint8_t gg, uint8_t bb,
-                                       uint8_t alpha)
+                                       uint8_t alpha, const DelugeSkinRect *clip)
 {
     int span = 2 * half;
 
-    for (int py = cy - half; py <= cy + half; py++) {
+    if (!deluge_skin_rect_hits(clip, cx - half, cy - half,
+                               cx + half + 1, cy + half + 1)) {
+        return;
+    }
+
+    for (int py = MAX(cy - half, clip->y0);
+         py <= MIN(cy + half, clip->y1 - 1); py++) {
         int t = py - (cy - half);              /* 0 at top row .. span at bottom */
         int w = up ? (t * half) / span         /* widens downward (apex on top) */
                    : ((span - t) * half) / span; /* widens upward (apex on bottom) */
@@ -550,7 +607,8 @@ static void deluge_skin_blend_triangle(uint32_t *dst, int stride,
         if (py < 0 || py >= DELUGE_SKIN_IMAGE_HEIGHT) {
             continue;
         }
-        for (int px = cx - w; px <= cx + w; px++) {
+        for (int px = MAX(cx - w, clip->x0); px <= MIN(cx + w, clip->x1 - 1);
+             px++) {
             uint32_t p;
             uint8_t pr, pg, pb;
 
@@ -603,7 +661,8 @@ static bool deluge_skin_encoder_is_gold(const char *name)
  * attached (headless) the meter shows full (unity), the default.
  */
 static void deluge_skin_draw_master_volume(DelugeSkinState *s, uint32_t *dst,
-                                           int stride)
+                                           int stride,
+                                           const DelugeSkinRect *clip)
 {
     const int segs = RZA1L_SSIF_OUT_LEVEL_MAX;
     const int half = 3;            /* half-size of each meter segment square  */
@@ -617,17 +676,20 @@ static void deluge_skin_draw_master_volume(DelugeSkinState *s, uint32_t *dst,
     deluge_skin_blend_disc(dst, stride,
                            DELUGE_MASTER_VOL_CX, DELUGE_MASTER_VOL_CY,
                            DELUGE_MASTER_VOL_R,
-                           DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B, 235);
+                           DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B, 235,
+                           clip);
 
     /* Down (left) and up (right) triangles, dark for contrast on gold. */
     deluge_skin_blend_triangle(dst, stride,
                                DELUGE_MASTER_VOL_CX - DELUGE_ENC_TRI_OFFX,
                                DELUGE_MASTER_VOL_CY,
-                               DELUGE_ENC_TRI_HALF, false, 40, 40, 40, 190);
+                               DELUGE_ENC_TRI_HALF, false, 40, 40, 40, 190,
+                               clip);
     deluge_skin_blend_triangle(dst, stride,
                                DELUGE_MASTER_VOL_CX + DELUGE_ENC_TRI_OFFX,
                                DELUGE_MASTER_VOL_CY,
-                               DELUGE_ENC_TRI_HALF, true, 40, 40, 40, 190);
+                               DELUGE_ENC_TRI_HALF, true, 40, 40, 40, 190,
+                               clip);
 
     if (s->ssif) {
         level = rza1l_ssif_output_level(s->ssif);
@@ -637,7 +699,8 @@ static void deluge_skin_draw_master_volume(DelugeSkinState *s, uint32_t *dst,
     for (int i = 0; i < segs; i++) {
         uint8_t lvl = (i < level) ? 255 : 40;
 
-        deluge_skin_fill_led_square(dst, stride, x0 + i * pitch, my, half, lvl);
+        deluge_skin_fill_led_square(dst, stride, x0 + i * pitch, my, half, lvl,
+                                    clip);
     }
 }
 
@@ -655,9 +718,9 @@ static void deluge_skin_draw_master_volume(DelugeSkinState *s, uint32_t *dst,
  * Inverse skin (white encoder bodies).
  */
 static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
-                                      int stride)
+                                      int stride, const DelugeSkinRect *clip)
 {
-    deluge_skin_draw_master_volume(s, dst, stride);
+    deluge_skin_draw_master_volume(s, dst, stride, clip);
 
     for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
         const DelugeSkinControl *c = &deluge_skin_controls[i];
@@ -673,7 +736,7 @@ static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
             /* Solid gold knob; rim is softened by the disc helper. */
             deluge_skin_blend_disc(dst, stride, c->cx, c->cy, c->radius,
                                    DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B,
-                                   235);
+                                   235, clip);
             tr = tg = tb = 40;          /* dark triangles read well on gold */
         } else if (s->inverse) {
             /* Inverse skin: encoder bodies are white, so use dark triangles. */
@@ -686,15 +749,16 @@ static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
         deluge_skin_blend_triangle(dst, stride,
                                    c->cx - DELUGE_ENC_TRI_OFFX, c->cy,
                                    DELUGE_ENC_TRI_HALF, false,
-                                   tr, tg, tb, 190);
+                                   tr, tg, tb, 190, clip);
         deluge_skin_blend_triangle(dst, stride,
                                    c->cx + DELUGE_ENC_TRI_OFFX, c->cy,
                                    DELUGE_ENC_TRI_HALF, true,
-                                   tr, tg, tb, 190);
+                                   tr, tg, tb, 190, clip);
     }
 }
 
-static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
+static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride,
+                                  const DelugeSkinRect *clip)
 {
     /*
      * USB power LED (the open circle on the connector silkscreen, between the
@@ -709,7 +773,7 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
      * the machine is running. No state tracking is required.
      */
     deluge_skin_blend_disc(dst, stride, 250, 40, 8,
-                           DELUGE_LED_GREEN, 210);
+                           DELUGE_LED_GREEN, 210, clip);
 
     if (!s->pic) {
         return;
@@ -730,7 +794,7 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
         bb = c->led_b;
         led_tone_map(&rr, &gg, &bb);
         deluge_skin_blend_disc(dst, stride, c->cx, c->cy, c->radius,
-                               rr, gg, bb, 205);
+                               rr, gg, bb, 205, clip);
     }
 
     /* Gold-knob level LEDs. */
@@ -746,7 +810,7 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
             /* Lift the level through the illumination curve so dim steps stay
              * visible, matching the pad brightness range. */
             deluge_skin_fill_led_square(dst, stride, k->cx, k->cy[led],
-                                        k->half, led_tone_level(level));
+                                        k->half, led_tone_level(level), clip);
         }
     }
 
@@ -755,8 +819,9 @@ static void deluge_skin_draw_leds(DelugeSkinState *s, uint32_t *dst, int stride)
      * firmware on GPIO P6_7, which it flashes in time with the tempo.
      */
     if (s->gpio && rza1l_gpio_get_output_pin(s->gpio, 6, 7)) {
-        deluge_skin_blend_disc(dst, stride, 1911, 242, 7,
-                               DELUGE_LED_RED, 230);
+        deluge_skin_blend_disc(dst, stride,
+                               DELUGE_SKIN_SYNCED_CX, DELUGE_SKIN_SYNCED_CY,
+                               DELUGE_SKIN_SYNCED_R, DELUGE_LED_RED, 230, clip);
     }
 }
 
@@ -786,10 +851,12 @@ static inline uint64_t deluge_skin_fnv1a(uint64_t h, const void *data,
  * group is visually identical, so its repaint can be skipped.
  */
 static void deluge_skin_region_hashes(DelugeSkinState *s, uint64_t *oled,
-                                      uint64_t *pad, uint64_t *misc)
+                                      uint64_t *pad, uint64_t *dyn,
+                                      uint64_t *misc)
 {
     uint64_t ho = 0xcbf29ce484222325ULL;
     uint64_t hp = 0xcbf29ce484222325ULL;
+    uint64_t hd = 0xcbf29ce484222325ULL;
     uint64_t hm = 0xcbf29ce484222325ULL;
 
     if (s->oled) {
@@ -808,6 +875,9 @@ static void deluge_skin_region_hashes(DelugeSkinState *s, uint64_t *oled,
     }
 
     if (s->pic) {
+        /* Button-matrix indicator LEDs: scattered across the panel, so a
+         * change here forces a full repaint (misc group). Rare in practice
+         * (they move on user interaction, not during playback). */
         for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
             const DelugeSkinControl *c = &deluge_skin_controls[i];
             uint8_t on;
@@ -819,21 +889,26 @@ static void deluge_skin_region_hashes(DelugeSkinState *s, uint64_t *oled,
             hm = deluge_skin_fnv1a(hm, &on, sizeof(on));
         }
 
+        /* Gold-knob level LEDs: two compact stacks, tracked in the dyn group
+         * so they update via small rects rather than a full repaint. */
         for (size_t g = 0; g < ARRAY_SIZE(deluge_skin_knob_leds); g++) {
             const DelugeSkinKnobLeds *k = &deluge_skin_knob_leds[g];
 
             for (int led = 0; led < 4; led++) {
                 uint8_t level = deluge_pic_get_gold_knob(s->pic, k->which, led);
 
-                hm = deluge_skin_fnv1a(hm, &level, sizeof(level));
+                hd = deluge_skin_fnv1a(hd, &level, sizeof(level));
             }
         }
     }
 
+    /* SYNCED LED (GPIO P6_7): flashed at tempo, so it changes on almost every
+     * refresh during playback. Its own tiny fixed rect keeps that off the
+     * full-repaint path — this is the key win for live audio. */
     if (s->gpio) {
         uint8_t synced = rza1l_gpio_get_output_pin(s->gpio, 6, 7) ? 1u : 0u;
 
-        hm = deluge_skin_fnv1a(hm, &synced, sizeof(synced));
+        hd = deluge_skin_fnv1a(hd, &synced, sizeof(synced));
     }
 
     if (s->ssif) {
@@ -844,6 +919,7 @@ static void deluge_skin_region_hashes(DelugeSkinState *s, uint64_t *oled,
 
     *oled = ho;
     *pad = hp;
+    *dyn = hd;
     *misc = hm;
 }
 
@@ -892,13 +968,6 @@ static void deluge_skin_box_downscale(const uint32_t *src, uint32_t *dst,
 }
 
 /*
- * A rectangle in display-surface (output) pixels, half-open [x0,x1) x [y0,y1).
- */
-typedef struct DelugeSkinRect {
-    int x0, y0, x1, y1;
-} DelugeSkinRect;
-
-/*
  * Map a rectangle given in native panel pixels to display-surface pixels,
  * rounding outward (floor the top-left, ceil the bottom-right) so the mapped
  * rectangle always fully covers the source region, then clamp to the surface.
@@ -932,20 +1001,32 @@ static DelugeSkinRect deluge_skin_map_rect(DelugeSkinState *s,
 }
 
 /*
- * Recomposite the whole panel at native resolution, then publish only the given
- * output rectangles: for a scaled panel each rectangle is box-filtered down
- * individually, and in every case only those rectangles are handed to the
- * display layer (dpy_gfx_update). The full recomposite keeps the composite
- * correct by construction (no alpha accumulation), while bounding the two costs
- * that scale with panel size - the downscale and the host texture upload - to
- * the part of the panel that actually changed.
+ * Recomposite and publish a set of native-pixel rectangles. Each rectangle is
+ * composited independently and only within its own bounds: the background is
+ * restored there and every overlay is redrawn clipped to it (the primitives
+ * take the rect as a clip, so their per-pixel colour is identical to a full
+ * recomposite — only pixels outside the rect are skipped). For a scaled panel
+ * the mapped output rect is then box-filtered down; in every case only the
+ * mapped rect is handed to the display layer (dpy_gfx_update). This bounds all
+ * three costs that scale with panel size — the background memcpy, the overlay
+ * redraw, and the host texture upload — to the part of the panel that moved.
+ *
+ * Correctness rests on the composite buffer (comp, or the surface when
+ * unscaled) persistently holding the last full composite: a partial rect
+ * rewrites only its own pixels with identical content, so the surrounding
+ * pixels a downscale edge-block may read stay valid. The first render, the
+ * ~1 Hz safety refresh, and every resume force a full-panel rect, which
+ * re-establishes that invariant.
  */
 static void deluge_skin_paint(DelugeSkinState *s,
-                              const DelugeSkinRect *rects, int nrects)
+                              const DelugeSkinRect *nrects, int n)
 {
     DisplaySurface *surface = qemu_console_surface(s->con);
     uint32_t *dst;
     int stride;
+    bool scaled;
+    uint32_t *comp;
+    int comp_stride;
 
     if (surface_bits_per_pixel(surface) != 32) {
         dpy_gfx_update_full(s->con);
@@ -961,51 +1042,76 @@ static void deluge_skin_paint(DelugeSkinState *s,
      * surface below; otherwise draw straight into the surface. All overlay
      * geometry stays in native pixels regardless.
      */
-    bool scaled = s->comp != NULL;
-    uint32_t *comp = scaled ? s->comp : dst;
-    int comp_stride = scaled ? DELUGE_SKIN_IMAGE_WIDTH : stride;
+    scaled = s->comp != NULL;
+    comp = scaled ? s->comp : dst;
+    comp_stride = scaled ? DELUGE_SKIN_IMAGE_WIDTH : stride;
 
-    if (s->bg_loaded) {
-        for (int y = 0; y < DELUGE_SKIN_IMAGE_HEIGHT; y++) {
-            memcpy(&comp[y * comp_stride],
-                   &s->bg_argb[y * DELUGE_SKIN_IMAGE_WIDTH],
-                   DELUGE_SKIN_IMAGE_WIDTH * sizeof(uint32_t));
+    for (int i = 0; i < n; i++) {
+        DelugeSkinRect c = nrects[i];
+        DelugeSkinRect o;
+
+        /* Clamp the requested rect to the native panel. */
+        if (c.x0 < 0) {
+            c.x0 = 0;
         }
-    } else {
-        for (int y = 0; y < DELUGE_SKIN_IMAGE_HEIGHT; y++) {
-            for (int x = 0; x < DELUGE_SKIN_IMAGE_WIDTH; x++) {
-                comp[y * comp_stride + x] = 0xff101018u;
+        if (c.y0 < 0) {
+            c.y0 = 0;
+        }
+        if (c.x1 > DELUGE_SKIN_IMAGE_WIDTH) {
+            c.x1 = DELUGE_SKIN_IMAGE_WIDTH;
+        }
+        if (c.y1 > DELUGE_SKIN_IMAGE_HEIGHT) {
+            c.y1 = DELUGE_SKIN_IMAGE_HEIGHT;
+        }
+        if (c.x1 <= c.x0 || c.y1 <= c.y0) {
+            continue;
+        }
+
+        /* Restore the background within the rect, then redraw overlays clipped
+         * to it. */
+        if (s->bg_loaded) {
+            for (int y = c.y0; y < c.y1; y++) {
+                memcpy(&comp[y * comp_stride + c.x0],
+                       &s->bg_argb[y * DELUGE_SKIN_IMAGE_WIDTH + c.x0],
+                       (size_t)(c.x1 - c.x0) * sizeof(uint32_t));
+            }
+        } else {
+            for (int y = c.y0; y < c.y1; y++) {
+                for (int x = c.x0; x < c.x1; x++) {
+                    comp[y * comp_stride + x] = 0xff101018u;
+                }
             }
         }
-    }
 
-    deluge_skin_draw_oled(s, comp, comp_stride);
-    deluge_skin_draw_pads(s, comp, comp_stride);
-    deluge_skin_draw_leds(s, comp, comp_stride);
-    deluge_skin_draw_encoders(s, comp, comp_stride);
+        deluge_skin_draw_oled(s, comp, comp_stride, &c);
+        deluge_skin_draw_pads(s, comp, comp_stride, &c);
+        deluge_skin_draw_leds(s, comp, comp_stride, &c);
+        deluge_skin_draw_encoders(s, comp, comp_stride, &c);
 
-    for (int i = 0; i < nrects; i++) {
-        const DelugeSkinRect *r = &rects[i];
-
-        if (r->x1 <= r->x0 || r->y1 <= r->y0) {
+        /* Map to output pixels for the downscale + upload. */
+        o = deluge_skin_map_rect(s, c.x0, c.y0, c.x1, c.y1);
+        if (o.x1 <= o.x0 || o.y1 <= o.y0) {
             continue;
         }
         if (scaled) {
             deluge_skin_box_downscale(comp, dst, stride, s->out_w, s->out_h,
-                                      r->x0, r->y0, r->x1, r->y1);
+                                      o.x0, o.y0, o.x1, o.y1);
         }
-        dpy_gfx_update(s->con, r->x0, r->y0, r->x1 - r->x0, r->y1 - r->y0);
+        dpy_gfx_update(s->con, o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0);
     }
 }
 
 static void deluge_skin_render(DelugeSkinState *s)
 {
-    DelugeSkinRect full = { 0, 0, s->out_w, s->out_h };
+    DelugeSkinRect full = {
+        0, 0, DELUGE_SKIN_IMAGE_WIDTH, DELUGE_SKIN_IMAGE_HEIGHT
+    };
 
     deluge_skin_paint(s, &full, 1);
 
     /* Remember what we just drew so the timer can skip unchanged frames. */
-    deluge_skin_region_hashes(s, &s->oled_hash, &s->pad_hash, &s->misc_hash);
+    deluge_skin_region_hashes(s, &s->oled_hash, &s->pad_hash, &s->dyn_hash,
+                              &s->misc_hash);
     s->have_region_hashes = true;
     s->idle_ticks = 0;
 }
@@ -1013,9 +1119,9 @@ static void deluge_skin_render(DelugeSkinState *s)
 static void deluge_skin_refresh(void *opaque)
 {
     DelugeSkinState *s = opaque;
-    uint64_t oled_h, pad_h, misc_h;
-    bool first, oled_d, pad_d, misc_d, safety;
-    DelugeSkinRect rects[3];
+    uint64_t oled_h, pad_h, dyn_h, misc_h;
+    bool first, oled_d, pad_d, dyn_d, misc_d, safety;
+    DelugeSkinRect rects[6];
     int nrects = 0;
 
     /*
@@ -1040,28 +1146,30 @@ static void deluge_skin_refresh(void *opaque)
      * back to a full-panel update (infrequent). As a safety net against ever
      * missing a dynamic source, force a full refresh roughly once a second.
      */
-    deluge_skin_region_hashes(s, &oled_h, &pad_h, &misc_h);
+    deluge_skin_region_hashes(s, &oled_h, &pad_h, &dyn_h, &misc_h);
 
     s->idle_ticks++;
     first = !s->have_region_hashes;
     safety = s->idle_ticks >= s->safety_ticks;
     oled_d = first || oled_h != s->oled_hash;
     pad_d = first || pad_h != s->pad_hash;
+    dyn_d = first || dyn_h != s->dyn_hash;
     misc_d = first || misc_h != s->misc_hash;
 
     if (first || safety || misc_d) {
-        /* Full repaint: the scattered LEDs/meter span the whole panel. */
+        /* Full repaint: the scattered button LEDs / volume meter span the whole
+         * panel. Rare — these change on user interaction, not during playback. */
         deluge_skin_render(s);
-    } else if (oled_d || pad_d) {
+    } else if (oled_d || pad_d || dyn_d) {
         if (oled_d) {
-            rects[nrects++] = deluge_skin_map_rect(
-                s, DELUGE_SKIN_OLED_X, DELUGE_SKIN_OLED_Y,
+            rects[nrects++] = (DelugeSkinRect){
+                DELUGE_SKIN_OLED_X, DELUGE_SKIN_OLED_Y,
                 DELUGE_SKIN_OLED_X + DELUGE_SKIN_OLED_W,
-                DELUGE_SKIN_OLED_Y + DELUGE_SKIN_OLED_H);
+                DELUGE_SKIN_OLED_Y + DELUGE_SKIN_OLED_H };
         }
         if (pad_d) {
-            /* Main 16-wide grid and the 2-wide sidebar, mapped separately so
-             * the wide gap between them is not uploaded. */
+            /* Main 16-wide grid and the 2-wide sidebar, kept separate so the
+             * wide gap between them is not composited or uploaded. */
             int pad_half = DELUGE_SKIN_PAD_SIZE / 2 + 1;
             int main_x0 = DELUGE_SKIN_PAD_MAIN_X0 - pad_half;
             int main_x1 = DELUGE_SKIN_PAD_MAIN_X0 + 15 * DELUGE_SKIN_PAD_MAIN_DX
@@ -1074,14 +1182,40 @@ static void deluge_skin_refresh(void *opaque)
                          + (DELUGE_PADGRID_ROWS - 1) * DELUGE_SKIN_PAD_SIDE_DY
                          + pad_half;
 
-            rects[nrects++] = deluge_skin_map_rect(s, main_x0, pad_y0,
-                                                   main_x1, pad_y1);
-            rects[nrects++] = deluge_skin_map_rect(s, side_x0, pad_y0,
-                                                   side_x1, pad_y1);
+            rects[nrects++] = (DelugeSkinRect){ main_x0, pad_y0,
+                                                main_x1, pad_y1 };
+            rects[nrects++] = (DelugeSkinRect){ side_x0, pad_y0,
+                                                side_x1, pad_y1 };
+        }
+        if (dyn_d) {
+            /* SYNCED LED and the two gold-knob level stacks — small fixed
+             * regions, so the tempo-flashing SYNCED LED no longer forces a
+             * whole-panel recomposite during playback. */
+            int m = 2;
+
+            rects[nrects++] = (DelugeSkinRect){
+                DELUGE_SKIN_SYNCED_CX - DELUGE_SKIN_SYNCED_R - m,
+                DELUGE_SKIN_SYNCED_CY - DELUGE_SKIN_SYNCED_R - m,
+                DELUGE_SKIN_SYNCED_CX + DELUGE_SKIN_SYNCED_R + m,
+                DELUGE_SKIN_SYNCED_CY + DELUGE_SKIN_SYNCED_R + m };
+
+            for (size_t g = 0; g < ARRAY_SIZE(deluge_skin_knob_leds); g++) {
+                const DelugeSkinKnobLeds *k = &deluge_skin_knob_leds[g];
+                int ytop = k->cy[0], ybot = k->cy[0];
+
+                for (int led = 1; led < 4; led++) {
+                    ytop = MIN(ytop, k->cy[led]);
+                    ybot = MAX(ybot, k->cy[led]);
+                }
+                rects[nrects++] = (DelugeSkinRect){
+                    k->cx - k->half - m, ytop - k->half - m,
+                    k->cx + k->half + m, ybot + k->half + m };
+            }
         }
         deluge_skin_paint(s, rects, nrects);
         s->oled_hash = oled_h;
         s->pad_hash = pad_h;
+        s->dyn_hash = dyn_h;
         s->misc_hash = misc_h;
         s->idle_ticks = 0;
     }
