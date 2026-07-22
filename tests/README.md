@@ -45,6 +45,32 @@ Firmware is not shipped with the repo, so the test looks for
 the SDHI path. Observed healthy counts: 19 IRQs without an SD image, 183 with
 one, and 0 aborts in both cases.
 
+## `audio-bench.sh`
+
+The audio-throughput benchmark (roadmap M6). It drives the firmware through a
+fixed worst-case synthesis load (loads the 127-sound `FAM1` song and presses
+PLAY) while the SSIF production-rate probe records, per virtual second, how much
+freshly rendered audio reaches the staging FIFO against the 352,800 B/s
+real-time target, plus underruns and host wall-clock. Use it to A/B an emulator
+(or firmware) change for an audio-throughput regression.
+
+```sh
+./tests/audio-bench.sh                          # auto-locate firmware + SD
+./tests/audio-bench.sh --repeat 5               # average over 5 runs
+./tests/audio-bench.sh --icount 2               # deterministic virtual clock
+./tests/audio-bench.sh --throttle "taskpolicy -b"   # run qemu throttled (macOS)
+./tests/audio-bench.sh --gate --min-production 90 --max-underruns 0  # CI gate
+```
+
+The regression signal is sharpest on a **throttled/slow host**, where the
+emulated CPU can't render in real time and production drops below 100%; on a fast
+host it confirms "still ~100%, no new underruns". Like the other tests it
+**skips cleanly** (exit 0) when firmware, an SD image, or `python3` is absent.
+Reads a clean stats stream via `DELUGEMU_SSIF_STATS=<path>`; needs
+`scripts/dz_play.py` to drive the QMP load. See
+[`docs/firmware-perf.md`](../docs/firmware-perf.md) for the caveats (the
+production % pins ~100% under `--icount` by construction).
+
 ## `usb-midi.sh`
 
 The USB host-MIDI enumeration regression test. It boots a firmware image with a
