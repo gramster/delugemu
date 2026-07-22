@@ -62,7 +62,23 @@ Options:
   --usb-midi <chardev>  Attach a host USB-MIDI device on a QEMU chardev spec.
   --audio <driver>      Select a host audio backend (default: dsound). e.g.
                         --audio sdl / wav / none. 'auto' selects dsound.
-  --audio-buffer <ms>   Output buffer cushion in milliseconds (default 15).
+  --audio-buffer <ms>   Device staging-FIFO cushion in milliseconds (default 15).
+                        Separate from the host playback buffer, which defaults to
+                        80 ms on Windows (override with DELUGEMU_AUDIO_HOST_BUFFER_US)
+                        to ride out main-loop/skin-upload stalls; raise either if
+                        you hear dropouts.
+  --tx-render-head <addr|auto|off>
+                        Bound audio ring reads by the firmware's render head so
+                        overload degrades to brief clean gaps instead of
+                        distortion. Default 'auto' (locate it at runtime; falls
+                        back to the play head). Pass a guest address (hex/decimal)
+                        for symbol-built firmware, or 'off' for the raw play head.
+  --skin-refresh-ms <ms>
+                        Front-panel UI refresh interval (default 50, ~20fps).
+                        Raise it to lower the host redraw rate and free the main
+                        loop for audio under heavy live load. Range 10-1000.
+  --icount [<shift>]    Run on a deterministic instruction-counted virtual clock
+                        (clean-but-slower audio under load). Off by default.
   --display <mode>      console (front-panel window, default) | headless | none.
   --inverse             Use the dark skin (Delugemu_Inverse.png) with black
                         unlit pads; default is the light skin with white pads.
@@ -257,14 +273,22 @@ function Get-FactorySdCard {
 
 # --- Argument parsing (mirrors run.sh) --------------------------------------
 
-$Firmware    = $null
-$Midi        = $null
-$UsbMidi     = $null
-$Audio       = $null
-$AudioBuffer = $null
-$DisplayMode = 'console'
-$SdArgs      = @()
-$Extra       = @()
+$Firmware      = $null
+$Midi          = $null
+$UsbMidi       = $null
+$Audio         = $null
+$AudioBuffer   = $null
+# Render-head clamp defaults to 'auto': the SSIF locates the firmware's render
+# head at runtime and bounds ring reads by it, turning overload distortion into
+# brief clean gaps. It is best-effort and falls back to the wall-clock play head
+# if it can't resolve, so it is never worse than the raw default. Pass
+# --tx-render-head off (or an explicit address) to override.
+$TxRenderHead  = 'auto'
+$SkinRefreshMs = $null
+$Icount        = $null
+$DisplayMode   = 'console'
+$SdArgs        = @()
+$Extra         = @()
 
 $argv = @($CliArgs)
 $i = 0
@@ -287,6 +311,12 @@ while ($i -lt $argv.Count) {
         '^--audio=(.+)$'  { $Audio = $Matches[1]; $i += 1; break }
         '^--audio-buffer$' { if ($i + 1 -ge $argv.Count) { Die '--audio-buffer requires a value in ms' }; $AudioBuffer = $argv[$i + 1]; $i += 2; break }
         '^--audio-buffer=(.+)$' { $AudioBuffer = $Matches[1]; $i += 1; break }
+        '^--tx-render-head$' { if ($i + 1 -ge $argv.Count) { Die '--tx-render-head requires a guest address, auto, or off' }; $TxRenderHead = $argv[$i + 1]; $i += 2; break }
+        '^--tx-render-head=(.+)$' { $TxRenderHead = $Matches[1]; $i += 1; break }
+        '^--skin-refresh-ms$' { if ($i + 1 -ge $argv.Count) { Die '--skin-refresh-ms requires a value in ms' }; $SkinRefreshMs = $argv[$i + 1]; $i += 2; break }
+        '^--skin-refresh-ms=(.+)$' { $SkinRefreshMs = $Matches[1]; $i += 1; break }
+        '^--icount$'      { if (($i + 1 -lt $argv.Count) -and ($argv[$i + 1] -notmatch '^-')) { $Icount = $argv[$i + 1]; $i += 2 } else { $Icount = 'auto'; $i += 1 }; break }
+        '^--icount=(.+)$' { $Icount = $Matches[1]; $i += 1; break }
         '^--display$'     { if ($i + 1 -ge $argv.Count) { Die '--display requires a mode' }; $DisplayMode = $argv[$i + 1]; $i += 2; break }
         '^--display=(.+)$' { $DisplayMode = $Matches[1]; $i += 1; break }
         '^--inverse$'     { $Inverse = $true; $i += 1; break }
@@ -403,26 +433,77 @@ if ($DisplayMode -eq 'console') {
     else {
         Write-Warn "skin image not found at $SkinImage; the panel will render without its photo background"
     }
+    # Front-panel refresh interval. A longer interval lowers the host redraw rate
+    # and frees QEMU's main loop for audio service under heavy load (see the audio
+    # host-buffer note below); a shorter one makes the panel smoother.
+    if ($SkinRefreshMs) {
+        if ($SkinRefreshMs -notmatch '^\d+$') { Die '--skin-refresh-ms must be a positive integer (ms)' }
+        $SkinArgs += @('-global', "deluge-skin.refresh-ms=$SkinRefreshMs")
+    }
 }
 
 # Audio backend. On Windows QEMU's implicit default audiodev does not reliably
 # bind the SSIF to a working output, so we always pass an explicit -audiodev and
 # wire it to the SSIF. Defaults to dsound; override with --audio (e.g. sdl, wav,
 # none).
+#
+# Host playback buffer (out.buffer-length, microseconds): the dsound voice is
+# pumped from QEMU's main loop -- the same thread that recomposites the
+# front-panel skin -- so a periodic full-frame skin upload can briefly stall the
+# audio service. A generous host buffer lets the OS audio DMA ride those stalls
+# without an audible gap. Default 80 ms; override with DELUGEMU_AUDIO_HOST_BUFFER_US.
+# This is independent of the device's own staging cushion (--audio-buffer / prime-ms).
+$AudioHostBufferUs = if ($env:DELUGEMU_AUDIO_HOST_BUFFER_US) { $env:DELUGEMU_AUDIO_HOST_BUFFER_US } else { '80000' }
+if ($AudioHostBufferUs -notmatch '^\d+$') { Die 'DELUGEMU_AUDIO_HOST_BUFFER_US must be a non-negative integer (microseconds)' }
+
 $AudioArgs = @()
 if (-not $Audio -or $Audio -eq 'auto') { $Audio = 'dsound' }
-$AudioArgs = @('-audiodev', "$Audio,id=deluge0", '-global', 'rza1l-ssif.audiodev=deluge0')
-Write-Log "Routing SSIF audio to backend: $Audio"
+if ($Audio -eq 'none') {
+    $AudioArgs = @('-audiodev', 'none,id=deluge0', '-global', 'rza1l-ssif.audiodev=deluge0')
+    Write-Log "Routing SSIF audio to backend: none"
+}
+else {
+    $AudioArgs = @('-audiodev', "$Audio,id=deluge0,out.buffer-length=$AudioHostBufferUs",
+                   '-global', 'rza1l-ssif.audiodev=deluge0')
+    Write-Log "Routing SSIF audio to backend: $Audio (host buffer $AudioHostBufferUs us)"
+}
 if ($AudioBuffer) {
     if ($AudioBuffer -notmatch '^\d+$') { Die '--audio-buffer must be a non-negative integer (ms)' }
     $AudioArgs += @('-global', "rza1l-ssif.prime-ms=$AudioBuffer")
     Write-Log "SSIF output buffer cushion: $AudioBuffer ms"
 }
 
+# Render-head clamp (default 'auto'; --tx-render-head off to disable). Bounds ring
+# reads by the firmware's render head so overload becomes brief clean gaps rather
+# than distortion. 'auto' is best-effort and falls back to the play head.
+if ($TxRenderHead -and $TxRenderHead -ne 'off' -and $TxRenderHead -ne 'none') {
+    if ($TxRenderHead -eq 'auto') {
+        $AudioArgs += @('-global', 'rza1l-ssif.tx-render-head-auto=on')
+        Write-Log "SSIF audio bounded by auto-detected firmware render head"
+    }
+    elseif ($TxRenderHead -match '^(0x[0-9A-Fa-f]+|\d+)$') {
+        $AudioArgs += @('-global', "rza1l-ssif.tx-render-head=$TxRenderHead")
+        Write-Log "SSIF audio bounded by firmware render head at: $TxRenderHead"
+    }
+    else {
+        Die "--tx-render-head must be a guest address (hex 0x..., decimal), 'auto', or 'off'"
+    }
+}
+
+# Optional deterministic instruction-counted clock (-icount). Paces the guest to a
+# virtual clock: audio stays internally consistent (no dropouts) but the guest is
+# capped to <= real time, so heavy DSP load slows playback instead of breaking it.
+$IcountArgs = @()
+if ($Icount) {
+    if ($Icount -notmatch '^(auto|\d{1,2})$') { Die "--icount shift must be 'auto' or an integer (e.g. 0-20)" }
+    $IcountArgs = @('-icount', "shift=$Icount,sleep=on")
+    Write-Log "Deterministic icount clock enabled: shift=$Icount (guest capped to real time)"
+}
+
 # --- Launch -----------------------------------------------------------------
 
 $qemuArgs = @('-M', 'deluge', '-kernel', $Firmware) +
-    $SerialArgs + $UsbMidiArgs + $DisplayArgs + $SkinArgs + $AudioArgs + $SdArgs + $Extra
+    $SerialArgs + $UsbMidiArgs + $DisplayArgs + $SkinArgs + $AudioArgs + $IcountArgs + $SdArgs + $Extra
 
 Write-Log "Launching deluge machine with $Firmware (display=$DisplayMode)"
 try {
