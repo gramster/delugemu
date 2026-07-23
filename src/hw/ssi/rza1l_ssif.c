@@ -766,9 +766,11 @@ static void rza1l_ssif_rh_seed(RzA1lSsifState *s, uint32_t base, uint32_t size)
  * (verified against the ELF symbol with tx-render-head-expect: W sits a small
  * reverse distance behind P on every strict-order round). Each round every
  * mover is compared against every other mover; a candidate that has strictly
- * trailed all others on every comparable round for RH_ROUNDS_TO_LOCK rounds
- * is the render head. Rounds where two movers sit at the same offset carry no
- * order information and are skipped. If only a single mover ever survives,
+ * trailed all others on nearly every comparable round (>= 3/4 — the reads are
+ * not an atomic snapshot, so a variable can advance between reading the pair,
+ * occasionally inverting one observation) locks as the render head. Rounds
+ * where two movers sit at the same offset carry no order information and are
+ * skipped. If only a single mover ever survives,
  * ring order has nothing to compare, so a modest trailing-gap floor
  * (RH_MIN_LOCK_GAP) locks it instead — and if that lone mover is the
  * play-head copy, clamping by it degenerates to the play-head fallback
@@ -875,8 +877,9 @@ static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
 
         for (int i = 0; i < s->rh_cand_count; i++) {
             RzA1lRhCand *c = &s->rh_cands[i];
-            if (c->alive && c->moved && c->cmp_rounds >= RH_ROUNDS_TO_LOCK &&
-                c->lead_rounds == c->cmp_rounds) {
+            if (c->alive && c->moved &&
+                c->cmp_rounds >= 2 * RH_ROUNDS_TO_LOCK &&
+                c->lead_rounds * 4 >= c->cmp_rounds * 3) {
                 if (leader) {
                     unique = false;
                 }
@@ -885,8 +888,8 @@ static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
         }
         if (leader && unique) {
             qemu_log("rza1l-ssif: tx-render-head auto-detect: 0x%08x trailed "
-                     "all other movers for %d rounds\n",
-                     leader->addr, leader->lead_rounds);
+                     "all other movers on %d of %d rounds\n",
+                     leader->addr, leader->lead_rounds, leader->cmp_rounds);
             rza1l_ssif_rh_finish(s, leader->addr);
             return;
         }
@@ -902,8 +905,10 @@ static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
         for (int i = 0; i < s->rh_cand_count; i++) {
             RzA1lRhCand *c = &s->rh_cands[i];
             if (c->alive && c->moved) {
-                qemu_log("rh-trace: round %d cand 0x%08x max_gap %u\n",
-                         s->rh_rounds, c->addr, c->max_gap);
+                qemu_log("rh-trace: round %d cand 0x%08x max_gap %u "
+                         "cmp %d lead %d off %u\n",
+                         s->rh_rounds, c->addr, c->max_gap,
+                         c->cmp_rounds, c->lead_rounds, c->cur_off);
             }
         }
     }
