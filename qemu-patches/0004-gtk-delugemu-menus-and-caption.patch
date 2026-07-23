@@ -1,6 +1,6 @@
-diff --git a/private/tmp/claude-501/-Users-gram-repos-delugemu/980eec13-309b-49b8-969a-04afc38be292/scratchpad/gtk.c.orig b/qemu/ui/gtk.c
+diff --git a/ui/gtk.c b/ui/gtk.c
 index 9ebe7e8..fdbed97 100644
---- a/private/tmp/claude-501/-Users-gram-repos-delugemu/980eec13-309b-49b8-969a-04afc38be292/scratchpad/gtk.c.orig
+--- a/ui/gtk.c
 +++ b/ui/gtk.c
 @@ -31,6 +31,7 @@
  #define LOCALEDIR "po"
