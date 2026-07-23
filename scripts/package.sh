@@ -506,10 +506,15 @@ build_windows_msi() {
     # from the commit count; CI (shallow clone) passes DELUGEMU_MSI_VERSION.
     version="${DELUGEMU_MSI_VERSION:-1.0.$(git -C "${REPO_ROOT}" rev-list --count HEAD 2>/dev/null || echo 0)}"
     msi="${OUT_DIR}/${name}.msi"
-    log "Using wix at ${wixcmd} (version $("${wixcmd}" --version 2>&1 | head -1))"
+    local wixver
+    wixver="$("${wixcmd}" --version 2>&1 | head -1 | sed 's/[+].*//')"
+    log "Using wix at ${wixcmd} (version ${wixver})"
     # The Util extension may not be registered globally (the CI install step is
     # best-effort); adding it here is idempotent and scoped to this checkout.
-    ( cd "${REPO_ROOT}" && "${wixcmd}" extension add WixToolset.Util.wixext ) \
+    # Pin it to the CLI's own version — an unversioned add pulls the latest
+    # extension, which a CLI from an older major series refuses to load.
+    ( cd "${REPO_ROOT}" && "${wixcmd}" extension add "WixToolset.Util.wixext/${wixver}" ) \
+        || ( cd "${REPO_ROOT}" && "${wixcmd}" extension add WixToolset.Util.wixext ) \
         || warn "wix extension add failed; the build below may fail with an unresolved util: namespace"
     log "Building MSI installer (version ${version})..."
     if "${wixcmd}" build "$(cygpath -w "${REPO_ROOT}/scripts/msi/delugemu.wxs")" \

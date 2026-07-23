@@ -235,18 +235,22 @@ jobs:
       - name: Build
         run: ./scripts/build.sh
 
-      # WiX v5+ CLI for the MSI installer built by package.sh. Installed with
-      # the Windows-native dotnet (outside MSYS2); package.sh finds it under
+      # WiX CLI for the MSI installer built by package.sh. Pinned to the 5.x
+      # series: WiX v7+ refuses to run (WIX7015) unless the Open Source
+      # Maintenance Fee EULA is accepted, which is a project decision we have
+      # not taken; 5.x has no such gate and matches the wxs authoring. The
+      # Util extension must match the CLI's major version. Installed with the
+      # Windows-native dotnet (outside MSYS2); package.sh finds it under
       # %USERPROFILE%\.dotnet\tools. Non-fatal: if this breaks, package.sh
       # warns and skips the MSI but the zip bundle must still publish.
       - name: Install WiX CLI
         shell: pwsh
         continue-on-error: true
         run: |
-          dotnet tool install --global wix
+          dotnet tool install --global wix --version 5.0.2
           $wix = Join-Path $env:USERPROFILE '.dotnet\tools\wix.exe'
           & $wix --version
-          & $wix extension add --global WixToolset.Util.wixext
+          & $wix extension add --global WixToolset.Util.wixext/5.0.2
 
       - name: Package relocatable bundle + MSI installer
         run: ./scripts/package.sh
