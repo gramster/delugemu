@@ -263,6 +263,29 @@ LAUNCH
     write_readme_macos_app "${dmgroot}"
     ln -shf /Applications "${dmgroot}/Applications"
     archive_dmg "${name}" "${dmgroot}"
+    package_macos_cli_tarball "${name}" "${app}"
+}
+
+# Terminal-flavoured macOS artifact: the same app bundle in a tar.gz with a
+# ./delugemu shim, so the pre-.app "extract and run from the shell" workflow
+# keeps working without a second vendored tree.
+package_macos_cli_tarball() {
+    local name="$1" app="$2"
+    local parent="${OUT_DIR}/tgz" stage="${OUT_DIR}/tgz/${name}"
+    rm -rf "${parent}"
+    mkdir -p "${stage}"
+    # ditto preserves symlinks, resource metadata and the code signature.
+    ditto "${app}" "${stage}/DelugEmu.app"
+    cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
+    cat > "${stage}/delugemu" <<'LAUNCH'
+#!/usr/bin/env bash
+# CLI launcher for the bundled DelugEmu.app: the full run.sh option surface.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${HERE}/DelugEmu.app/Contents/MacOS/DelugEmu" "$@"
+LAUNCH
+    chmod +x "${stage}/delugemu"
+    write_readme_macos_cli "${stage}"
+    archive_targz "${name}" "${parent}"
 }
 
 # ---------------------------------------------------------------------------
@@ -498,9 +521,9 @@ smoke_test() {
 }
 
 archive_targz() {
-    local name="$1" tarball="${OUT_DIR}/$1.tar.gz" size
+    local name="$1" parent="${2:-${OUT_DIR}}" tarball="${OUT_DIR}/$1.tar.gz" size
     log "Creating ${tarball}"
-    tar -czf "${tarball}" -C "${OUT_DIR}" "${name}"
+    tar -czf "${tarball}" -C "${parent}" "${name}"
     size="$(du -h "${tarball}" | cut -f1 | tr -d ' ')"
     log "Release archive ready: ${tarball} (${size})"
     log "Attach it to a GitHub Release; users extract and run ./delugemu."
@@ -566,6 +589,41 @@ ports, audio backends, headless mode, ...):
 
 This is an independent, unofficial project, not affiliated with Synthstrom
 Audible. Licensed GPL-2.0-or-later (see LICENSE inside the app bundle).
+EOF
+}
+
+# README for the macOS CLI tarball (the .app plus a ./delugemu shim).
+write_readme_macos_cli() {
+    local stage="$1"
+    cat > "${stage}/README.txt" <<'EOF'
+DelugEmu — Synthstrom Deluge emulator (macOS, terminal flavour)
+
+This is the same DelugEmu.app that ships in the .dmg, plus a ./delugemu shim
+for shell use with the full option surface:
+
+  ./delugemu path/to/deluge_firmware.elf
+  ./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
+  ./delugemu firmware.bin --sd path/to/card_folder_rw   # write-back SD folder
+  ./delugemu --midi coremidi                            # host CoreMIDI ports
+  ./delugemu --display headless                         # no window
+  ./delugemu --help                                     # everything else
+
+Run with no arguments and DelugEmu looks for a .bin/.elf in ./firmware (or
+DELUGEMU_FIRMWARE_DIR), offering to download the open-source community
+firmware if none is found; likewise an sdcard_rw/sdcard folder in the current
+directory is used as the SD card automatically.
+
+Helper scripts (e.g. mksd.sh to build a card image from a content folder) live
+inside the bundle at DelugEmu.app/Contents/Resources/scripts/.
+
+Gatekeeper: this build is ad-hoc signed, not notarized. If macOS blocks the
+first launch, allow it under System Settings > Privacy & Security, or run:
+  xattr -dr com.apple.quarantine DelugEmu.app
+
+Prefer a regular installed app? Use the .dmg from the same release instead.
+
+This is an independent, unofficial project, not affiliated with Synthstrom
+Audible. Licensed GPL-2.0-or-later (see LICENSE).
 EOF
 }
 

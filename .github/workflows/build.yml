@@ -146,7 +146,9 @@ jobs:
       - name: Upload bundle to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/release/DelugEmu-macos-*.dmg
+          files: |
+            build/release/DelugEmu-macos-*.dmg
+            build/release/DelugEmu-macos-*.tar.gz
 
   release-linux:
     name: Package + publish Linux bundle

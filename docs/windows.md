@@ -11,12 +11,30 @@ Windows `qemu-system-arm.exe` with a native GUI window.
 > `coremidi` host-MIDI bridge (`--midi coremidi` / `--usb-midi coremidi`) is
 > macOS-only — see [MIDI on Windows](#midi-on-windows) for what works instead.
 
-## Prebuilt bundle (no MSYS2 needed)
+## Installer (no MSYS2 needed)
 
-Tagged releases publish a relocatable `DelugEmu-windows-*.zip` containing
+Tagged releases publish a `DelugEmu-windows-*.msi` installer on the
+[Releases page](https://github.com/gramster/delugemu/releases). It installs
+per-user (no admin prompt) into `%LOCALAPPDATA%\Programs\DelugEmu` and creates
+a **DelugEmu** Start Menu group with the app plus shortcuts to the **SD Card
+Folder**, **Help**, and the **Repository**. The installed app keeps its state
+under `%APPDATA%\DelugEmu`:
+
+* `firmware\` — downloaded (or your own) firmware `.bin`/`.elf` images;
+* `sdcard_rw\` — the emulated SD card's contents, written back on exit so
+  songs you save persist across runs.
+
+On first launch it asks — via dialog boxes — before downloading the Deluge
+community firmware and the Synthstrom factory card contents. The front-panel
+window's **Help** menu opens the SD card folder, the documentation, the
+repository, and an About dialog with license info. The build is unsigned, so
+SmartScreen may warn on first run.
+
+## Portable bundle (zip)
+
+Releases also keep a relocatable `DelugEmu-windows-*.zip` containing
 `qemu-system-arm.exe`, its DLLs, and a native PowerShell launcher
-(`delugemu.ps1`) wrapped by `delugemu.cmd`. Download it from the
-[Releases page](https://github.com/gramster/delugemu/releases), unzip, and run:
+(`delugemu.ps1`) wrapped by `delugemu.cmd`. Unzip it anywhere and run:
 
 ```bat
 delugemu.cmd                          :: auto-detect/offer to download firmware
@@ -31,7 +49,9 @@ audio backend selection, and display modes. With no `--sd`, it auto-detects an
 `sdcard_rw`/`sdcard` folder, or offers to download the Synthstrom factory card
 contents into `.\sdcard`. SD-folder support uses the bundled `mkfs.fat` and
 `mcopy`; raw `.img` SD cards work even without them. Build the bundle yourself
-with `./scripts/package.sh` (steps below).
+with `./scripts/package.sh` (steps below) — it also produces the MSI when the
+WiX CLI is installed (`dotnet tool install --global wix`, then
+`wix extension add -g WixToolset.Util.wixext`).
 
 The rest of this document covers building from source under MSYS2.
 
