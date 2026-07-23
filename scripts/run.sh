@@ -578,7 +578,10 @@ elif [ "${MONITOR}" -eq 1 ] || [ "${DISPLAY_MODE}" = "headless" ]; then
     # stdio; keep that. For a GUI run the monitor is opt-in via --monitor.
     SERIAL_ARGS=(-serial mon:stdio)
 else
-    SERIAL_ARGS=(-serial stdio)
+    # GUI default: serial console on the terminal; QEMU's own monitor console
+    # (View menu) on a 120x40-character vc — the default 640x480 monitor
+    # surface makes an unusably tiny window.
+    SERIAL_ARGS=(-serial stdio -monitor vc:120Cx40C)
 fi
 
 # Host USB-MIDI device: present the device on USB200 and route its bulk pipes
