@@ -71,18 +71,28 @@ prebuilt bundle for your OS from the
 self-contained — the required libraries are vendored alongside the binary — so
 no Homebrew / QEMU / MSYS2 install is needed.
 
-**macOS** (`DelugEmu-macos-<arch>.tar.gz`):
+**macOS** (`DelugEmu-macos-<arch>.dmg`):
+
+Open the disk image and drag **DelugEmu.app** into Applications, then launch it
+like any app. On first launch it offers to download the Deluge community
+firmware and the Synthstrom factory SD card; both live under
+`~/Library/Application Support/DelugEmu` (drop your own firmware `.bin`/`.elf`
+into `firmware/` there, or card contents into `sdcard_rw/`, to use those
+instead — the `_rw` folder is written back on exit, so saved songs persist).
+The **Help** menu has items to open the SD card folder, the documentation, and
+the project repository; **About DelugEmu** shows version and license info.
+
+The build is ad-hoc signed but not notarized, so the first launch may be
+blocked — right-click the app and choose **Open**, or allow it under
+**System Settings → Privacy & Security**.
+
+The same app doubles as the full CLI launcher (all `run.sh` options — specific
+firmware images, SD folders with write-back, CoreMIDI ports, headless mode):
 
 ```sh
-tar -xzf DelugEmu-macos-arm64.tar.gz
-cd DelugEmu-macos-arm64
-./delugemu path/to/deluge_firmware.elf --sd deluge_sd.img
-./delugemu --help
+/Applications/DelugEmu.app/Contents/MacOS/DelugEmu --help
+/Applications/DelugEmu.app/Contents/MacOS/DelugEmu firmware.bin --sd card_rw
 ```
-
-The build is ad-hoc signed but not notarized, so on first launch macOS Gatekeeper
-may block it — allow it under **System Settings → Privacy & Security**, or clear
-the quarantine attribute with `xattr -dr com.apple.quarantine <bundle-dir>`.
 
 **Linux** (`DelugEmu-linux-<arch>.tar.gz`):
 
@@ -94,8 +104,21 @@ cd DelugEmu-linux-x86_64
 
 The core C runtime and the graphics/driver stack (OpenGL, X11/Wayland) are
 deliberately left to the host, so a recent desktop distribution is assumed.
+The front-panel window's **Help** menu (also on Windows) has items to open the
+SD card folder, the documentation, and the repository, plus an About dialog
+with license info; Ctrl+Alt+M toggles the menubar.
 
-**Windows** (`DelugEmu-windows-<arch>.zip`):
+**Windows** (`DelugEmu-windows-<arch>.msi`, or `.zip` for a portable copy):
+
+Run the MSI to install per-user (no admin prompt) into
+`%LOCALAPPDATA%\Programs\DelugEmu`, with a Start Menu group containing
+**DelugEmu** plus shortcuts to the **SD Card Folder**, **Help**, and the
+**Repository**. The installed app keeps its state (downloaded firmware, the
+SD card folder — written back on exit so saved songs persist) under
+`%APPDATA%\DelugEmu`, and asks via dialog boxes before downloading the
+community firmware or factory card.
+
+The zip is the same bundle without an installer:
 
 ```bat
 :: Extract the zip, then from the extracted folder:

@@ -146,7 +146,7 @@ jobs:
       - name: Upload bundle to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/release/DelugEmu-macos-*.tar.gz
+          files: build/release/DelugEmu-macos-*.dmg
 
   release-linux:
     name: Package + publish Linux bundle
@@ -233,10 +233,25 @@ jobs:
       - name: Build
         run: ./scripts/build.sh
 
-      - name: Package relocatable bundle
+      # WiX v5+ CLI for the MSI installer built by package.sh. Installed with
+      # the Windows-native dotnet (outside MSYS2); package.sh finds it under
+      # %USERPROFILE%\.dotnet\tools.
+      - name: Install WiX CLI
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          wix extension add --global WixToolset.Util.wixext
+
+      - name: Package relocatable bundle + MSI installer
         run: ./scripts/package.sh
+        env:
+          # MSI versions must grow monotonically for upgrades; the shallow CI
+          # clone can't use the commit count, so use the workflow run number.
+          DELUGEMU_MSI_VERSION: 1.0.${{ github.run_number }}
 
       - name: Upload bundle to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/release/DelugEmu-windows-*.zip
+          files: |
+            build/release/DelugEmu-windows-*.zip
+            build/release/DelugEmu-windows-*.msi

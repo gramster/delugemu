@@ -16,7 +16,7 @@
 #   ./scripts/package.sh <output-dir>
 #
 # The OS is detected automatically (DELUGEMU_OS from common.sh):
-#   macOS   -> otool / install_name_tool / codesign, tar.gz
+#   macOS   -> otool / install_name_tool / codesign, DelugEmu.app in a .dmg
 #   Linux   -> ldd / patchelf ($ORIGIN rpath),       tar.gz
 #   Windows -> ldd (MSYS2), DLLs beside the .exe,     zip
 
@@ -33,7 +33,9 @@ ARCH="$(uname -m)"
 # ---------------------------------------------------------------------------
 
 # Copy the Bash helper scripts and skin image used by the run.sh-based launcher.
-stage_unix_helpers() {
+# run.sh resolves skins and helpers as ${REPO_ROOT}/...; inside a bundle the
+# scripts live at <stage>/scripts/, so REPO_ROOT == <stage>.
+stage_run_helpers() {
     local stage="$1"
     log "Copying helper scripts..."
     mkdir -p "${stage}/scripts"
@@ -44,11 +46,13 @@ stage_unix_helpers() {
        "${REPO_ROOT}/scripts/midi_route.py" \
        "${stage}/scripts/"
     cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
-    # run.sh resolves the skin as ${REPO_ROOT}/Delugemu_Normal.png (or
-    # Delugemu_Inverse.png with --inverse); inside the bundle the helpers live
-    # at <stage>/scripts/, so REPO_ROOT == <stage>. Ship both skins.
     cp "${REPO_ROOT}/Delugemu_Normal.png" "${stage}/Delugemu_Normal.png"
     cp "${REPO_ROOT}/Delugemu_Inverse.png" "${stage}/Delugemu_Inverse.png"
+}
+
+stage_unix_helpers() {
+    local stage="$1"
+    stage_run_helpers "${stage}"
 
     # Top-level launcher: point run.sh at the vendored binary.
     cat > "${stage}/delugemu" <<'LAUNCH'
@@ -76,21 +80,47 @@ verify_bundle_assets() {
 # macOS
 # ---------------------------------------------------------------------------
 
+# Render the front-panel photo into a square .icns app icon. sips/iconutil ship
+# with macOS, so this needs no extra tooling.
+make_icns() {
+    local src="$1" out="$2" tmp iconset master s
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/delugemu-icns.XXXXXX")"
+    iconset="${tmp}/delugemu.iconset"
+    master="${tmp}/master.png"
+    mkdir -p "${iconset}"
+    # Fit the (non-square) panel photo onto a square canvas; the panel body is
+    # black, so pad with black so the icon reads as one slab.
+    sips --resampleWidth 1024 "${src}" --out "${master}" >/dev/null
+    sips --padToHeightWidth 1024 1024 --padColor 000000 "${master}" >/dev/null
+    for s in 16 32 128 256 512; do
+        sips -z "${s}" "${s}" "${master}" --out "${iconset}/icon_${s}x${s}.png" >/dev/null
+        sips -z "$((s * 2))" "$((s * 2))" "${master}" \
+            --out "${iconset}/icon_${s}x${s}@2x.png" >/dev/null
+    done
+    iconutil -c icns -o "${out}" "${iconset}"
+    rm -rf "${tmp}"
+}
+
 package_macos() {
-    for tool in otool install_name_tool codesign; do
+    for tool in otool install_name_tool codesign sips iconutil hdiutil; do
         command -v "${tool}" >/dev/null 2>&1 \
             || die "${tool} not found (install Xcode command line tools)."
     done
 
     local name="DelugEmu-macos-${ARCH}"
-    local stage="${OUT_DIR}/${name}"
-    local bindir="${stage}/bin" libdir="${stage}/lib"
+    local dmgroot="${OUT_DIR}/${name}"
+    local app="${dmgroot}/DelugEmu.app"
+    local contents="${app}/Contents"
+    local bindir="${contents}/MacOS" libdir="${contents}/Frameworks"
+    local resdir="${contents}/Resources"
     local bin_src="${QEMU_BUILD_DIR}/qemu-system-arm"
     [ -x "${bin_src}" ] || die "qemu-system-arm not built. Run ./scripts/build.sh first."
 
-    log "Staging bundle at ${stage}"
-    rm -rf "${stage}"
-    mkdir -p "${bindir}" "${libdir}"
+    log "Staging app bundle at ${app}"
+    rm -rf "${dmgroot}"
+    mkdir -p "${bindir}" "${libdir}" "${resdir}"
+    # The emulator binary lives in Contents/MacOS so macOS attributes its
+    # windows/Dock presence to this bundle (icon and name from Info.plist).
     cp "${bin_src}" "${bindir}/qemu-system-arm"
     chmod u+w "${bindir}/qemu-system-arm"
 
@@ -123,21 +153,98 @@ package_macos() {
     }
 
     log "Vendoring dynamic libraries..."
-    process_macho "${bindir}/qemu-system-arm" "@executable_path/../lib"
-    install_name_tool -add_rpath "@executable_path/../lib" \
+    process_macho "${bindir}/qemu-system-arm" "@executable_path/../Frameworks"
+    install_name_tool -add_rpath "@executable_path/../Frameworks" \
         "${bindir}/qemu-system-arm" 2>/dev/null || true
+
+    # Precompile the CoreMIDI bridge so packaged users don't need Xcode CLT
+    # (run.sh uses it via DELUGEMU_MIDI_BRIDGE instead of compiling on demand).
+    log "Building MIDI bridge helper..."
+    cc -O2 -Wall -o "${resdir}/midi_bridge" "${REPO_ROOT}/scripts/midi_bridge.c" \
+        -framework CoreMIDI -framework CoreFoundation \
+        || die "failed to build the MIDI bridge helper"
+
+    # run.sh and its assets live under Contents/Resources (REPO_ROOT == resdir).
+    stage_run_helpers "${resdir}"
+
+    log "Generating app icon..."
+    make_icns "${REPO_ROOT}/Delugemu_Normal.png" "${resdir}/delugemu.icns" \
+        || die "failed to generate delugemu.icns"
+
+    local version
+    version="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    cat > "${contents}/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundlePackageType</key>        <string>APPL</string>
+    <key>CFBundleIdentifier</key>         <string>com.geekraver.delugemu</string>
+    <key>CFBundleName</key>               <string>DelugEmu</string>
+    <key>CFBundleDisplayName</key>        <string>DelugEmu</string>
+    <key>CFBundleExecutable</key>         <string>DelugEmu</string>
+    <key>CFBundleIconFile</key>           <string>delugemu</string>
+    <key>CFBundleShortVersionString</key> <string>1.0</string>
+    <key>CFBundleVersion</key>            <string>${version}</string>
+    <key>LSMinimumSystemVersion</key>     <string>11.0</string>
+    <key>LSApplicationCategoryType</key>  <string>public.app-category.music</string>
+    <key>NSHighResolutionCapable</key>    <true/>
+</dict>
+</plist>
+PLIST
+
+    # Bundle executable. From a terminal it is the plain CLI launcher with the
+    # full run.sh flag surface. From Finder (no TTY) it switches run.sh into
+    # app mode: state lives under ~/Library/Application Support/DelugEmu (the
+    # .app itself is read-only, and Gatekeeper may translocate it anyway),
+    # download offers become native dialogs, and output goes to a log file
+    # surfaced in an alert if launch fails.
+    cat > "${bindir}/DelugEmu" <<'LAUNCH'
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RES="${HERE}/../Resources"
+export DELUGEMU_QEMU_BIN="${HERE}/qemu-system-arm"
+export DELUGEMU_MIDI_BRIDGE="${RES}/midi_bridge"
+
+if [ -t 0 ]; then
+    exec "${RES}/scripts/run.sh" "$@"
+fi
+
+SUPPORT="${HOME}/Library/Application Support/DelugEmu"
+mkdir -p "${SUPPORT}"
+cd "${SUPPORT}"
+export DELUGEMU_APP_MODE=1
+export DELUGEMU_FIRMWARE_DIR="${DELUGEMU_FIRMWARE_DIR:-${SUPPORT}/firmware}"
+# '_rw' so songs saved in the emulator are written back to the folder on exit.
+export DELUGEMU_SD_DIR="${DELUGEMU_SD_DIR:-${SUPPORT}/sdcard_rw}"
+LOG="${SUPPORT}/delugemu.log"
+
+# Finder can pass a -psn_* process serial number; drop it.
+args=()
+for a in "$@"; do case "${a}" in -psn_*) ;; *) args+=("${a}") ;; esac; done
+
+if ! "${RES}/scripts/run.sh" ${args[@]+"${args[@]}"} >"${LOG}" 2>&1; then
+    tail_msg="$(tail -n 6 "${LOG}" 2>/dev/null | tr '\n' ' ' | tr -d '"\\' | cut -c1-700 || true)"
+    osascript -e "display alert \"DelugEmu failed to start\" message \"${tail_msg} — full log: ${LOG}\"" \
+        >/dev/null 2>&1 || true
+    exit 1
+fi
+LAUNCH
+    chmod +x "${bindir}/DelugEmu"
 
     log "Re-signing (ad-hoc)..."
     find "${libdir}" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' lib; do
         codesign --remove-signature "${lib}" 2>/dev/null || true
         codesign --force --sign - "${lib}"
     done
-    codesign --remove-signature "${bindir}/qemu-system-arm" 2>/dev/null || true
-    codesign --force --sign - "${bindir}/qemu-system-arm"
+    for exe in "${resdir}/midi_bridge" "${bindir}/qemu-system-arm"; do
+        codesign --remove-signature "${exe}" 2>/dev/null || true
+        codesign --force --sign - "${exe}"
+    done
+    codesign --force --sign - "${app}"
 
-    stage_unix_helpers "${stage}"
-    write_readme_unix "${stage}" "macOS ${ARCH}" macos
-    verify_bundle_assets "${stage}"
+    verify_bundle_assets "${resdir}"
 
     log "Verifying the bundle is self-contained..."
     local leftover
@@ -151,8 +258,11 @@ package_macos() {
 
     smoke_test "${bindir}/qemu-system-arm"
     local n; n="$(find "${libdir}" -name '*.dylib' | wc -l | tr -d ' ')"
-    log "Bundle: 1 binary + ${n} vendored libraries."
-    archive_targz "${name}"
+    log "App bundle: 1 binary + ${n} vendored libraries."
+
+    write_readme_macos_app "${dmgroot}"
+    ln -shf /Applications "${dmgroot}/Applications"
+    archive_dmg "${name}" "${dmgroot}"
 }
 
 # ---------------------------------------------------------------------------
@@ -335,6 +445,42 @@ LAUNCH
     local n; n="$(find "${stage}" -maxdepth 1 -name '*.dll' | wc -l | tr -d ' ')"
     log "Bundle: 1 binary + ${n} vendored DLLs."
     archive_zip "${name}"
+    build_windows_msi "${name}" "${stage}"
+}
+
+# Best-effort MSI installer (scripts/msi/delugemu.wxs) wrapping the staged
+# bundle: per-user install with Start Menu shortcuts. Needs the WiX v5+ CLI
+# (dotnet tool install --global wix; wix extension add -g WixToolset.Util.wixext);
+# silently skipped when it isn't available — the zip stays the portable option.
+build_windows_msi() {
+    local name="$1" stage="$2" wixcmd version msi size
+    wixcmd="$(command -v wix 2>/dev/null || command -v wix.exe 2>/dev/null || true)"
+    if [ -z "${wixcmd}" ] && [ -n "${USERPROFILE:-}" ]; then
+        # dotnet global tools are not usually on the MSYS2 PATH.
+        local dotnet_tools; dotnet_tools="$(cygpath "${USERPROFILE}" 2>/dev/null)/.dotnet/tools"
+        [ -x "${dotnet_tools}/wix.exe" ] && wixcmd="${dotnet_tools}/wix.exe"
+    fi
+    if [ -z "${wixcmd}" ]; then
+        warn "wix CLI not found; skipping the MSI installer (install with: dotnet tool install --global wix)"
+        return 0
+    fi
+    # MSI upgrade logic needs a growing numeric x.y.z. Local builds derive it
+    # from the commit count; CI (shallow clone) passes DELUGEMU_MSI_VERSION.
+    version="${DELUGEMU_MSI_VERSION:-1.0.$(git -C "${REPO_ROOT}" rev-list --count HEAD 2>/dev/null || echo 0)}"
+    msi="${OUT_DIR}/${name}.msi"
+    log "Building MSI installer (version ${version})..."
+    if "${wixcmd}" build "$(cygpath -w "${REPO_ROOT}/scripts/msi/delugemu.wxs")" \
+        -arch x64 \
+        -d "StageDir=$(cygpath -w "${stage}")" \
+        -d "Version=${version}" \
+        -d "IcoFile=$(cygpath -w "${REPO_ROOT}/scripts/msi/delugemu.ico")" \
+        -ext WixToolset.Util.wixext \
+        -o "$(cygpath -w "${msi}")"; then
+        size="$(du -h "${msi}" 2>/dev/null | cut -f1 | tr -d ' ')"
+        log "Installer ready: ${msi} (${size})"
+    else
+        warn "wix build failed; MSI skipped (the zip bundle was still produced)."
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -360,6 +506,20 @@ archive_targz() {
     log "Attach it to a GitHub Release; users extract and run ./delugemu."
 }
 
+# Wrap a staged folder (DelugEmu.app + Applications symlink + README) in a
+# compressed drag-install disk image.
+archive_dmg() {
+    local name="$1" dmgroot="$2" dmg="${OUT_DIR}/$1.dmg" size
+    log "Creating ${dmg}"
+    rm -f "${dmg}"
+    hdiutil create -volname "DelugEmu" -srcfolder "${dmgroot}" \
+        -ov -format UDZO "${dmg}" >/dev/null \
+        || die "hdiutil create failed"
+    size="$(du -h "${dmg}" | cut -f1 | tr -d ' ')"
+    log "Release image ready: ${dmg} (${size})"
+    log "Attach it to a GitHub Release; users open it and drag DelugEmu.app to Applications."
+}
+
 archive_zip() {
     local name="$1" zip="${OUT_DIR}/$1.zip" size
     log "Creating ${zip}"
@@ -378,15 +538,39 @@ archive_zip() {
     log "Attach it to a GitHub Release; users extract and run delugemu.cmd."
 }
 
+# README placed in the DMG root next to DelugEmu.app.
+write_readme_macos_app() {
+    local dmgroot="$1"
+    cat > "${dmgroot}/README.txt" <<'EOF'
+DelugEmu — Synthstrom Deluge emulator
+
+Install: drag DelugEmu.app into the Applications folder, then launch it like
+any app. On first launch it offers to download the open-source Deluge community
+firmware and the Synthstrom factory SD-card contents; both are kept under
+~/Library/Application Support/DelugEmu (drop your own firmware .bin/.elf into
+the firmware/ folder there, or songs/samples into sdcard_rw/, to use those
+instead — changes the emulator makes to the card are written back to that
+folder on exit). The Help menu has shortcuts to the SD card folder, the manual
+and the project repository. If a launch fails, the details are in
+~/Library/Application Support/DelugEmu/delugemu.log.
+
+Gatekeeper: this build is ad-hoc signed, not notarized, so the first launch may
+be blocked. Right-click the app and choose Open, or allow it under
+System Settings > Privacy & Security.
+
+Command line: the same app is a full CLI launcher with many more options
+(specific firmware images, SD folders with write-back, CoreMIDI DIN/USB-MIDI
+ports, audio backends, headless mode, ...):
+  /Applications/DelugEmu.app/Contents/MacOS/DelugEmu --help
+  /Applications/DelugEmu.app/Contents/MacOS/DelugEmu firmware.bin --sd card_rw
+
+This is an independent, unofficial project, not affiliated with Synthstrom
+Audible. Licensed GPL-2.0-or-later (see LICENSE inside the app bundle).
+EOF
+}
+
 write_readme_unix() {
-    local stage="$1" label="$2" os="$3" gatekeeper=""
-    if [ "${os}" = "macos" ]; then
-        gatekeeper="
-Gatekeeper: this build is ad-hoc signed, not notarized. On first launch macOS
-may block it; allow it under System Settings > Privacy & Security, or run:
-  xattr -dr com.apple.quarantine \"\$(pwd)\"
-"
-    fi
+    local stage="$1" label="$2" os="$3"
     cat > "${stage}/README.txt" <<EOF
 DelugEmu — Synthstrom Deluge emulator (relocatable ${label} build)
 
@@ -414,7 +598,7 @@ See all options:
 Build an SD card image from a content directory (factory folders SONGS/
 SYNTHS/ KITS/ SAMPLES/), sized to a power of two as the SD device requires:
   ./scripts/mksd.sh path/to/content deluge_sd.img
-${gatekeeper}
+
 This is an independent, unofficial project, not affiliated with Synthstrom
 Audible. Licensed GPL-2.0-or-later (see LICENSE).
 EOF

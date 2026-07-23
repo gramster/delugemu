@@ -1,0 +1,138 @@
+diff --git a/private/tmp/claude-501/-Users-gram-repos-delugemu/980eec13-309b-49b8-969a-04afc38be292/scratchpad/gtk.c.orig b/qemu/ui/gtk.c
+index 9ebe7e8..fdbed97 100644
+--- a/private/tmp/claude-501/-Users-gram-repos-delugemu/980eec13-309b-49b8-969a-04afc38be292/scratchpad/gtk.c.orig
++++ b/ui/gtk.c
+@@ -31,6 +31,7 @@
+ #define LOCALEDIR "po"
+ 
+ #include "qemu/osdep.h"
++#include "qemu-version.h"
+ #include "qapi/error.h"
+ #include "qapi/qapi-commands-control.h"
+ #include "qapi/qapi-commands-machine.h"
+@@ -223,9 +224,9 @@ static void gd_update_caption(GtkDisplayState *s)
+     int i;
+ 
+     if (qemu_name) {
+-        prefix = g_strdup_printf("QEMU (%s)", qemu_name);
++        prefix = g_strdup_printf("DelugEmu (%s)", qemu_name);
+     } else {
+-        prefix = g_strdup_printf("QEMU");
++        prefix = g_strdup_printf("DelugEmu");
+     }
+ 
+     if (s->ptr_owner != NULL &&
+@@ -2468,9 +2469,101 @@ static GtkWidget *gd_create_menu_view(GtkDisplayState *s, DisplayOptions *opts)
+     return view_menu;
+ }
+ 
++/* DelugEmu Help-menu actions. Launcher-dependent locations (the SD card
++ * folder, an overriding help document) arrive via environment variables
++ * exported by run.sh / delugemu.ps1, so the same binary serves the repo
++ * tree and the packaged bundles. */
++static void gd_delugemu_open_uri(GtkDisplayState *s, const char *uri)
++{
++    gtk_show_uri_on_window(GTK_WINDOW(s->window), uri, GDK_CURRENT_TIME, NULL);
++}
++
++static void gd_menu_delugemu_help(GtkMenuItem *item, void *opaque)
++{
++    GtkDisplayState *s = opaque;
++    const char *url = getenv("DELUGEMU_HELP_URL");
++
++    gd_delugemu_open_uri(s, url && url[0] ? url :
++                         "https://github.com/gramster/delugemu#readme");
++}
++
++static void gd_menu_delugemu_repo(GtkMenuItem *item, void *opaque)
++{
++    gd_delugemu_open_uri(opaque, "https://github.com/gramster/delugemu");
++}
++
++static void gd_menu_delugemu_sd_folder(GtkMenuItem *item, void *opaque)
++{
++    GtkDisplayState *s = opaque;
++    const char *dir = getenv("DELUGEMU_SD_FOLDER");
++    gchar *uri;
++
++    if (!dir || !dir[0]) {
++        return;
++    }
++    uri = g_filename_to_uri(dir, NULL, NULL);
++    if (uri) {
++        gd_delugemu_open_uri(s, uri);
++        g_free(uri);
++    }
++}
++
++static void gd_menu_delugemu_about(GtkMenuItem *item, void *opaque)
++{
++    GtkDisplayState *s = opaque;
++
++    gtk_show_about_dialog(GTK_WINDOW(s->window),
++        "program-name", "DelugEmu",
++        "version", "QEMU " QEMU_FULL_VERSION,
++        "comments", "An independent, unofficial emulator of the "
++                    "Synthstrom Deluge,\nnot affiliated with Synthstrom "
++                    "Audible. Built on QEMU.",
++        "license-type", GTK_LICENSE_GPL_2_0,
++        "website", "https://github.com/gramster/delugemu",
++        "website-label", "github.com/gramster/delugemu",
++        NULL);
++}
++
++static GtkWidget *gd_create_menu_help(GtkDisplayState *s)
++{
++    GtkWidget *help_menu = gtk_menu_new();
++    GtkWidget *item;
++
++    item = gtk_menu_item_new_with_mnemonic(_("DelugEmu _Help"));
++    g_signal_connect(item, "activate",
++                     G_CALLBACK(gd_menu_delugemu_help), s);
++    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), item);
++
++    item = gtk_menu_item_new_with_mnemonic(_("Open _Repository"));
++    g_signal_connect(item, "activate",
++                     G_CALLBACK(gd_menu_delugemu_repo), s);
++    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), item);
++
++    item = gtk_menu_item_new_with_mnemonic(_("Open _SD Card Folder"));
++    g_signal_connect(item, "activate",
++                     G_CALLBACK(gd_menu_delugemu_sd_folder), s);
++    {
++        /* Only enabled when the launcher provided a folder-backed SD card. */
++        const char *sd_dir = getenv("DELUGEMU_SD_FOLDER");
++        gtk_widget_set_sensitive(item, sd_dir && sd_dir[0]);
++    }
++    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), item);
++
++    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu),
++                          gtk_separator_menu_item_new());
++
++    item = gtk_menu_item_new_with_mnemonic(_("_About DelugEmu"));
++    g_signal_connect(item, "activate",
++                     G_CALLBACK(gd_menu_delugemu_about), s);
++    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), item);
++
++    return help_menu;
++}
++
+ static void gd_create_menus(GtkDisplayState *s, DisplayOptions *opts)
+ {
+     GtkSettings *settings;
++    GtkWidget *help_menu_item;
+ 
+     s->accel_group = gtk_accel_group_new();
+     s->machine_menu = gd_create_menu_machine(s);
+@@ -2485,6 +2578,11 @@ static void gd_create_menus(GtkDisplayState *s, DisplayOptions *opts)
+     gtk_menu_item_set_submenu(GTK_MENU_ITEM(s->view_menu_item), s->view_menu);
+     gtk_menu_shell_append(GTK_MENU_SHELL(s->menu_bar), s->view_menu_item);
+ 
++    help_menu_item = gtk_menu_item_new_with_mnemonic(_("Help"));
++    gtk_menu_item_set_submenu(GTK_MENU_ITEM(help_menu_item),
++                              gd_create_menu_help(s));
++    gtk_menu_shell_append(GTK_MENU_SHELL(s->menu_bar), help_menu_item);
++
+     g_object_set_data(G_OBJECT(s->window), "accel_group", s->accel_group);
+     gtk_window_add_accel_group(GTK_WINDOW(s->window), s->accel_group);
+ 

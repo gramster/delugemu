@@ -1,0 +1,136 @@
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index f620473..67f3021 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -1278,6 +1278,9 @@ - (BOOL)verifyQuit;
+ - (void)openDocumentation:(NSString *)filename;
+ - (IBAction) do_about_menu_item: (id) sender;
+ - (void)adjustSpeed:(id)sender;
++- (void)delugemuHelp:(id)sender;
++- (void)delugemuOpenRepository:(id)sender;
++- (void)delugemuOpenSDFolder:(id)sender;
+ @end
+ 
+ @implementation QemuCocoaAppController
+@@ -1649,30 +1652,60 @@ - (BOOL)verifyQuit
+ - (IBAction) do_about_menu_item: (id) sender
+ {
+     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+-    char *icon_path_c = get_relocated_path(CONFIG_QEMU_ICONDIR "/hicolor/512x512/apps/qemu.png");
+-    NSString *icon_path = [NSString stringWithUTF8String:icon_path_c];
+-    g_free(icon_path_c);
+-    NSImage *icon = [[NSImage alloc] initWithContentsOfFile:icon_path];
+-    NSString *version = @"QEMU emulator version " QEMU_FULL_VERSION;
+-    NSString *copyright = @QEMU_COPYRIGHT;
+-    NSDictionary *options;
+-    if (icon) {
+-        options = @{
+-            NSAboutPanelOptionApplicationIcon : icon,
+-            NSAboutPanelOptionApplicationVersion : version,
+-            @"Copyright" : copyright,
+-        };
+-        [icon release];
+-    } else {
+-        options = @{
+-            NSAboutPanelOptionApplicationVersion : version,
+-            @"Copyright" : copyright,
+-        };
+-    }
++    NSString *version = @"DelugEmu (QEMU " QEMU_FULL_VERSION ")";
++    NSString *copyright = @"Licensed GPL-2.0-or-later. " QEMU_COPYRIGHT;
++    NSString *creditsText =
++        @"An independent, unofficial emulator of the Synthstrom Deluge,\n"
++        @"not affiliated with Synthstrom Audible.\n\n"
++        @"Free software under the GNU GPL v2 or later; see the LICENSE\n"
++        @"file alongside the app for the full text. Built on QEMU.\n\n"
++        @"https://github.com/gramster/delugemu";
++    NSAttributedString *credits = [[[NSAttributedString alloc]
++        initWithString:creditsText
++            attributes:@{ NSFontAttributeName : [NSFont systemFontOfSize:11] }]
++        autorelease];
++    NSDictionary *options = @{
++        @"ApplicationName" : @"DelugEmu",
++        NSAboutPanelOptionApplicationVersion : version,
++        NSAboutPanelOptionCredits : credits,
++        @"Copyright" : copyright,
++    };
+     [NSApp orderFrontStandardAboutPanelWithOptions:options];
+     [pool release];
+ }
+ 
++/* DelugEmu Help-menu actions. Launcher-dependent locations (the SD card
++ * folder, an overriding help document) arrive via environment variables
++ * exported by run.sh / the .app launcher, so the same binary serves the
++ * repo tree, the CLI bundle and the app bundle. */
++static void delugemu_open_url(const char *url)
++{
++    [[NSWorkspace sharedWorkspace] openURL:
++        [NSURL URLWithString:[NSString stringWithUTF8String:url]]];
++}
++
++- (void)delugemuHelp:(id)sender
++{
++    const char *url = getenv("DELUGEMU_HELP_URL");
++    delugemu_open_url(url && url[0] ? url
++                                    : "https://github.com/gramster/delugemu#readme");
++}
++
++- (void)delugemuOpenRepository:(id)sender
++{
++    delugemu_open_url("https://github.com/gramster/delugemu");
++}
++
++- (void)delugemuOpenSDFolder:(id)sender
++{
++    const char *dir = getenv("DELUGEMU_SD_FOLDER");
++    if (dir && dir[0]) {
++        [[NSWorkspace sharedWorkspace] openURL:
++            [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir]
++                       isDirectory:YES]];
++    }
++}
++
+ /* Used by the Speed menu items */
+ - (void)adjustSpeed:(id)sender
+ {
+@@ -1729,17 +1762,17 @@ static void create_initial_menus(void)
+ 
+     // Application menu
+     menu = [[NSMenu alloc] initWithTitle:@""];
+-    [menu addItemWithTitle:@"About QEMU" action:@selector(do_about_menu_item:) keyEquivalent:@""]; // About QEMU
++    [menu addItemWithTitle:@"About DelugEmu" action:@selector(do_about_menu_item:) keyEquivalent:@""]; // About DelugEmu
+     [menu addItem:[NSMenuItem separatorItem]]; //Separator
+     menuItem = [menu addItemWithTitle:@"Services" action:nil keyEquivalent:@""];
+     [menuItem setSubmenu:[NSApp servicesMenu]];
+     [menu addItem:[NSMenuItem separatorItem]];
+-    [menu addItemWithTitle:@"Hide QEMU" action:@selector(hide:) keyEquivalent:@"h"]; //Hide QEMU
++    [menu addItemWithTitle:@"Hide DelugEmu" action:@selector(hide:) keyEquivalent:@"h"]; //Hide DelugEmu
+     menuItem = (NSMenuItem *)[menu addItemWithTitle:@"Hide Others" action:@selector(hideOtherApplications:) keyEquivalent:@"h"]; // Hide Others
+     [menuItem setKeyEquivalentModifierMask:(NSEventModifierFlagOption|NSEventModifierFlagCommand)];
+     [menu addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""]; // Show All
+     [menu addItem:[NSMenuItem separatorItem]]; //Separator
+-    [menu addItemWithTitle:@"Quit QEMU" action:@selector(terminate:) keyEquivalent:@"q"];
++    [menu addItemWithTitle:@"Quit DelugEmu" action:@selector(terminate:) keyEquivalent:@"q"];
+     menuItem = [[NSMenuItem alloc] initWithTitle:@"Apple" action:nil keyEquivalent:@""];
+     [menuItem setSubmenu:menu];
+     [[NSApp mainMenu] addItem:menuItem];
+@@ -1808,7 +1841,18 @@ static void create_initial_menus(void)
+ 
+     // Help menu
+     menu = [[NSMenu alloc] initWithTitle:@"Help"];
+-    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"QEMU Documentation" action:@selector(showQEMUDoc:) keyEquivalent:@"?"] autorelease]]; // QEMU Help
++    [menu setAutoenablesItems: NO];
++    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"DelugEmu Help" action:@selector(delugemuHelp:) keyEquivalent:@"?"] autorelease]];
++    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Open Repository" action:@selector(delugemuOpenRepository:) keyEquivalent:@""] autorelease]];
++    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Open SD Card Folder" action:@selector(delugemuOpenSDFolder:) keyEquivalent:@""] autorelease];
++    {
++        /* Only enabled when the launcher provided a folder-backed SD card. */
++        const char *sd_dir = getenv("DELUGEMU_SD_FOLDER");
++        [menuItem setEnabled: (sd_dir && sd_dir[0]) ? YES : NO];
++    }
++    [menu addItem: menuItem];
++    [menu addItem: [NSMenuItem separatorItem]];
++    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"QEMU Documentation" action:@selector(showQEMUDoc:) keyEquivalent:@""] autorelease]]; // QEMU Help
+     menuItem = [[[NSMenuItem alloc] initWithTitle:@"Window" action:nil keyEquivalent:@""] autorelease];
+     [menuItem setSubmenu:menu];
+     [[NSApp mainMenu] addItem:menuItem];

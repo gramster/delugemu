@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-or-later
+
+     WiX (v5+) authoring for the DelugEmu Windows installer, built by
+     scripts/package.sh when the `wix` CLI is available:
+
+       wix build scripts/msi/delugemu.wxs -arch x64 \
+           -d StageDir=<staged bundle dir> -d Version=1.0.N \
+           -d IcoFile=scripts/msi/delugemu.ico \
+           -ext WixToolset.Util.wixext -o DelugEmu-windows-x86_64.msi
+
+     Installs per-user (no admin prompt) into %LOCALAPPDATA%\Programs\DelugEmu
+     and adds a Start Menu group with the app (delugemu.ps1 -AppMode, which
+     keeps its state in %APPDATA%\DelugEmu), the SD card folder, a Help link
+     and the repository. The zip bundle remains the portable alternative.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="DelugEmu"
+           Manufacturer="gramster"
+           Version="$(var.Version)"
+           UpgradeCode="7d1b6d0e-3f0a-4c9e-9a51-2f4f4b8f31a2"
+           Scope="perUser"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of DelugEmu is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="DelugemuIco" SourceFile="$(var.IcoFile)" />
+    <Property Id="ARPPRODUCTICON" Value="DelugemuIco" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/gramster/delugemu#readme" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/gramster/delugemu" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="DelugEmu" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="MenuDir" Name="DelugEmu" />
+    </StandardDirectory>
+
+    <!-- User-data folders the app-mode launcher uses. Created at install time
+         so the "SD Card Folder" shortcut has a target before the first run;
+         deliberately left behind on uninstall (user data). -->
+    <StandardDirectory Id="AppDataFolder">
+      <Directory Id="StateDir" Name="DelugEmu">
+        <Directory Id="StateSdDir" Name="sdcard_rw" />
+        <Directory Id="StateFwDir" Name="firmware" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="BundleFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.StageDir)\**" />
+    </ComponentGroup>
+
+    <Component Id="StateFolders" Directory="StateDir">
+      <RegistryValue Root="HKCU" Key="Software\DelugEmu"
+                     Name="StateDir" Type="string"
+                     Value="[AppDataFolder]DelugEmu" KeyPath="yes" />
+      <CreateFolder Directory="StateSdDir" />
+      <CreateFolder Directory="StateFwDir" />
+    </Component>
+
+    <Component Id="StartMenuShortcuts" Directory="MenuDir">
+      <RegistryValue Root="HKCU" Key="Software\DelugEmu"
+                     Name="Shortcuts" Type="integer" Value="1" KeyPath="yes" />
+      <Shortcut Id="AppShortcut"
+                Name="DelugEmu"
+                Description="Synthstrom Deluge emulator"
+                Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                Arguments="-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]delugemu.ps1&quot; -AppMode"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="DelugemuIco" />
+      <Shortcut Id="SdFolderShortcut"
+                Name="DelugEmu SD Card Folder"
+                Description="Songs, synths, kits and samples on the emulated SD card"
+                Target="[AppDataFolder]DelugEmu\sdcard_rw" />
+      <util:InternetShortcut Id="HelpShortcut"
+                Name="DelugEmu Help"
+                Target="https://github.com/gramster/delugemu#readme" />
+      <util:InternetShortcut Id="RepoShortcut"
+                Name="DelugEmu Repository"
+                Target="https://github.com/gramster/delugemu" />
+      <RemoveFolder Id="RemoveMenuDir" On="uninstall" />
+    </Component>
+  </Package>
+</Wix>

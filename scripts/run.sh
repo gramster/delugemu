@@ -274,6 +274,35 @@ download_and_unzip() {
     rm -rf "${tmp}"
 }
 
+# Ask the user a yes/no question, returning 0 for yes. On a terminal this reads
+# stdin; when there is no terminal but DELUGEMU_APP_MODE=1 (set by the macOS
+# .app launcher, where a Finder launch has no TTY) it shows a native dialog
+# instead. With neither, the answer is no.
+confirm() {
+    local msg="$1" reply
+    if [ -t 0 ]; then
+        printf '%s' "${msg} [y/N] " >&2
+        read -r reply || reply=""
+        case "${reply}" in
+            [yY]|[yY][eE][sS]) return 0 ;;
+        esac
+        return 1
+    fi
+    if [ "${DELUGEMU_APP_MODE:-0}" = "1" ] && command -v osascript >/dev/null 2>&1; then
+        # Strip characters that would terminate the AppleScript string literal.
+        msg="$(printf '%s' "${msg}" | tr -d '"\\' | tr '\n' ' ')"
+        reply="$(osascript -e "button returned of (display dialog \"${msg}\" with title \"DelugEmu\" buttons {\"No\", \"Yes\"} default button \"Yes\")" 2>/dev/null || true)"
+        [ "${reply}" = "Yes" ]
+        return
+    fi
+    return 1
+}
+
+# True when we can put a question to the user at all (TTY or app-mode dialogs).
+interactive() {
+    [ -t 0 ] || [ "${DELUGEMU_APP_MODE:-0}" = "1" ]
+}
+
 BIN="${QEMU_SYSTEM_BIN}"
 [ -x "${BIN}" ] || die "qemu-system-arm not built. Run ./scripts/build.sh first."
 
@@ -292,23 +321,18 @@ if [ -z "${FIRMWARE}" ]; then
     FIRMWARE="$(find_local_firmware)"
     if [ -n "${FIRMWARE}" ]; then
         log "No firmware given; using ${FIRMWARE#"${REPO_ROOT}/"}"
-    elif [ -t 0 ]; then
-        printf '%s\n' "No firmware specified and none found in ${FIRMWARE_DIR}." >&2
-        printf '%s' "Download ${COMMUNITY_FW_NAME} (~900 KB) from Synthstrom and use it? [y/N] " >&2
-        read -r reply || reply=""
-        case "${reply}" in
-            [yY]|[yY][eE][sS])
-                download_and_unzip "${COMMUNITY_FW_URL}" "${FIRMWARE_DIR}" "${COMMUNITY_FW_NAME}"
-                FIRMWARE="$(find_local_firmware)"
-                [ -n "${FIRMWARE}" ] \
-                    || die "firmware download/extract produced no .bin image"
-                log "Using ${FIRMWARE#"${REPO_ROOT}/"}"
-                ;;
-            *)
-                usage
-                die "no firmware. Pass a firmware path or place a .bin in ${FIRMWARE_DIR}."
-                ;;
-        esac
+    elif interactive; then
+        if confirm "No firmware specified and none found in ${FIRMWARE_DIR}.
+Download ${COMMUNITY_FW_NAME} (~900 KB) from Synthstrom and use it?"; then
+            download_and_unzip "${COMMUNITY_FW_URL}" "${FIRMWARE_DIR}" "${COMMUNITY_FW_NAME}"
+            FIRMWARE="$(find_local_firmware)"
+            [ -n "${FIRMWARE}" ] \
+                || die "firmware download/extract produced no .bin image"
+            log "Using ${FIRMWARE#"${REPO_ROOT}/"}"
+        else
+            usage
+            die "no firmware. Pass a firmware path or place a .bin in ${FIRMWARE_DIR}."
+        fi
     else
         usage
         die "no firmware given and none found in ${FIRMWARE_DIR} (run interactively to fetch the community firmware, or pass a firmware path)"
@@ -455,23 +479,18 @@ if [ ${#SD_ARGS[@]} -eq 0 ]; then
         fi
     done
 fi
-if [ ${#SD_ARGS[@]} -eq 0 ] && [ -t 0 ]; then
-    printf '%s\n' "No SD card specified and no ./${SD_DIR} folder found." >&2
-    printf '%s' "Download ${FACTORY_SD_NAME} from Synthstrom and use it? [y/N] " >&2
-    read -r reply || reply=""
-    case "${reply}" in
-        [yY]|[yY][eE][sS])
-            download_and_unzip "${FACTORY_SD_URL}" "${SD_DIR}" "${FACTORY_SD_NAME}"
-            if [ -d "${SD_DIR}" ]; then
-                sd_setup "${SD_DIR}"
-            else
-                warn "factory card download produced no ./${SD_DIR} folder; continuing without an SD card"
-            fi
-            ;;
-        *)
-            log "Continuing without an SD card"
-            ;;
-    esac
+if [ ${#SD_ARGS[@]} -eq 0 ] && interactive; then
+    if confirm "No SD card specified and no ${SD_DIR} folder found.
+Download ${FACTORY_SD_NAME} from Synthstrom and use it?"; then
+        download_and_unzip "${FACTORY_SD_URL}" "${SD_DIR}" "${FACTORY_SD_NAME}"
+        if [ -d "${SD_DIR}" ]; then
+            sd_setup "${SD_DIR}"
+        else
+            warn "factory card download produced no ${SD_DIR} folder; continuing without an SD card"
+        fi
+    else
+        log "Continuing without an SD card"
+    fi
 fi
 
 # 'coremidi' bridges a transport to a real host MIDI port via a standalone
@@ -480,13 +499,18 @@ BRIDGE_SPECS=()
 DIN_SOCK="${TMPDIR:-/tmp}/delugemu-din.$$.sock"
 USB_SOCK="${TMPDIR:-/tmp}/delugemu-usb.$$.sock"
 MIDI_BRIDGE_SRC="${REPO_ROOT}/scripts/midi_bridge.c"
-MIDI_BRIDGE_BIN="${REPO_ROOT}/build/midi_bridge"
+MIDI_BRIDGE_BIN="${DELUGEMU_MIDI_BRIDGE:-${REPO_ROOT}/build/midi_bridge}"
 
 ensure_midi_bridge() {
     case "$(uname -s)" in
         Darwin) ;;
         *) die "'coremidi' MIDI bridging is currently macOS-only" ;;
     esac
+    # A packaged bundle ships a prebuilt bridge (DELUGEMU_MIDI_BRIDGE) so users
+    # don't need a C compiler; use it as-is.
+    if [ -n "${DELUGEMU_MIDI_BRIDGE:-}" ] && [ -x "${MIDI_BRIDGE_BIN}" ]; then
+        return 0
+    fi
     if [ ! -x "${MIDI_BRIDGE_BIN}" ] \
         || [ "${MIDI_BRIDGE_SRC}" -nt "${MIDI_BRIDGE_BIN}" ]; then
         log "Building MIDI bridge helper"
@@ -551,7 +575,9 @@ case "${DISPLAY_MODE}" in
                 DISPLAY_ARGS=(-display cocoa,show-cursor=on)
                 ;;
             *)
-                DISPLAY_ARGS=(-display gtk,zoom-to-fit=on,show-menubar=off)
+                # Menubar shown: it carries the DelugEmu Help menu (see
+                # qemu-patches/0004). Ctrl+Alt+M still toggles it.
+                DISPLAY_ARGS=(-display gtk,zoom-to-fit=on)
                 ;;
         esac
         ;;
@@ -744,6 +770,13 @@ if [ -n "${ICOUNT}" ]; then
 fi
 
 [ ${#SD_ARGS[@]} -gt 0 ] && log "Attaching SD image"
+
+# Tell the front panel where the folder-backed SD card lives so the Help menu's
+# "Open SD Card Folder" item can reveal it (macOS cocoa UI).
+if [ -n "${SD_FOLDER}" ] && [ -d "${SD_FOLDER}" ]; then
+    DELUGEMU_SD_FOLDER="$(cd "${SD_FOLDER}" && pwd)"
+    export DELUGEMU_SD_FOLDER
+fi
 
 # Post-run cleanup: reap the MIDI bridge and its sockets, write back a '_rw'
 # folder-backed SD, and remove the temporary SD image. Idempotent: clears its

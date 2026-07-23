@@ -21,6 +21,11 @@
 
 [CmdletBinding()]
 param(
+    # Set by the Start Menu shortcut the MSI installs. The install folder may
+    # not be writable and there is no visible console, so state moves to
+    # %APPDATA%\DelugEmu and prompts/errors become message boxes.
+    [switch] $AppMode,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $CliArgs
 )
@@ -31,9 +36,40 @@ $ErrorActionPreference = 'Stop'
 # Bundle root = the directory this script lives in.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+$StateDir = $null
+if ($AppMode) {
+    Add-Type -AssemblyName System.Windows.Forms | Out-Null
+    $StateDir = Join-Path $env:APPDATA 'DelugEmu'
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    Set-Location $StateDir
+}
+
 function Write-Log  { param([string]$Msg) Write-Host "[delugemu] $Msg" -ForegroundColor Cyan }
 function Write-Warn { param([string]$Msg) Write-Host "[delugemu] $Msg" -ForegroundColor Yellow }
-function Die        { param([string]$Msg) Write-Host "[delugemu] $Msg" -ForegroundColor Red; exit 1 }
+function Die {
+    param([string]$Msg)
+    if ($AppMode) {
+        [void][System.Windows.Forms.MessageBox]::Show($Msg, 'DelugEmu',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    Write-Host "[delugemu] $Msg" -ForegroundColor Red
+    exit 1
+}
+
+# Yes/no question: console Read-Host normally, a message box in app mode (the
+# hidden console cannot take input).
+function Confirm-User {
+    param([string]$Msg)
+    if ($AppMode) {
+        $r = [System.Windows.Forms.MessageBox]::Show($Msg, 'DelugEmu',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question)
+        return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
+    }
+    $reply = Read-Host "$Msg [y/N]"
+    return ($reply -match '^(y|yes)$')
+}
 
 function Show-Usage {
     @'
@@ -101,7 +137,9 @@ if (-not (Test-Path -LiteralPath $Qemu)) {
 
 $SkinImage = if ($env:DELUGEMU_SKIN) { $env:DELUGEMU_SKIN } else { $null }
 $Inverse   = $false
-$FirmwareDir = if ($env:DELUGEMU_FIRMWARE_DIR) { $env:DELUGEMU_FIRMWARE_DIR } else { Join-Path $Here 'firmware' }
+$FirmwareDir = if ($env:DELUGEMU_FIRMWARE_DIR) { $env:DELUGEMU_FIRMWARE_DIR }
+               elseif ($AppMode) { Join-Path $StateDir 'firmware' }
+               else { Join-Path $Here 'firmware' }
 
 $CommunityFwUrl  = 'https://github.com/SynthstromAudible/DelugeFirmware/releases/download/release_1_2_1/deluge-community-release-1_2_1.zip'
 $CommunityFwName = 'Deluge community firmware 1.2.1 (Chopin)'
@@ -109,7 +147,11 @@ $CommunityFwName = 'Deluge community firmware 1.2.1 (Chopin)'
 # Default SD-card folder (auto-detected when no --sd is given) and the Synthstrom
 # factory card contents offered for download when neither it nor an '<sd>_rw'
 # variant exists. Downloaded and unzipped, not redistributed.
-$SdDir         = if ($env:DELUGEMU_SD_DIR) { $env:DELUGEMU_SD_DIR } else { 'sdcard' }
+# In app mode the default card folder is '_rw' so songs the user saves in the
+# emulator persist across runs (guest changes are written back on exit).
+$SdDir         = if ($env:DELUGEMU_SD_DIR) { $env:DELUGEMU_SD_DIR }
+                 elseif ($AppMode) { Join-Path $StateDir 'sdcard_rw' }
+                 else { 'sdcard' }
 $FactorySdUrl  = 'https://synthstrom-audible-deluge.s3.us-east-2.amazonaws.com/Deluge+OLED+V4p1p0+factory+card+contents.zip'
 $FactorySdName = 'Deluge OLED V4.1.0 factory card contents'
 
@@ -214,6 +256,9 @@ function New-SdImageFromFolder {
         $script:SdWriteback = $true
         Write-Log "Folder name ends in '_rw': changes will be written back on exit"
     }
+    # Tell the front panel where the folder-backed card lives so the Help
+    # menu's "Open SD Card Folder" item can reveal it.
+    $env:DELUGEMU_SD_FOLDER = (Resolve-Path -LiteralPath $script:SdFolder).Path
     return $img
 }
 
@@ -332,9 +377,7 @@ if (-not $Firmware) {
         Write-Log "No firmware given; using $Firmware"
     }
     elseif ([Environment]::UserInteractive) {
-        Write-Host "No firmware specified and none found in $FirmwareDir."
-        $reply = Read-Host "Download $CommunityFwName (~900 KB) from Synthstrom and use it? [y/N]"
-        if ($reply -match '^(y|yes)$') {
+        if (Confirm-User "No firmware specified and none found in $FirmwareDir.`nDownload $CommunityFwName (~900 KB) from Synthstrom and use it?") {
             Get-CommunityFirmware
             $Firmware = Find-LocalFirmware
             if (-not $Firmware) { Die 'firmware download/extract produced no .bin image' }
@@ -367,9 +410,7 @@ if ($SdArgs.Count -eq 0) {
     }
 }
 if ($SdArgs.Count -eq 0 -and [Environment]::UserInteractive) {
-    Write-Host "No SD card specified and no .\$SdDir folder found."
-    $reply = Read-Host "Download $FactorySdName from Synthstrom and use it? [y/N]"
-    if ($reply -match '^(y|yes)$') {
+    if (Confirm-User "No SD card specified and no $SdDir folder found.`nDownload $FactorySdName from Synthstrom and use it?") {
         Get-FactorySdCard -Dir $SdDir
         if (Test-Path -LiteralPath $SdDir -PathType Container) {
             $SdArgs = Resolve-SdArgs $SdDir
