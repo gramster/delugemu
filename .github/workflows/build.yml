@@ -237,12 +237,16 @@ jobs:
 
       # WiX v5+ CLI for the MSI installer built by package.sh. Installed with
       # the Windows-native dotnet (outside MSYS2); package.sh finds it under
-      # %USERPROFILE%\.dotnet\tools.
+      # %USERPROFILE%\.dotnet\tools. Non-fatal: if this breaks, package.sh
+      # warns and skips the MSI but the zip bundle must still publish.
       - name: Install WiX CLI
         shell: pwsh
+        continue-on-error: true
         run: |
           dotnet tool install --global wix
-          wix extension add --global WixToolset.Util.wixext
+          $wix = Join-Path $env:USERPROFILE '.dotnet\tools\wix.exe'
+          & $wix --version
+          & $wix extension add --global WixToolset.Util.wixext
 
       - name: Package relocatable bundle + MSI installer
         run: ./scripts/package.sh
