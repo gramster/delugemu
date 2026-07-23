@@ -167,9 +167,9 @@ Options:
   --tx-render-head <addr|auto|off>
                         Bound audio ring reads by the firmware's render head so
                         overload degrades to brief clean gaps instead of
-                        distortion. Off by default; pass 'auto' to locate it at
-                        runtime (best-effort), or a guest address (hex/decimal)
-                        for symbol-built firmware.
+                        distortion. Defaults to 'auto' (the emulator logs the
+                        address it locks). Pass a guest address (hex/decimal)
+                        to pin it, or 'off' for the raw play head.
   --skin-refresh-ms <ms>
                         Front-panel UI refresh interval (default 50, ~20fps).
                         Raise it to lower the host redraw rate and free the main
@@ -384,10 +384,10 @@ $Midi          = $null
 $UsbMidi       = $null
 $Audio         = $null
 $AudioBuffer   = $null
-# Render-head clamp off by default: the 'auto' render-head detection is
-# best-effort and has been seen to hurt audio on some hosts. Pass
-# --tx-render-head auto to enable it if dense playback breaks up.
-$TxRenderHead  = 'off'
+# Render-head clamp defaults to 'auto'; the emulator logs the address the
+# auto-detection locks (or that it gave up). Pass --tx-render-head off to
+# track the raw play head instead.
+$TxRenderHead  = 'auto'
 $SkinRefreshMs = $null
 $Icount        = $null
 $DisplayMode   = 'console'

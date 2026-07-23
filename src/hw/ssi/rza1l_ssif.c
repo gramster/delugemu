@@ -568,7 +568,11 @@ typedef struct RzA1lRhCand {
     uint32_t alias;      /* fixed view offset (0 or 0x40000000)            */
     uint32_t first_off;  /* ring offset first seen, to detect movement     */
     uint32_t max_gap;    /* largest trailing gap behind the play head seen */
+    uint32_t cur_off;    /* ring offset read this round                    */
     int      rounds;     /* consecutive checks still pointing into the ring */
+    int      cmp_rounds; /* rounds with >=1 other mover to compare against  */
+    int      lead_rounds;/* of those, rounds it strictly led every other    */
+    bool     cur_valid;  /* cur_off is fresh this round                    */
     bool     moved;      /* observed at a second ring offset               */
     bool     alive;      /* still a candidate                              */
 } RzA1lRhCand;
@@ -581,9 +585,38 @@ typedef struct RzA1lRhCand {
 #define RH_RESEED_INTERVAL_NS (200 * 1000 * 1000) /* gap between SRAM rescans */
 #define RH_SEED_MAX_ATTEMPTS  40                  /* ~8 s of rescans then quit */
 #define RH_ROUNDS_TO_LOCK     8                   /* ~128 ms of confirmation */
-#define RH_MAX_ROUNDS         300                 /* hard stop on verify rounds */
+/*
+ * Verify budget: each round re-reads a handful of words every 16 ms (trivial),
+ * so keep observing for a long time rather than giving up before the user
+ * first presses PLAY — the decisive trailing-gap evidence only appears under
+ * real rendering load. ~10 minutes, then the play-head fallback stands.
+ */
+#define RH_MAX_ROUNDS         36000
 #define RH_MAX_CANDS          256                 /* too many -> ambiguous   */
-#define RH_MIN_LOCK_GAP       (4 * RZA1L_SSIF_BYTES_PER_FRAME) /* clear trail */
+/*
+ * Lock threshold for the single-mover fallback (see rza1l_ssif_rh_verify):
+ * just enough trailing gap to prove the word tracks real rendering. When two
+ * movers survive (render head + the firmware's play-head copy) the pairwise
+ * ring-order test below decides, not the gap: measured traces show the two
+ * track each other's gap-to-wpos in lockstep, so gap size cannot separate
+ * them (locking on it picked the wrong one about half the time).
+ */
+#define RH_MIN_LOCK_GAP       (4 * RZA1L_SSIF_BYTES_PER_FRAME)
+
+/*
+ * Optional firmware-side sentinel (for firmware forks that can add one; the
+ * heuristic search below needs nothing from the firmware). Declaring
+ *
+ *     volatile uint32_t delugemu_render_head_hint[3] =
+ *         { 0x445A5248, (uint32_t)&AudioEngine::i2sTXBufferPos, 0x64485A44 };
+ *
+ * anywhere in on-chip SRAM lets the emulator find the render head exactly: the
+ * seed scan looks for the two magic words and takes the address between them,
+ * skipping the whole candidate/verify heuristic. The middle word must point
+ * into SRAM. Multiple sentinel blocks are ambiguous and are ignored.
+ */
+#define RH_SENTINEL_A  0x445A5248u   /* "HRZD" */
+#define RH_SENTINEL_B  0x64485A44u   /* "DZHd" */
 
 /* Reduce a candidate's raw value to a ring offset; false if not in the ring. */
 static bool rza1l_ssif_rh_reduce(uint32_t value, uint32_t base, uint32_t size,
@@ -612,9 +645,20 @@ static void rza1l_ssif_rh_finish(RzA1lSsifState *s, uint32_t found_addr)
         s->render_head_addr = found_addr;
         qemu_log("rza1l-ssif: tx-render-head auto-detected at 0x%08x\n",
                  found_addr);
+        if (s->rh_expect) {
+            if (found_addr == s->rh_expect) {
+                qemu_log("rza1l-ssif: tx-render-head auto-detect MATCHES "
+                         "expected 0x%08x\n", s->rh_expect);
+            } else {
+                qemu_log("rza1l-ssif: tx-render-head auto-detect MISMATCH: "
+                         "locked 0x%08x but expected 0x%08x\n",
+                         found_addr, s->rh_expect);
+            }
+        }
     } else {
         qemu_log("rza1l-ssif: tx-render-head auto-detect gave up; "
-                 "using play-head fallback\n");
+                 "using play-head fallback%s\n",
+                 s->rh_expect ? " (an expected address was set)" : "");
     }
 }
 
@@ -625,7 +669,15 @@ static void rza1l_ssif_rh_seed(RzA1lSsifState *s, uint32_t base, uint32_t size)
     RzA1lRhCand *cands = NULL;
     int count = 0;
 
-    for (uint32_t pos = 0; pos < RH_SRAM_SIZE; pos += sizeof(buf)) {
+    uint32_t sentinel_head = 0;
+    int sentinel_hits = 0;
+
+    /*
+     * Overlap chunks by 8 bytes so a sentinel block never straddles a chunk
+     * boundary unseen; the heuristic word scan below tolerates re-seeing the
+     * overlap (duplicate candidates just verify identically).
+     */
+    for (uint32_t pos = 0; pos < RH_SRAM_SIZE; pos += sizeof(buf) - 8) {
         uint32_t chunk = MIN((uint32_t)sizeof(buf), RH_SRAM_SIZE - pos);
 
         if (dma_memory_read(&address_space_memory, RH_SRAM_BASE + pos, buf,
@@ -635,6 +687,21 @@ static void rza1l_ssif_rh_seed(RzA1lSsifState *s, uint32_t base, uint32_t size)
         for (uint32_t o = 0; o + 4 <= chunk; o += 4) {
             uint32_t value = ldl_le_p(buf + o);
             uint32_t off, alias;
+
+            /* Firmware-provided sentinel block: exact, ends the search. */
+            if (value == RH_SENTINEL_A && o + 12 <= chunk &&
+                ldl_le_p(buf + o + 8) == RH_SENTINEL_B) {
+                uint32_t hinted = ldl_le_p(buf + o + 4);
+
+                if (hinted - RH_SRAM_BASE < RH_SRAM_SIZE) {
+                    if (sentinel_hits > 0 && hinted != sentinel_head) {
+                        sentinel_head = 0;      /* conflicting blocks: ignore */
+                    } else if (sentinel_hits == 0) {
+                        sentinel_head = hinted;
+                    }
+                    sentinel_hits++;
+                }
+            }
 
             if (!rza1l_ssif_rh_reduce(value, base, size, &off, &alias)) {
                 continue;
@@ -650,11 +717,27 @@ static void rza1l_ssif_rh_seed(RzA1lSsifState *s, uint32_t base, uint32_t size)
             cands[count].alias = alias;
             cands[count].first_off = off;
             cands[count].max_gap = 0;
+            cands[count].cur_off = 0;
             cands[count].rounds = 0;
+            cands[count].cmp_rounds = 0;
+            cands[count].lead_rounds = 0;
+            cands[count].cur_valid = false;
             cands[count].moved = false;
             cands[count].alive = true;
             count++;
         }
+    }
+
+    if (sentinel_head) {
+        g_free(cands);
+        qemu_log("rza1l-ssif: tx-render-head sentinel found; head at 0x%08x\n",
+                 sentinel_head);
+        rza1l_ssif_rh_finish(s, sentinel_head);
+        return;
+    }
+    if (sentinel_hits > 1) {
+        qemu_log("rza1l-ssif: %d conflicting tx-render-head sentinel blocks; "
+                 "ignoring sentinels\n", sentinel_hits);
     }
 
     if (count == 0) {
@@ -675,21 +758,28 @@ static void rza1l_ssif_rh_seed(RzA1lSsifState *s, uint32_t base, uint32_t size)
  * One verification step over the live candidate set.
  *
  * Two genuine ring pointers survive the "moving, in-ring" filter: the render
- * head W (AudioEngine::i2sTXBufferPos) and the firmware's read-back copy of the
- * DMA source/play head P (AudioEngine::saddr). They are distinguished by their
- * position relative to the live play head wpos: the play-head copy sits on top
- * of P (gap ~ 0, with occasional small-negative jitter that wraps near the ring
- * size), while the render head consistently *trails* P by the firmware's render
- * backlog. So each round we accumulate the largest trailing gap (wpos - off)
- * each candidate exhibits, clamping the near-size wrap of a slightly-ahead
- * pointer back to zero, and once a clear trailing signal has appeared we latch
- * the candidate with the largest such gap. That is the render head.
+ * head W (AudioEngine::i2sTXBufferPos) and the firmware's read-back copy of
+ * the DMA source/play head P (AudioEngine::saddr). Their gap to the emulator's
+ * wall-clock play head is measurably identical (they track each other in
+ * lockstep), so they are distinguished by ring order between EACH OTHER: the
+ * render head consistently TRAILS the play-head copy by the render backlog
+ * (verified against the ELF symbol with tx-render-head-expect: W sits a small
+ * reverse distance behind P on every strict-order round). Each round every
+ * mover is compared against every other mover; a candidate that has strictly
+ * trailed all others on every comparable round for RH_ROUNDS_TO_LOCK rounds
+ * is the render head. Rounds where two movers sit at the same offset carry no
+ * order information and are skipped. If only a single mover ever survives,
+ * ring order has nothing to compare, so a modest trailing-gap floor
+ * (RH_MIN_LOCK_GAP) locks it instead — and if that lone mover is the
+ * play-head copy, clamping by it degenerates to the play-head fallback
+ * anyway, which is safe.
  */
 static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
                                  uint32_t size, uint32_t wpos)
 {
     RzA1lRhCand *best = NULL;
     int alive = 0;
+    int movers = 0;
 
     s->rh_rounds++;
 
@@ -698,6 +788,7 @@ static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
         uint8_t b[4];
         uint32_t off, alias, gap;
 
+        c->cur_valid = false;
         if (!c->alive) {
             continue;
         }
@@ -708,6 +799,8 @@ static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
             c->alive = false;        /* no longer a ring pointer */
             continue;
         }
+        c->cur_off = off;
+        c->cur_valid = true;
         if (off != c->first_off) {
             c->moved = true;
         }
@@ -728,8 +821,74 @@ static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
         c->rounds++;
         alive++;
 
-        if (c->moved && (best == NULL || c->max_gap > best->max_gap)) {
-            best = c;
+        if (c->moved) {
+            movers++;
+            if (best == NULL || c->max_gap > best->max_gap) {
+                best = c;
+            }
+        }
+    }
+
+    /*
+     * Pairwise ring-order pass: for every mover, check whether it strictly
+     * leads every other mover this round (forward distance in (0, size/2)).
+     */
+    for (int i = 0; i < s->rh_cand_count; i++) {
+        RzA1lRhCand *c = &s->rh_cands[i];
+        bool trails_all = true;
+        int others = 0;
+
+        if (!c->cur_valid || !c->moved) {
+            continue;
+        }
+        for (int j = 0; j < s->rh_cand_count; j++) {
+            RzA1lRhCand *o = &s->rh_cands[j];
+            uint32_t fwd;
+
+            if (o == c || !o->cur_valid || !o->moved) {
+                continue;
+            }
+            fwd = (c->cur_off + size - o->cur_off) % size;
+            if (fwd == 0) {
+                continue;       /* tie: same offset, no order to observe */
+            }
+            others++;
+            if (fwd <= size / 2) {
+                trails_all = false;     /* c is ahead of o, not trailing */
+            }
+        }
+        if (others > 0) {
+            c->cmp_rounds++;
+            if (trails_all) {
+                c->lead_rounds++;
+            }
+        }
+    }
+
+    /*
+     * Multi-mover lock: a unique candidate that has strictly trailed every
+     * other mover on every comparable round, long enough to be confident.
+     */
+    if (movers >= 2) {
+        RzA1lRhCand *leader = NULL;
+        bool unique = true;
+
+        for (int i = 0; i < s->rh_cand_count; i++) {
+            RzA1lRhCand *c = &s->rh_cands[i];
+            if (c->alive && c->moved && c->cmp_rounds >= RH_ROUNDS_TO_LOCK &&
+                c->lead_rounds == c->cmp_rounds) {
+                if (leader) {
+                    unique = false;
+                }
+                leader = c;
+            }
+        }
+        if (leader && unique) {
+            qemu_log("rza1l-ssif: tx-render-head auto-detect: 0x%08x trailed "
+                     "all other movers for %d rounds\n",
+                     leader->addr, leader->lead_rounds);
+            rza1l_ssif_rh_finish(s, leader->addr);
+            return;
         }
     }
 
@@ -739,8 +898,26 @@ static void rza1l_ssif_rh_verify(RzA1lSsifState *s, uint32_t base,
      * (RH_MIN_LOCK_GAP). If none did yet (no audio load during the window),
      * keep observing until the round budget runs out.
      */
-    if (s->rh_rounds >= RH_ROUNDS_TO_LOCK && best != NULL &&
+    if (getenv("DELUGEMU_RH_TRACE") && (s->rh_rounds % 64) == 0) {
+        for (int i = 0; i < s->rh_cand_count; i++) {
+            RzA1lRhCand *c = &s->rh_cands[i];
+            if (c->alive && c->moved) {
+                qemu_log("rh-trace: round %d cand 0x%08x max_gap %u\n",
+                         s->rh_rounds, c->addr, c->max_gap);
+            }
+        }
+    }
+
+    if (movers == 1 && s->rh_rounds >= RH_ROUNDS_TO_LOCK && best != NULL &&
         best->max_gap >= RH_MIN_LOCK_GAP) {
+        for (int i = 0; i < s->rh_cand_count; i++) {
+            RzA1lRhCand *c = &s->rh_cands[i];
+            if (c->alive) {
+                qemu_log("rza1l-ssif:   candidate 0x%08x gap %u moved %d "
+                         "rounds %d\n", c->addr, c->max_gap, c->moved,
+                         c->rounds);
+            }
+        }
         qemu_log("rza1l-ssif: tx-render-head auto-detect locked 0x%08x "
                  "(trailing gap %u bytes)\n", best->addr, best->max_gap);
         rza1l_ssif_rh_finish(s, best->addr);
@@ -846,8 +1023,21 @@ static void rza1l_ssif_pump(RzA1lSsifState *s)
      */
     if (rza1l_ssif_render_head(s, base, size, &head_off)) {
         target = head_off;
+        s->rh_fail_streak = 0;
     } else {
         target = wpos;
+        /*
+         * A configured/locked head that stops reducing into the ring for a
+         * sustained stretch is stale (wrong lock, firmware reboot, ...). The
+         * per-read play-head fallback above already keeps audio safe; log the
+         * transition once so the condition is visible in the run log.
+         */
+        if (s->render_head_addr && !s->rh_stale_logged &&
+            ++s->rh_fail_streak >= 64) {
+            s->rh_stale_logged = true;
+            qemu_log("rza1l-ssif: render head at 0x%08x went stale; "
+                     "using play-head fallback\n", s->render_head_addr);
+        }
     }
 
     if (!s->play_anchored) {
@@ -1224,6 +1414,7 @@ static const Property rza1l_ssif_properties[] = {
     DEFINE_PROP_UINT32("prime-ms", RzA1lSsifState, prime_ms,
                        RZA1L_SSIF_DEFAULT_PRIME_MS),
     DEFINE_PROP_UINT32("tx-render-head", RzA1lSsifState, render_head_addr, 0),
+    DEFINE_PROP_UINT32("tx-render-head-expect", RzA1lSsifState, rh_expect, 0),
     DEFINE_PROP_BOOL("tx-render-head-auto", RzA1lSsifState, render_head_auto,
                      false),
 };

@@ -177,6 +177,12 @@ struct RzA1lSsifState {
     int       rh_rounds;
     int64_t   rh_arm_ns;
     int64_t   rh_next_scan_ns;
+    uint32_t  rh_expect;         /* expected head addr for auto-detect
+                                    cross-checking ("tx-render-head-expect");
+                                    0 = no expectation, log-only either way */
+    uint32_t  rh_fail_streak;    /* consecutive failed reads of the locked
+                                    head, for stale-head detection */
+    bool      rh_stale_logged;   /* one-shot flag for the stale-head log */
     struct RzA1lRhCand *rh_cands;
     int       rh_cand_count;
 

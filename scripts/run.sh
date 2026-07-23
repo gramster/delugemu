@@ -55,13 +55,13 @@
 #                           Bound audio ring reads by the firmware's render head
 #                           (AudioEngine::i2sTXBufferPos) so overload degrades to
 #                           brief clean gaps instead of ring-lap distortion.
-#                           Off by default (the wall-clock DMA play head is
-#                           tracked). Pass 'auto' to locate the render head by
-#                           scanning guest RAM (best-effort; has been seen to
-#                           hurt audio on some hosts, hence opt-in), or a guest
-#                           address (hex, e.g. 0x20038fdc) for symbol-built
-#                           firmware. Also togglable from the in-app Settings
-#                           menu on macOS ("Graceful Overload Clamp").
+#                           Defaults to 'auto': for an unstripped .elf the head
+#                           is resolved exactly from the symbol table; for a
+#                           .bin the emulator scans guest RAM and logs the
+#                           address it locks. Pass a guest address (hex, e.g.
+#                           0x20038fdc) to pin it, or 'off' to track the raw
+#                           wall-clock DMA play head. Also togglable from the
+#                           in-app Settings menu on macOS.
 #   --display <mode>        Display mode:
 #                             console   open the front-panel skin window with
 #                                       the modelled OLED / pad-grid / 7-seg
@@ -373,10 +373,11 @@ MIDI=""
 USB_MIDI=""
 AUDIO=""
 AUDIO_BUFFER=""
-# Render-head clamp. Off by default: the 'auto' render-head detection is
-# best-effort and has been seen to hurt audio on some hosts. Enable it with
-# --tx-render-head auto (or the in-app Settings menu) if dense playback breaks
-# up — it turns overload into brief clean gaps instead of ring-lap distortion.
+# Render-head clamp. Defaults to 'auto' (overridable by flag or the Settings
+# menu): overload becomes brief clean gaps instead of ring-lap distortion. For
+# an unstripped .elf the head is resolved exactly from the symbol table; the
+# in-emulator scan is the .bin fallback and logs where it locked (see
+# DELUGEMU_RH_VERIFY_AUTO to cross-check the scan against the symbol).
 TX_RENDER_HEAD=""
 DISPLAY_MODE="console"
 ICOUNT=""
@@ -494,7 +495,7 @@ done
 # Apply Settings-menu values for options not given on the command line, then
 # hard defaults. TX_RENDER_HEAD defaults to 'off' (see above).
 [ -z "${TX_RENDER_HEAD}" ] && TX_RENDER_HEAD="$(conf_get TX_RENDER_HEAD)"
-[ -z "${TX_RENDER_HEAD}" ] && TX_RENDER_HEAD="off"
+[ -z "${TX_RENDER_HEAD}" ] && TX_RENDER_HEAD="auto"
 [ -z "${AUDIO_BUFFER}" ] && AUDIO_BUFFER="$(conf_get AUDIO_BUFFER)"
 [ -z "${ICOUNT}" ] && ICOUNT="$(conf_get ICOUNT)"
 
@@ -779,8 +780,30 @@ if [ -n "${TX_RENDER_HEAD}" ]; then
         off|none)
             log "SSIF audio tracks the raw wall-clock play head (render-head clamp off)" ;;
         auto)
-            AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head-auto=on")
-            log "SSIF audio bounded by auto-detected firmware render head" ;;
+            # Exact beats heuristic: with an unstripped .elf and a toolchain nm,
+            # resolve AudioEngine::i2sTXBufferPos directly. Otherwise run the
+            # in-emulator scan (it logs the address it locks, or that it gave
+            # up). DELUGEMU_RH_VERIFY_AUTO=1 forces the scan even when the
+            # symbol is known and has the device log MATCH/MISMATCH against it.
+            RH_SYM=""
+            case "${FIRMWARE}" in
+                *.elf)
+                    if command -v arm-none-eabi-nm >/dev/null 2>&1; then
+                        RH_SYM="$(arm-none-eabi-nm "${FIRMWARE}" 2>/dev/null                             | awk '/i2sTXBufferPos/ {print "0x"$1; exit}' || true)"
+                    fi
+                    ;;
+            esac
+            if [ -n "${RH_SYM}" ] && [ "${DELUGEMU_RH_VERIFY_AUTO:-0}" != "1" ]; then
+                AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head=${RH_SYM}")
+                log "SSIF audio bounded by render head from ELF symbol: ${RH_SYM}"
+            else
+                AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head-auto=on")
+                if [ -n "${RH_SYM}" ]; then
+                    AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head-expect=${RH_SYM}")
+                    log "SSIF render-head auto-detect will be checked against symbol ${RH_SYM}"
+                fi
+                log "SSIF audio bounded by auto-detected firmware render head"
+            fi ;;
         0x[0-9A-Fa-f]*|[0-9]*)
             AUDIO_ARGS+=(-global "rza1l-ssif.tx-render-head=${TX_RENDER_HEAD}")
             log "SSIF audio bounded by firmware render head at: ${TX_RENDER_HEAD}" ;;
