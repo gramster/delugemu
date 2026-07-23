@@ -316,6 +316,18 @@ notify() {
     fi
 }
 
+# Release/build version, shown in the window title and the About box.
+# Packaged bundles ship a VERSION file at the bundle root; a repo checkout
+# derives it from git. An explicit DELUGEMU_VERSION always wins.
+if [ -z "${DELUGEMU_VERSION:-}" ]; then
+    if [ -f "${REPO_ROOT}/VERSION" ]; then
+        DELUGEMU_VERSION="$(head -n 1 "${REPO_ROOT}/VERSION" 2>/dev/null || true)"
+    else
+        DELUGEMU_VERSION="$(git -C "${REPO_ROOT}" describe --tags --always --dirty 2>/dev/null || true)"
+    fi
+fi
+[ -n "${DELUGEMU_VERSION:-}" ] && export DELUGEMU_VERSION
+
 # Settings file written by the in-app Settings menu and read back here as
 # launch defaults (command-line flags win). macOS gets a stable default path so
 # CLI and .app launches share the same settings.

@@ -191,6 +191,15 @@ through to qemu-system-arm.exe.
 # Allow `--help` to work even before checking for the binary.
 if ($CliArgs | Where-Object { $_ -eq '-h' -or $_ -eq '--help' }) { Show-Usage; exit 0 }
 
+# Release tag for the window title / About box (VERSION is stamped into the
+# bundle by package.sh).
+if (-not $env:DELUGEMU_VERSION) {
+    $verFile = Join-Path $Here 'VERSION'
+    if (Test-Path -LiteralPath $verFile) {
+        $env:DELUGEMU_VERSION = (Get-Content -LiteralPath $verFile -First 1).Trim()
+    }
+}
+
 $Qemu = if ($env:DELUGEMU_QEMU_BIN) { $env:DELUGEMU_QEMU_BIN } else { Join-Path $Here 'qemu-system-arm.exe' }
 if (-not (Test-Path -LiteralPath $Qemu)) {
     Die "qemu-system-arm.exe not found at $Qemu"

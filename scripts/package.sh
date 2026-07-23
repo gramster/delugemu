@@ -48,6 +48,20 @@ stage_run_helpers() {
     cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
     cp "${REPO_ROOT}/Delugemu_Normal.png" "${stage}/Delugemu_Normal.png"
     cp "${REPO_ROOT}/Delugemu_Inverse.png" "${stage}/Delugemu_Inverse.png"
+    # Release tag for the window title / About box (read by the launchers and
+    # exported as DELUGEMU_VERSION). CI passes the tag; local builds ask git.
+    bundle_version > "${stage}/VERSION"
+}
+
+# The version string stamped into bundles: the release tag in CI
+# (DELUGEMU_VERSION from the workflow), else git describe.
+bundle_version() {
+    if [ -n "${DELUGEMU_VERSION:-}" ]; then
+        printf '%s\n' "${DELUGEMU_VERSION}"
+    else
+        git -C "${REPO_ROOT}" describe --tags --always --dirty 2>/dev/null \
+            || printf 'unknown\n'
+    fi
 }
 
 stage_unix_helpers() {
@@ -176,8 +190,12 @@ package_macos() {
     make_icns "${REPO_ROOT}/Delugemu_Normal.png" "${resdir}/delugemu.icns" \
         || die "failed to generate delugemu.icns"
 
-    local version
+    local version short_version
     version="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    short_version="$(bundle_version | sed 's/^v//')"
+    case "${short_version}" in
+        *[!0-9.]*|'') short_version="1.0" ;;    # tag not x.y[.z]; keep a sane default
+    esac
     cat > "${contents}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -189,7 +207,7 @@ package_macos() {
     <key>CFBundleDisplayName</key>        <string>DelugEmu</string>
     <key>CFBundleExecutable</key>         <string>DelugEmu</string>
     <key>CFBundleIconFile</key>           <string>delugemu</string>
-    <key>CFBundleShortVersionString</key> <string>1.0</string>
+    <key>CFBundleShortVersionString</key> <string>${short_version}</string>
     <key>CFBundleVersion</key>            <string>${version}</string>
     <key>LSMinimumSystemVersion</key>     <string>11.0</string>
     <key>LSApplicationCategoryType</key>  <string>public.app-category.music</string>
@@ -432,6 +450,7 @@ package_windows() {
     cp "${REPO_ROOT}/Delugemu_Normal.png" "${stage}/Delugemu_Normal.png"
     cp "${REPO_ROOT}/Delugemu_Inverse.png" "${stage}/Delugemu_Inverse.png"
     cp "${REPO_ROOT}/LICENSE" "${stage}/LICENSE" 2>/dev/null || true
+    bundle_version > "${stage}/VERSION"
 
     # Vendor the SD-folder helpers so the native launcher can build a FAT image
     # from a directory without MSYS2: mkfs.fat (dosfstools, a MinGW .exe) and

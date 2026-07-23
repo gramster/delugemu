@@ -142,6 +142,9 @@ jobs:
 
       - name: Package relocatable bundle
         run: ./scripts/package.sh
+        env:
+          # Release tag stamped into the bundle (window title / About box).
+          DELUGEMU_VERSION: ${{ github.ref_name }}
 
       - name: Upload bundle to the release
         uses: softprops/action-gh-release@v2
@@ -181,6 +184,8 @@ jobs:
 
       - name: Package relocatable bundle
         run: ./scripts/package.sh
+        env:
+          DELUGEMU_VERSION: ${{ github.ref_name }}
 
       - name: Upload bundle to the release
         uses: softprops/action-gh-release@v2
@@ -258,6 +263,7 @@ jobs:
           # MSI versions must grow monotonically for upgrades; the shallow CI
           # clone can't use the commit count, so use the workflow run number.
           DELUGEMU_MSI_VERSION: 1.0.${{ github.run_number }}
+          DELUGEMU_VERSION: ${{ github.ref_name }}
 
       - name: Upload bundle to the release
         uses: softprops/action-gh-release@v2

@@ -9,19 +9,29 @@ diff --git a/ui/gtk.c b/ui/gtk.c
  #include "qapi/error.h"
  #include "qapi/qapi-commands-control.h"
  #include "qapi/qapi-commands-machine.h"
-@@ -223,9 +224,9 @@
+@@ -222,10 +223,17 @@
+     bool is_paused = !runstate_is_running();
      int i;
  
-     if (qemu_name) {
+-    if (qemu_name) {
 -        prefix = g_strdup_printf("QEMU (%s)", qemu_name);
-+        prefix = g_strdup_printf("DelugEmu (%s)", qemu_name);
-     } else {
+-    } else {
 -        prefix = g_strdup_printf("QEMU");
-+        prefix = g_strdup_printf("DelugEmu");
++    {
++        const char *dv = getenv("DELUGEMU_VERSION");
++        const char *app = "DelugEmu";
++        if (qemu_name) {
++            prefix = dv && dv[0] ?
++                g_strdup_printf("%s %s (%s)", app, dv, qemu_name) :
++                g_strdup_printf("%s (%s)", app, qemu_name);
++        } else {
++            prefix = dv && dv[0] ?
++                g_strdup_printf("%s %s", app, dv) : g_strdup(app);
++        }
      }
  
      if (s->ptr_owner != NULL &&
-@@ -2468,9 +2469,119 @@
+@@ -2468,9 +2476,124 @@
      return view_menu;
  }
  
@@ -77,9 +87,14 @@ diff --git a/ui/gtk.c b/ui/gtk.c
 +{
 +    GtkDisplayState *s = opaque;
 +
++    const char *dv = getenv("DELUGEMU_VERSION");
++    g_autofree char *ver = g_strdup_printf("%s%s(QEMU " QEMU_FULL_VERSION ")",
++                                           dv && dv[0] ? dv : "",
++                                           dv && dv[0] ? " " : "");
++
 +    gtk_show_about_dialog(GTK_WINDOW(s->window),
 +        "program-name", "DelugEmu",
-+        "version", "QEMU " QEMU_FULL_VERSION,
++        "version", ver,
 +        "comments", "An independent, unofficial emulator of the "
 +                    "Synthstrom Deluge,\nnot affiliated with Synthstrom "
 +                    "Audible. Built on QEMU.",
@@ -141,7 +156,7 @@ diff --git a/ui/gtk.c b/ui/gtk.c
  
      s->accel_group = gtk_accel_group_new();
      s->machine_menu = gd_create_menu_machine(s);
-@@ -2485,6 +2596,11 @@
+@@ -2485,6 +2608,11 @@
      gtk_menu_item_set_submenu(GTK_MENU_ITEM(s->view_menu_item), s->view_menu);
      gtk_menu_shell_append(GTK_MENU_SHELL(s->menu_bar), s->view_menu_item);
  

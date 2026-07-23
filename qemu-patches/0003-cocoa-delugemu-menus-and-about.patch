@@ -1,7 +1,27 @@
 diff --git a/ui/cocoa.m b/ui/cocoa.m
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -1278,6 +1278,13 @@
+@@ -636,8 +636,17 @@
+     [[self window] setContentAspectRatio:NSMakeSize(screen.width, screen.height)];
+ 
+     if (!([[self window] styleMask] & NSWindowStyleMaskResizable)) {
+-        CGFloat width = screen.width / [[self window] backingScaleFactor];
+-        CGFloat height = screen.height / [[self window] backingScaleFactor];
++        /*
++         * Text consoles (the QEMU monitor / serial vc) render a fixed-size
++         * character grid; mapping them through the Retina backing scale halves
++         * the glyphs into unreadability. Show them 1:1 in points instead.
++         * Graphic consoles (the front-panel skin) keep the backing-scale
++         * mapping, which is what makes the native-resolution panel fit.
++         */
++        CGFloat scale = qemu_console_is_graphic(dcl.con) ?
++                        [[self window] backingScaleFactor] : 1.0;
++        CGFloat width = screen.width / scale;
++        CGFloat height = screen.height / scale;
+ 
+         [[self window] setContentSize:NSMakeSize(width, height)];
+         [[self window] center];
+@@ -1287,6 +1296,13 @@
  - (void)openDocumentation:(NSString *)filename;
  - (IBAction) do_about_menu_item: (id) sender;
  - (void)adjustSpeed:(id)sender;
@@ -15,7 +35,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  @end
  
  @implementation QemuCocoaAppController
-@@ -1649,30 +1656,149 @@
+@@ -1658,30 +1674,152 @@
  - (IBAction) do_about_menu_item: (id) sender
  {
      NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -39,7 +59,10 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 -            @"Copyright" : copyright,
 -        };
 -    }
-+    NSString *version = @"DelugEmu (QEMU " QEMU_FULL_VERSION ")";
++    const char *dv = getenv("DELUGEMU_VERSION");
++    NSString *version = (dv && dv[0])
++        ? [NSString stringWithFormat:@"%s (QEMU " QEMU_FULL_VERSION ")", dv]
++        : @"DelugEmu (QEMU " QEMU_FULL_VERSION ")";
 +    NSString *copyright = @"Licensed GPL-2.0-or-later. " QEMU_COPYRIGHT;
 +    NSString *creditsText =
 +        @"An independent, unofficial emulator of the Synthstrom Deluge,\n"
@@ -185,7 +208,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  /* Used by the Speed menu items */
  - (void)adjustSpeed:(id)sender
  {
-@@ -1729,17 +1855,17 @@
+@@ -1738,17 +1876,17 @@
  
      // Application menu
      menu = [[NSMenu alloc] initWithTitle:@""];
@@ -206,7 +229,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      menuItem = [[NSMenuItem alloc] initWithTitle:@"Apple" action:nil keyEquivalent:@""];
      [menuItem setSubmenu:menu];
      [[NSApp mainMenu] addItem:menuItem];
-@@ -1806,9 +1932,74 @@
+@@ -1815,9 +1953,75 @@
      [[NSApp mainMenu] addItem:menuItem];
      [NSApp setWindowsMenu:menu];
  
@@ -225,8 +248,9 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +        [menu setAutoenablesItems: NO];
 +
 +        menuItem = [[[NSMenuItem alloc] initWithTitle:@"Graceful Overload Clamp" action:@selector(delugemuToggleClamp:) keyEquivalent:@""] autorelease];
-+        [menuItem setState: (clamp && !strcmp([clamp UTF8String], "auto")) ?
-+                            NSControlStateValueOn : NSControlStateValueOff];
++        /* Default is auto (clamp on); only an explicit "off" unchecks it. */
++        [menuItem setState: (clamp && !strcmp([clamp UTF8String], "off")) ?
++                            NSControlStateValueOff : NSControlStateValueOn];
 +        [menuItem setToolTip:@"Bound audio reads by the firmware's render head so overload degrades to brief gaps instead of distortion. Best-effort; leave off if audio sounds worse with it."];
 +        [menu addItem: menuItem];
 +
