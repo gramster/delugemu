@@ -64,6 +64,21 @@ bundle_version() {
     fi
 }
 
+# Vendor the TCG profiling plugins (DEBUGGING.md) so installed bundles can
+# run the profiling workflows too. Best-effort: skipped if the build didn't
+# produce them.
+stage_plugins() {
+    local dest="$1" ext="$2" n
+    if ls "${QEMU_BUILD_DIR}/contrib/plugins/"*."${ext}" >/dev/null 2>&1; then
+        mkdir -p "${dest}"
+        cp "${QEMU_BUILD_DIR}/contrib/plugins/"*."${ext}" "${dest}/"
+        n="$(ls "${dest}" | wc -l | tr -d ' ')"
+        log "Vendored ${n} TCG profiling plugins"
+    else
+        warn "no TCG plugins in the build; profiling workflows need a source build"
+    fi
+}
+
 stage_unix_helpers() {
     local stage="$1"
     stage_run_helpers "${stage}"
@@ -185,6 +200,7 @@ package_macos() {
 
     # run.sh and its assets live under Contents/Resources (REPO_ROOT == resdir).
     stage_run_helpers "${resdir}"
+    stage_plugins "${resdir}/plugins" dylib
 
     log "Generating app icon..."
     make_icns "${REPO_ROOT}/Delugemu_Normal.png" "${resdir}/delugemu.icns" \
@@ -266,7 +282,7 @@ LAUNCH
     chmod +x "${bindir}/DelugEmu"
 
     log "Re-signing (ad-hoc)..."
-    find "${libdir}" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' lib; do
+    find "${libdir}" "${resdir}/plugins" -type f -name '*.dylib' -print0 2>/dev/null |     while IFS= read -r -d '' lib; do
         codesign --remove-signature "${lib}" 2>/dev/null || true
         codesign --force --sign - "${lib}"
     done
@@ -389,6 +405,7 @@ package_linux() {
         patchelf --set-rpath '$ORIGIN' {} \; 2>/dev/null || true
 
     stage_unix_helpers "${stage}"
+    stage_plugins "${stage}/plugins" so
     write_readme_unix "${stage}" "Linux ${ARCH}" linux
     verify_bundle_assets "${stage}"
 
@@ -495,6 +512,7 @@ rem Thin wrapper that runs the native PowerShell launcher next to this file.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0delugemu.ps1" %*
 LAUNCH
 
+    stage_plugins "${stage}/plugins" dll
     write_readme_windows "${stage}"
     verify_bundle_assets "${stage}"
 

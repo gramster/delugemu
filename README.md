@@ -99,6 +99,11 @@ firmware images, SD folders with write-back, CoreMIDI ports, headless mode):
 /Applications/DelugEmu.app/Contents/MacOS/DelugEmu firmware.bin --sd card_rw
 ```
 
+All the [debugging and profiling workflows](DEBUGGING.md) work from the
+installed app too — the CLI entry point forwards `--` passthrough to QEMU
+(gdbstub, monitor, trace flags), and the TCG profiling plugins ship inside the
+bundle (`Contents/Resources/plugins/`).
+
 Prefer the terminal-first flavour? Each release also keeps the
 `DelugEmu-macos-<arch>.tar.gz`: the same app bundle plus a `./delugemu` shim,
 for extracting anywhere and running from the shell:

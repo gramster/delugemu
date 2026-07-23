@@ -10,6 +10,23 @@ firmware image at `firmware2/deluge.elf` and an SD image at
 anything after a literal `--` straight to `qemu-system-arm`, so most QEMU flags
 below are shown after `--`.
 
+> **Using an installed release instead of a source build?** Everything here
+> works from the prebuilt bundles too — substitute the bundle's CLI entry point
+> for `./scripts/run.sh`:
+>
+> * macOS app: `/Applications/DelugEmu.app/Contents/MacOS/DelugEmu`
+> * macOS/Linux tar.gz: `./delugemu` in the extracted folder
+> * Windows: `delugemu.cmd` (MSI installs to `%LOCALAPPDATA%\Programs\DelugEmu`)
+>
+> All of them accept the full option surface including `--` passthrough, so the
+> gdbstub (`-S -s`), monitor/QMP, and trace flags work unchanged (GDB itself is
+> not bundled — install `arm-none-eabi-gdb` or use your platform's gdb/lldb).
+> The TCG profiling plugins ship inside the bundles as of v0.5.5: use
+> `DelugEmu.app/Contents/Resources/plugins/libhotblocks.dylib` (macOS app),
+> `plugins/` in the tar.gz/zip bundles, in place of
+> `qemu/build/contrib/plugins/`. Only the repo-only helper scripts
+> (`dz_*.py`, `press_key.py`, skin calibration, `tests/`) need a checkout.
+
 > **Functional, not cycle-accurate.** QEMU's TCG engine emulates *behaviour*,
 > not the Cortex-A9 pipeline. Instruction/block counts are reliable for finding
 > hotspots and relative regressions, but QEMU does **not** model cache latency,
