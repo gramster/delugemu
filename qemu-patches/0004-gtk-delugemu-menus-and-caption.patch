@@ -1,5 +1,4 @@
 diff --git a/ui/gtk.c b/ui/gtk.c
-index 9ebe7e8..fdbed97 100644
 --- a/ui/gtk.c
 +++ b/ui/gtk.c
 @@ -31,6 +31,7 @@
@@ -10,7 +9,7 @@ index 9ebe7e8..fdbed97 100644
  #include "qapi/error.h"
  #include "qapi/qapi-commands-control.h"
  #include "qapi/qapi-commands-machine.h"
-@@ -223,9 +224,9 @@ static void gd_update_caption(GtkDisplayState *s)
+@@ -223,9 +224,9 @@
      int i;
  
      if (qemu_name) {
@@ -22,7 +21,7 @@ index 9ebe7e8..fdbed97 100644
      }
  
      if (s->ptr_owner != NULL &&
-@@ -2468,9 +2469,101 @@ static GtkWidget *gd_create_menu_view(GtkDisplayState *s, DisplayOptions *opts)
+@@ -2468,9 +2469,119 @@
      return view_menu;
  }
  
@@ -49,10 +48,9 @@ index 9ebe7e8..fdbed97 100644
 +    gd_delugemu_open_uri(opaque, "https://github.com/gramster/delugemu");
 +}
 +
-+static void gd_menu_delugemu_sd_folder(GtkMenuItem *item, void *opaque)
++static void gd_delugemu_open_folder_env(GtkDisplayState *s, const char *var)
 +{
-+    GtkDisplayState *s = opaque;
-+    const char *dir = getenv("DELUGEMU_SD_FOLDER");
++    const char *dir = getenv(var);
 +    gchar *uri;
 +
 +    if (!dir || !dir[0]) {
@@ -63,6 +61,16 @@ index 9ebe7e8..fdbed97 100644
 +        gd_delugemu_open_uri(s, uri);
 +        g_free(uri);
 +    }
++}
++
++static void gd_menu_delugemu_sd_folder(GtkMenuItem *item, void *opaque)
++{
++    gd_delugemu_open_folder_env(opaque, "DELUGEMU_SD_FOLDER");
++}
++
++static void gd_menu_delugemu_fw_folder(GtkMenuItem *item, void *opaque)
++{
++    gd_delugemu_open_folder_env(opaque, "DELUGEMU_FW_FOLDER");
 +}
 +
 +static void gd_menu_delugemu_about(GtkMenuItem *item, void *opaque)
@@ -106,6 +114,15 @@ index 9ebe7e8..fdbed97 100644
 +    }
 +    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), item);
 +
++    item = gtk_menu_item_new_with_mnemonic(_("Open _Firmware Folder"));
++    g_signal_connect(item, "activate",
++                     G_CALLBACK(gd_menu_delugemu_fw_folder), s);
++    {
++        const char *fw_dir = getenv("DELUGEMU_FW_FOLDER");
++        gtk_widget_set_sensitive(item, fw_dir && fw_dir[0]);
++    }
++    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), item);
++
 +    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu),
 +                          gtk_separator_menu_item_new());
 +
@@ -124,7 +141,7 @@ index 9ebe7e8..fdbed97 100644
  
      s->accel_group = gtk_accel_group_new();
      s->machine_menu = gd_create_menu_machine(s);
-@@ -2485,6 +2578,11 @@ static void gd_create_menus(GtkDisplayState *s, DisplayOptions *opts)
+@@ -2485,6 +2596,11 @@
      gtk_menu_item_set_submenu(GTK_MENU_ITEM(s->view_menu_item), s->view_menu);
      gtk_menu_shell_append(GTK_MENU_SHELL(s->menu_bar), s->view_menu_item);
  

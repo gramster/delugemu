@@ -1,18 +1,21 @@
 diff --git a/ui/cocoa.m b/ui/cocoa.m
-index f620473..67f3021 100644
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -1278,6 +1278,9 @@ - (BOOL)verifyQuit;
+@@ -1278,6 +1278,13 @@
  - (void)openDocumentation:(NSString *)filename;
  - (IBAction) do_about_menu_item: (id) sender;
  - (void)adjustSpeed:(id)sender;
 +- (void)delugemuHelp:(id)sender;
 +- (void)delugemuOpenRepository:(id)sender;
 +- (void)delugemuOpenSDFolder:(id)sender;
++- (void)delugemuOpenFirmwareFolder:(id)sender;
++- (void)delugemuToggleClamp:(id)sender;
++- (void)delugemuToggleIcount:(id)sender;
++- (void)delugemuSetAudioBuffer:(id)sender;
  @end
  
  @implementation QemuCocoaAppController
-@@ -1649,30 +1652,60 @@ - (BOOL)verifyQuit
+@@ -1649,30 +1656,149 @@
  - (IBAction) do_about_menu_item: (id) sender
  {
      NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -80,9 +83,9 @@ index f620473..67f3021 100644
 +    delugemu_open_url("https://github.com/gramster/delugemu");
 +}
 +
-+- (void)delugemuOpenSDFolder:(id)sender
++static void delugemu_open_folder_env(const char *var)
 +{
-+    const char *dir = getenv("DELUGEMU_SD_FOLDER");
++    const char *dir = getenv(var);
 +    if (dir && dir[0]) {
 +        [[NSWorkspace sharedWorkspace] openURL:
 +            [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir]
@@ -90,10 +93,99 @@ index f620473..67f3021 100644
 +    }
 +}
 +
++- (void)delugemuOpenSDFolder:(id)sender
++{
++    delugemu_open_folder_env("DELUGEMU_SD_FOLDER");
++}
++
++- (void)delugemuOpenFirmwareFolder:(id)sender
++{
++    delugemu_open_folder_env("DELUGEMU_FW_FOLDER");
++}
++
++/* DelugEmu Settings menu: persisted as KEY=VALUE lines in the file named by
++ * DELUGEMU_CONFIG (exported by run.sh, which reads it back as launch
++ * defaults), so changes apply on the next launch. */
++static NSString *delugemu_config_path(void)
++{
++    const char *p = getenv("DELUGEMU_CONFIG");
++    return (p && p[0]) ? [NSString stringWithUTF8String:p] : nil;
++}
++
++static NSMutableDictionary *delugemu_config_read(void)
++{
++    NSMutableDictionary *conf = [NSMutableDictionary dictionary];
++    NSString *path = delugemu_config_path();
++    NSString *text = path ? [NSString stringWithContentsOfFile:path
++                                encoding:NSUTF8StringEncoding error:nil] : nil;
++
++    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
++        NSRange eq = [line rangeOfString:@"="];
++        if (eq.location != NSNotFound && eq.location > 0 &&
++            ![line hasPrefix:@"#"]) {
++            [conf setObject:[line substringFromIndex:eq.location + 1]
++                     forKey:[line substringToIndex:eq.location]];
++        }
++    }
++    return conf;
++}
++
++static void delugemu_config_set(NSString *key, NSString *value)
++{
++    NSString *path = delugemu_config_path();
++    NSMutableDictionary *conf;
++    NSMutableString *out;
++
++    if (!path) {
++        return;
++    }
++    conf = delugemu_config_read();
++    if (value) {
++        [conf setObject:value forKey:key];
++    } else {
++        [conf removeObjectForKey:key];
++    }
++    out = [NSMutableString stringWithString:
++        @"# DelugEmu launcher settings (written by the Settings menu)\n"];
++    for (NSString *k in [[conf allKeys]
++             sortedArrayUsingSelector:@selector(compare:)]) {
++        [out appendFormat:@"%@=%@\n", k, [conf objectForKey:k]];
++    }
++    [[NSFileManager defaultManager]
++        createDirectoryAtPath:[path stringByDeletingLastPathComponent]
++        withIntermediateDirectories:YES attributes:nil error:nil];
++    [out writeToFile:path atomically:YES
++            encoding:NSUTF8StringEncoding error:nil];
++}
++
++- (void)delugemuToggleClamp:(id)sender
++{
++    BOOL on = [sender state] != NSControlStateValueOn;
++    delugemu_config_set(@"TX_RENDER_HEAD", on ? @"auto" : @"off");
++    [sender setState:on ? NSControlStateValueOn : NSControlStateValueOff];
++}
++
++- (void)delugemuToggleIcount:(id)sender
++{
++    BOOL on = [sender state] != NSControlStateValueOn;
++    delugemu_config_set(@"ICOUNT", on ? @"auto" : nil);
++    [sender setState:on ? NSControlStateValueOn : NSControlStateValueOff];
++}
++
++- (void)delugemuSetAudioBuffer:(id)sender
++{
++    delugemu_config_set(@"AUDIO_BUFFER",
++                        [NSString stringWithFormat:@"%d", (int)[sender tag]]);
++    for (NSMenuItem *item in [[sender menu] itemArray]) {
++        [item setState:item == sender ? NSControlStateValueOn
++                                      : NSControlStateValueOff];
++    }
++}
++
  /* Used by the Speed menu items */
  - (void)adjustSpeed:(id)sender
  {
-@@ -1729,17 +1762,17 @@ static void create_initial_menus(void)
+@@ -1729,17 +1855,17 @@
  
      // Application menu
      menu = [[NSMenu alloc] initWithTitle:@""];
@@ -114,8 +206,58 @@ index f620473..67f3021 100644
      menuItem = [[NSMenuItem alloc] initWithTitle:@"Apple" action:nil keyEquivalent:@""];
      [menuItem setSubmenu:menu];
      [[NSApp mainMenu] addItem:menuItem];
-@@ -1808,7 +1841,18 @@ static void create_initial_menus(void)
+@@ -1806,9 +1932,74 @@
+     [[NSApp mainMenu] addItem:menuItem];
+     [NSApp setWindowsMenu:menu];
  
++    // Settings menu: launch options persisted to the DELUGEMU_CONFIG file,
++    // which run.sh reads back as defaults, so changes apply on next launch.
++    if (delugemu_config_path()) {
++        NSDictionary *conf = delugemu_config_read();
++        NSString *clamp = [conf objectForKey:@"TX_RENDER_HEAD"];
++        NSString *buf = [conf objectForKey:@"AUDIO_BUFFER"];
++        int buf_ms = buf ? [buf intValue] : 15;
++        static const int buf_choices[] = {5, 15, 30, 50};
++        NSMenu *bufMenu;
++        size_t i;
++
++        menu = [[NSMenu alloc] initWithTitle:@"Settings"];
++        [menu setAutoenablesItems: NO];
++
++        menuItem = [[[NSMenuItem alloc] initWithTitle:@"Graceful Overload Clamp" action:@selector(delugemuToggleClamp:) keyEquivalent:@""] autorelease];
++        [menuItem setState: (clamp && !strcmp([clamp UTF8String], "auto")) ?
++                            NSControlStateValueOn : NSControlStateValueOff];
++        [menuItem setToolTip:@"Bound audio reads by the firmware's render head so overload degrades to brief gaps instead of distortion. Best-effort; leave off if audio sounds worse with it."];
++        [menu addItem: menuItem];
++
++        menuItem = [[[NSMenuItem alloc] initWithTitle:@"Deterministic Clock (slower, clean audio)" action:@selector(delugemuToggleIcount:) keyEquivalent:@""] autorelease];
++        [menuItem setState: [conf objectForKey:@"ICOUNT"] ?
++                            NSControlStateValueOn : NSControlStateValueOff];
++        [menu addItem: menuItem];
++
++        bufMenu = [[NSMenu alloc] initWithTitle:@"Audio Buffer"];
++        [bufMenu setAutoenablesItems: NO];
++        for (i = 0; i < sizeof(buf_choices) / sizeof(buf_choices[0]); i++) {
++            menuItem = [[[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%d ms", buf_choices[i]] action:@selector(delugemuSetAudioBuffer:) keyEquivalent:@""] autorelease];
++            [menuItem setTag: buf_choices[i]];
++            [menuItem setState: buf_ms == buf_choices[i] ?
++                                NSControlStateValueOn : NSControlStateValueOff];
++            [bufMenu addItem: menuItem];
++        }
++        menuItem = [[[NSMenuItem alloc] initWithTitle:@"Audio Buffer" action:nil keyEquivalent:@""] autorelease];
++        [menuItem setSubmenu: bufMenu];
++        [menu addItem: menuItem];
++
++        [menu addItem: [NSMenuItem separatorItem]];
++        menuItem = [[[NSMenuItem alloc] initWithTitle:@"Changes apply on the next launch" action:nil keyEquivalent:@""] autorelease];
++        [menuItem setEnabled: NO];
++        [menu addItem: menuItem];
++
++        menuItem = [[[NSMenuItem alloc] initWithTitle:@"Settings" action:nil keyEquivalent:@""] autorelease];
++        [menuItem setSubmenu:menu];
++        [[NSApp mainMenu] addItem:menuItem];
++    }
++
      // Help menu
      menu = [[NSMenu alloc] initWithTitle:@"Help"];
 -    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"QEMU Documentation" action:@selector(showQEMUDoc:) keyEquivalent:@"?"] autorelease]]; // QEMU Help
@@ -127,6 +269,12 @@ index f620473..67f3021 100644
 +        /* Only enabled when the launcher provided a folder-backed SD card. */
 +        const char *sd_dir = getenv("DELUGEMU_SD_FOLDER");
 +        [menuItem setEnabled: (sd_dir && sd_dir[0]) ? YES : NO];
++    }
++    [menu addItem: menuItem];
++    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Open Firmware Folder" action:@selector(delugemuOpenFirmwareFolder:) keyEquivalent:@""] autorelease];
++    {
++        const char *fw_dir = getenv("DELUGEMU_FW_FOLDER");
++        [menuItem setEnabled: (fw_dir && fw_dir[0]) ? YES : NO];
 +    }
 +    [menu addItem: menuItem];
 +    [menu addItem: [NSMenuItem separatorItem]];

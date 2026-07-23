@@ -55,12 +55,13 @@
 #                           Bound audio ring reads by the firmware's render head
 #                           (AudioEngine::i2sTXBufferPos) so overload degrades to
 #                           brief clean gaps instead of ring-lap distortion.
-#                           Defaults to 'auto': the emulator locates the render
-#                           head itself by scanning guest RAM (best-effort, falls
-#                           back to the play head, so never worse than 'off').
-#                           Pass a guest address (hex, e.g. 0x20038fdc) for
-#                           symbol-built firmware, or 'off' to track the raw
-#                           wall-clock DMA play head.
+#                           Off by default (the wall-clock DMA play head is
+#                           tracked). Pass 'auto' to locate the render head by
+#                           scanning guest RAM (best-effort; has been seen to
+#                           hurt audio on some hosts, hence opt-in), or a guest
+#                           address (hex, e.g. 0x20038fdc) for symbol-built
+#                           firmware. Also togglable from the in-app Settings
+#                           menu on macOS ("Graceful Overload Clamp").
 #   --display <mode>        Display mode:
 #                             console   open the front-panel skin window with
 #                                       the modelled OLED / pad-grid / 7-seg
@@ -127,7 +128,7 @@ sd_setup() {
     if [ -d "${path}" ]; then
         SD_FOLDER="${path%/}"
         SD_TMP_IMG="$(mktemp "${TMPDIR:-/tmp}/delugemu-sd.XXXXXX")"
-        log "Snapshotting folder into a temporary SD image: ${SD_FOLDER}"
+        notify "Preparing the SD card image (this can take a minute for a large card)..."
         "${REPO_ROOT}/scripts/mksd.sh" "${SD_FOLDER}" "${SD_TMP_IMG}" \
             || die "failed to build SD image from ${SD_FOLDER}"
         case "${SD_FOLDER}" in
@@ -245,7 +246,7 @@ download_and_unzip() {
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/delugemu-dl.XXXXXX")" || die "mktemp failed"
     zip="${tmp}/archive.zip"
 
-    log "Downloading ${name}..."
+    notify "Downloading ${name} — the app will open when everything is ready"
     if command -v curl >/dev/null 2>&1; then
         curl -fL --progress-bar -o "${zip}" "${url}" \
             || { rm -rf "${tmp}"; die "download failed (curl): ${url}"; }
@@ -303,6 +304,33 @@ interactive() {
     [ -t 0 ] || [ "${DELUGEMU_APP_MODE:-0}" = "1" ]
 }
 
+# Non-blocking progress breadcrumb. In app mode (no terminal) long steps like
+# the factory-card download or SD snapshotting would otherwise look like the
+# app hung; a notification tells the user the window will appear when ready.
+notify() {
+    log "$1"
+    if [ "${DELUGEMU_APP_MODE:-0}" = "1" ] && command -v osascript >/dev/null 2>&1; then
+        local msg; msg="$(printf '%s' "$1" | tr -d '"\\')"
+        osascript -e "display notification \"${msg}\" with title \"DelugEmu\"" \
+            >/dev/null 2>&1 || true
+    fi
+}
+
+# Settings file written by the in-app Settings menu and read back here as
+# launch defaults (command-line flags win). macOS gets a stable default path so
+# CLI and .app launches share the same settings.
+if [ "$(uname -s)" = "Darwin" ]; then
+    DELUGEMU_CONFIG="${DELUGEMU_CONFIG:-${HOME}/Library/Application Support/DelugEmu/settings.conf}"
+    export DELUGEMU_CONFIG
+fi
+
+conf_get() {
+    if [ -n "${DELUGEMU_CONFIG:-}" ] && [ -f "${DELUGEMU_CONFIG}" ]; then
+        sed -n "s/^$1=//p" "${DELUGEMU_CONFIG}" | tail -n 1
+    fi
+    return 0
+}
+
 BIN="${QEMU_SYSTEM_BIN}"
 [ -x "${BIN}" ] || die "qemu-system-arm not built. Run ./scripts/build.sh first."
 
@@ -345,12 +373,11 @@ MIDI=""
 USB_MIDI=""
 AUDIO=""
 AUDIO_BUFFER=""
-# Render-head clamp. Defaults to 'auto': the SSIF locates the firmware's render
-# head at runtime and bounds ring reads by it, so overload becomes brief clean
-# gaps rather than distortion. It is best-effort and falls back to the wall-clock
-# play head when it can't resolve, so it is never worse than the raw default.
-# Pass --tx-render-head off (or an explicit address) to override.
-TX_RENDER_HEAD="auto"
+# Render-head clamp. Off by default: the 'auto' render-head detection is
+# best-effort and has been seen to hurt audio on some hosts. Enable it with
+# --tx-render-head auto (or the in-app Settings menu) if dense playback breaks
+# up — it turns overload into brief clean gaps instead of ring-lap distortion.
+TX_RENDER_HEAD=""
 DISPLAY_MODE="console"
 ICOUNT=""
 MONITOR=0
@@ -464,6 +491,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Apply Settings-menu values for options not given on the command line, then
+# hard defaults. TX_RENDER_HEAD defaults to 'off' (see above).
+[ -z "${TX_RENDER_HEAD}" ] && TX_RENDER_HEAD="$(conf_get TX_RENDER_HEAD)"
+[ -z "${TX_RENDER_HEAD}" ] && TX_RENDER_HEAD="off"
+[ -z "${AUDIO_BUFFER}" ] && AUDIO_BUFFER="$(conf_get AUDIO_BUFFER)"
+[ -z "${ICOUNT}" ] && ICOUNT="$(conf_get ICOUNT)"
+
 # Default SD card: if no --sd was given, look for an '<sdcard>_rw' or '<sdcard>'
 # directory in the current working directory and use it automatically (the
 # '_rw' variant is preferred, so guest changes are written back; otherwise the
@@ -481,7 +515,8 @@ if [ ${#SD_ARGS[@]} -eq 0 ]; then
 fi
 if [ ${#SD_ARGS[@]} -eq 0 ] && interactive; then
     if confirm "No SD card specified and no ${SD_DIR} folder found.
-Download ${FACTORY_SD_NAME} from Synthstrom and use it?"; then
+Download ${FACTORY_SD_NAME} from Synthstrom and use it?
+(The download and first card build take a few minutes; the app window opens when they finish.)"; then
         download_and_unzip "${FACTORY_SD_URL}" "${SD_DIR}" "${FACTORY_SD_NAME}"
         if [ -d "${SD_DIR}" ]; then
             sd_setup "${SD_DIR}"
@@ -771,11 +806,15 @@ fi
 
 [ ${#SD_ARGS[@]} -gt 0 ] && log "Attaching SD image"
 
-# Tell the front panel where the folder-backed SD card lives so the Help menu's
-# "Open SD Card Folder" item can reveal it (macOS cocoa UI).
+# Tell the front panel where the folder-backed SD card and the firmware folder
+# live so the Help menu's "Open ... Folder" items can reveal them.
 if [ -n "${SD_FOLDER}" ] && [ -d "${SD_FOLDER}" ]; then
     DELUGEMU_SD_FOLDER="$(cd "${SD_FOLDER}" && pwd)"
     export DELUGEMU_SD_FOLDER
+fi
+if [ -d "${FIRMWARE_DIR}" ]; then
+    DELUGEMU_FW_FOLDER="$(cd "${FIRMWARE_DIR}" && pwd)"
+    export DELUGEMU_FW_FOLDER
 fi
 
 # Post-run cleanup: reap the MIDI bridge and its sockets, write back a '_rw'

@@ -71,6 +71,26 @@ function Confirm-User {
     return ($reply -match '^(y|yes)$')
 }
 
+# Non-blocking progress note. In app mode long steps (factory-card download,
+# SD image build) would otherwise look like nothing is happening; a balloon
+# tip tells the user the window opens when the work finishes.
+$script:Tray = $null
+function Notify {
+    param([string]$Msg)
+    Write-Log $Msg
+    if (-not $AppMode) { return }
+    try {
+        if (-not $script:Tray) {
+            Add-Type -AssemblyName System.Drawing | Out-Null
+            $script:Tray = New-Object System.Windows.Forms.NotifyIcon
+            $script:Tray.Icon = [System.Drawing.SystemIcons]::Information
+            $script:Tray.Visible = $true
+        }
+        $script:Tray.ShowBalloonTip(10000, 'DelugEmu', $Msg,
+            [System.Windows.Forms.ToolTipIcon]::Info)
+    } catch { }
+}
+
 function Show-Usage {
     @'
 Run Deluge firmware under the emulator (Windows).
@@ -106,9 +126,9 @@ Options:
   --tx-render-head <addr|auto|off>
                         Bound audio ring reads by the firmware's render head so
                         overload degrades to brief clean gaps instead of
-                        distortion. Default 'auto' (locate it at runtime; falls
-                        back to the play head). Pass a guest address (hex/decimal)
-                        for symbol-built firmware, or 'off' for the raw play head.
+                        distortion. Off by default; pass 'auto' to locate it at
+                        runtime (best-effort), or a guest address (hex/decimal)
+                        for symbol-built firmware.
   --skin-refresh-ms <ms>
                         Front-panel UI refresh interval (default 50, ~20fps).
                         Raise it to lower the host redraw rate and free the main
@@ -188,7 +208,7 @@ function Get-CommunityFirmware {
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     $zip = Join-Path $tmp 'firmware.zip'
     try {
-        Write-Log "Downloading $CommunityFwName..."
+        Notify "Downloading $CommunityFwName - the app will open when everything is ready"
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri $CommunityFwUrl -OutFile $zip -UseBasicParsing
         Write-Log "Extracting into $FirmwareDir"
@@ -235,7 +255,7 @@ function New-SdImageFromFolder {
     }
     $imgMiB = Get-SdImageSizeMiB -Folder $Folder
     $img = Join-Path ([System.IO.Path]::GetTempPath()) ("delugemu-sd-" + [System.IO.Path]::GetRandomFileName() + '.img')
-    Write-Log "Snapshotting folder into a temporary SD image ($imgMiB MiB): $Folder"
+    Notify "Preparing the SD card image ($imgMiB MiB - this can take a minute)..."
 
     # Pre-size the image, then format and populate it.
     $fs = [System.IO.File]::Open($img, 'Create', 'Write')
@@ -302,7 +322,7 @@ function Get-FactorySdCard {
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     $zip = Join-Path $tmp 'sdcard.zip'
     try {
-        Write-Log "Downloading $FactorySdName..."
+        Notify "Downloading $FactorySdName - the app will open when everything is ready"
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri $FactorySdUrl -OutFile $zip -UseBasicParsing
         Write-Log "Extracting into $Dir"
@@ -323,12 +343,10 @@ $Midi          = $null
 $UsbMidi       = $null
 $Audio         = $null
 $AudioBuffer   = $null
-# Render-head clamp defaults to 'auto': the SSIF locates the firmware's render
-# head at runtime and bounds ring reads by it, turning overload distortion into
-# brief clean gaps. It is best-effort and falls back to the wall-clock play head
-# if it can't resolve, so it is never worse than the raw default. Pass
-# --tx-render-head off (or an explicit address) to override.
-$TxRenderHead  = 'auto'
+# Render-head clamp off by default: the 'auto' render-head detection is
+# best-effort and has been seen to hurt audio on some hosts. Pass
+# --tx-render-head auto to enable it if dense playback breaks up.
+$TxRenderHead  = 'off'
 $SkinRefreshMs = $null
 $Icount        = $null
 $DisplayMode   = 'console'
@@ -395,6 +413,12 @@ if (-not $Firmware) {
 }
 if (-not (Test-Path -LiteralPath $Firmware -PathType Leaf)) { Die "Firmware not found: $Firmware" }
 
+# Tell the front panel where the firmware folder lives so the Help menu's
+# "Open Firmware Folder" item can reveal it.
+if (Test-Path -LiteralPath $FirmwareDir -PathType Container) {
+    $env:DELUGEMU_FW_FOLDER = (Resolve-Path -LiteralPath $FirmwareDir).Path
+}
+
 # --- Resolve default SD card ------------------------------------------------
 
 # If no --sd was given, auto-detect an '<sd>_rw' or '<sd>' folder in the current
@@ -410,7 +434,7 @@ if ($SdArgs.Count -eq 0) {
     }
 }
 if ($SdArgs.Count -eq 0 -and [Environment]::UserInteractive) {
-    if (Confirm-User "No SD card specified and no $SdDir folder found.`nDownload $FactorySdName from Synthstrom and use it?") {
+    if (Confirm-User "No SD card specified and no $SdDir folder found.`nDownload $FactorySdName from Synthstrom and use it?`n(The download and first card build take a few minutes; the app window opens when they finish.)") {
         Get-FactorySdCard -Dir $SdDir
         if (Test-Path -LiteralPath $SdDir -PathType Container) {
             $SdArgs = Resolve-SdArgs $SdDir
@@ -552,6 +576,7 @@ try {
     $code = $LASTEXITCODE
 }
 finally {
+    if ($script:Tray) { $script:Tray.Visible = $false; $script:Tray.Dispose() }
     if ($script:SdTmpImg) {
         if ($script:SdWriteback) { Invoke-SdWriteback }
         Remove-Item -LiteralPath $script:SdTmpImg -Force -ErrorAction SilentlyContinue

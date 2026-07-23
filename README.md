@@ -10,7 +10,7 @@ The goal is to boot unmodified Deluge firmware (the open-source
 fully software-simulated environment so that development, debugging, automated
 testing and CI can happen without physical hardware.
 
-> Status: **essentially complete**. USB device/host support is not wired in to the host due to technical complexity. Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option. Under heavy synthesis load the emulated Cortex-A9 can't always render audio at real time (a TCG throughput limit, not a buffering one), which can cause occasional breakup during dense playback; the render-head clamp (`run.sh --tx-render-head`, now **on by default** as `auto`) keeps that graceful (brief gaps rather than distortion), and `run.sh --icount` eliminates the artifacts entirely at the cost of running slower-than-real-time under load (best for offline capture, not live play).
+> Status: **essentially complete**. USB device/host support is not wired in to the host due to technical complexity. Because the OLED display can emulate a 7-seg, the 7-seg device is just a stub. Outgoing MIDI works well; triggering notes on the Deluge emulator can be a bit laggy due to an intermediate audio buffer; you can trade that off for a small amount of audio artifacts; see the --audio-buffer command-line option. Under heavy synthesis load the emulated Cortex-A9 can't always render audio at real time (a TCG throughput limit, not a buffering one), which can cause occasional breakup during dense playback; the render-head clamp (`run.sh --tx-render-head auto`, **off by default** — its best-effort detection can itself hurt audio on some hosts) can keep that graceful (brief gaps rather than distortion), and `run.sh --icount` eliminates the artifacts entirely at the cost of running slower-than-real-time under load (best for offline capture, not live play).
 
 
 ## Target hardware
@@ -79,8 +79,13 @@ firmware and the Synthstrom factory SD card; both live under
 `~/Library/Application Support/DelugEmu` (drop your own firmware `.bin`/`.elf`
 into `firmware/` there, or card contents into `sdcard_rw/`, to use those
 instead — the `_rw` folder is written back on exit, so saved songs persist).
-The **Help** menu has items to open the SD card folder, the documentation, and
-the project repository; **About DelugEmu** shows version and license info.
+The **Help** menu has items to open the SD card and firmware folders, the
+documentation, and the project repository; **About DelugEmu** shows version and
+license info; and the **Settings** menu toggles launch options (graceful
+overload clamp, deterministic clock, audio buffer) that apply on the next
+launch. First launch note: after you accept the download prompts, the window
+only appears once the firmware/factory-card downloads and the SD image build
+finish (a few minutes; progress shows as notifications).
 
 The build is ad-hoc signed but not notarized, so the first launch may be
 blocked — right-click the app and choose **Open**, or allow it under
@@ -115,8 +120,8 @@ cd DelugEmu-linux-x86_64
 The core C runtime and the graphics/driver stack (OpenGL, X11/Wayland) are
 deliberately left to the host, so a recent desktop distribution is assumed.
 The front-panel window's **Help** menu (also on Windows) has items to open the
-SD card folder, the documentation, and the repository, plus an About dialog
-with license info; Ctrl+Alt+M toggles the menubar.
+SD card and firmware folders, the documentation, and the repository, plus an
+About dialog with license info; Ctrl+Alt+M toggles the menubar.
 
 **Windows** (`DelugEmu-windows-<arch>.msi`, or `.zip` for a portable copy):
 
