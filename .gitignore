@@ -32,3 +32,7 @@ qemu/
 # Packaged release artifacts
 /DelugEmu-*.tar.gz
 /DelugEmu-*.zip
+
+# WiX local extension manifest (created by package.sh)
+wix.json
+.wix/
