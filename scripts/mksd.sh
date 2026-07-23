@@ -55,8 +55,12 @@ if [ "${uname_s}" = "Darwin" ]; then
     [ -n "${mp}" ] || die "could not determine mount point for ${dev}"
 
     log "Copying ${CONTENT_DIR} -> ${mp}"
-    # ditto copies directory contents (no extended attrs needed on FAT).
-    ditto --norsrc --noextattr --noacl "${CONTENT_DIR}/" "${mp}/"
+    # rsync without -X/-A so macOS writes no AppleDouble (._*) files onto the
+    # FAT volume, and exclude metadata junk that Finder copies or vendor zips
+    # may have left in the content folder — the firmware chokes on none of it,
+    # but it clutters the card and ping-pongs back via the _rw write-back.
+    rsync -rlt --exclude '._*' --exclude '.DS_Store' --exclude '__MACOSX' \
+        "${CONTENT_DIR}/" "${mp}/"
     sync
     diskutil unmount "${dev}" >/dev/null
     hdiutil detach "${dev}" >/dev/null

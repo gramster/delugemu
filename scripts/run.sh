@@ -131,6 +131,9 @@ sd_setup() {
         notify "Preparing the SD card image (this can take a minute for a large card)..."
         "${REPO_ROOT}/scripts/mksd.sh" "${SD_FOLDER}" "${SD_TMP_IMG}" \
             || die "failed to build SD image from ${SD_FOLDER}"
+        # Timestamp of the snapshot: write-back only mirrors deletions when the
+        # folder is untouched since (see sd_writeback).
+        SD_SNAP_REF="$(mktemp "${TMPDIR:-/tmp}/delugemu-sdref.XXXXXX")"
         case "${SD_FOLDER}" in
             *_rw)
                 SD_WRITEBACK=1
@@ -152,6 +155,18 @@ sd_writeback() {
     [ -n "${SD_TMP_IMG}" ] || return 0
     [ -d "${SD_FOLDER}" ] || return 0
     log "Writing SD changes back to ${SD_FOLDER}"
+
+    # If files in the folder are newer than the launch snapshot, the user
+    # changed it while the emulator ran; a --delete mirror would clobber those
+    # changes (the image knows nothing about them). Merge without deleting
+    # instead — guest-side deletions just don't propagate on such a run.
+    local delete_flag="--delete"
+    if [ -n "${SD_SNAP_REF}" ] && [ -f "${SD_SNAP_REF}" ] \
+        && [ -n "$(find "${SD_FOLDER}" -newer "${SD_SNAP_REF}" -print 2>/dev/null | head -n 1)" ]; then
+        warn "${SD_FOLDER} changed while the emulator was running; merging write-back without deletions to keep your changes"
+        delete_flag=""
+    fi
+
     case "$(uname -s)" in
         Darwin)
             local dev mp
@@ -168,9 +183,11 @@ sd_writeback() {
             fi
             mp="$(diskutil info "${dev}" | awk -F': *' '/Mount Point/ {print $2}')"
             if [ -n "${mp}" ]; then
-                rsync -a --delete \
+                # shellcheck disable=SC2086
+                rsync -a ${delete_flag} \
                     --exclude '.fseventsd' --exclude '.Spotlight-V100' \
                     --exclude '.Trashes' --exclude '.TemporaryItems' \
+                    --exclude '._*' --exclude '.DS_Store' --exclude '__MACOSX' \
                     "${mp}/" "${SD_FOLDER}/" \
                     || warn "write-back to ${SD_FOLDER} reported errors"
             else
@@ -188,7 +205,10 @@ sd_writeback() {
             tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/delugemu-sdout.XXXXXX")"
             if mcopy -i "${SD_TMP_IMG}" -s -n -m "::/*" "${tmpdir}/" 2>/dev/null; then
                 if command -v rsync >/dev/null 2>&1; then
-                    rsync -a --delete "${tmpdir}/" "${SD_FOLDER}/" \
+                    # shellcheck disable=SC2086
+                    rsync -a ${delete_flag} \
+                        --exclude '._*' --exclude '.DS_Store' \
+                        "${tmpdir}/" "${SD_FOLDER}/" \
                         || warn "write-back to ${SD_FOLDER} reported errors"
                 else
                     cp -a "${tmpdir}/." "${SD_FOLDER}/" \
@@ -425,6 +445,7 @@ AUDIO_HOST_BUFFER_US="${DELUGEMU_AUDIO_HOST_BUFFER_US:-${_audio_host_buffer_defa
 SD_ARGS=()
 SD_FOLDER=""
 SD_TMP_IMG=""
+SD_SNAP_REF=""
 SD_WRITEBACK=0
 EXTRA_ARGS=()
 
@@ -868,7 +889,7 @@ cleanup() {
         if [ "${SD_WRITEBACK}" = "1" ]; then
             sd_writeback || true
         fi
-        rm -f "${SD_TMP_IMG}"
+        rm -f "${SD_TMP_IMG}" "${SD_SNAP_REF}"
     fi
 }
 

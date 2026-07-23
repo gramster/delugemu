@@ -277,6 +277,7 @@ function Get-CommunityFirmware {
 $script:SdTmpImg    = $null
 $script:SdFolder    = $null
 $script:SdWriteback = $false
+$script:SdSnapTime  = $null
 
 # Compute the power-of-two image size (MiB) for a content folder, mirroring
 # mksd.sh: content + 30% slack + 64 MiB, floor 128 MiB, rounded up to 2^n.
@@ -329,6 +330,9 @@ function New-SdImageFromFolder {
     # Tell the front panel where the folder-backed card lives so the Help
     # menu's "Open SD Card Folder" item can reveal it.
     $env:DELUGEMU_SD_FOLDER = (Resolve-Path -LiteralPath $script:SdFolder).Path
+    # Snapshot time: write-back only mirrors deletions when the folder is
+    # untouched since (see Invoke-SdWriteback).
+    $script:SdSnapTime = Get-Date
     return $img
 }
 
@@ -343,8 +347,20 @@ function Invoke-SdWriteback {
     New-Item -ItemType Directory -Force -Path $out | Out-Null
     try {
         & $mcopy '-i' $script:SdTmpImg '-s' '-n' '-m' '::/*' $out 2>$null
-        # Robocopy mirrors the extracted tree back, deleting removed files.
-        & robocopy $out $script:SdFolder /MIR /NJH /NJS /NDL /NP /NFL | Out-Null
+        # Robocopy mirrors the extracted tree back, deleting removed files —
+        # but only when the folder is untouched since the launch snapshot. If
+        # the user changed it while the emulator ran, a mirror would clobber
+        # those changes, so merge without deletions instead.
+        $mode = '/MIR'
+        if ($script:SdSnapTime) {
+            $changed = Get-ChildItem -LiteralPath $script:SdFolder -Recurse -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $script:SdSnapTime } | Select-Object -First 1
+            if ($changed) {
+                Write-Warn "$($script:SdFolder) changed while the emulator was running; merging write-back without deletions"
+                $mode = '/E'
+            }
+        }
+        & robocopy $out $script:SdFolder $mode /XF '._*' '.DS_Store' /XD '__MACOSX' /NJH /NJS /NDL /NP /NFL | Out-Null
     }
     catch { Write-Warn "write-back reported errors: $($_.Exception.Message)" }
     finally { Remove-Item -LiteralPath $out -Recurse -Force -ErrorAction SilentlyContinue }
