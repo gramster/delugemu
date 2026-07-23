@@ -164,6 +164,11 @@ package_macos() {
         -framework CoreMIDI -framework CoreFoundation \
         || die "failed to build the MIDI bridge helper"
 
+    log "Building startup splash helper..."
+    cc -O2 -Wall -o "${resdir}/delugemu_splash" "${REPO_ROOT}/scripts/splash.m" \
+        -framework Cocoa \
+        || die "failed to build the splash helper"
+
     # run.sh and its assets live under Contents/Resources (REPO_ROOT == resdir).
     stage_run_helpers "${resdir}"
 
@@ -224,7 +229,16 @@ LOG="${SUPPORT}/delugemu.log"
 args=()
 for a in "$@"; do case "${a}" in -psn_*) ;; *) args+=("${a}") ;; esac; done
 
+# Startup splash: the pre-boot work (downloads, SD image build) can take a
+# while with no window; run.sh kills the splash right before launching the
+# emulator (DELUGEMU_SPLASH_PID).
+if [ -x "${RES}/delugemu_splash" ]; then
+    "${RES}/delugemu_splash" &
+    export DELUGEMU_SPLASH_PID=$!
+fi
+
 if ! "${RES}/scripts/run.sh" ${args[@]+"${args[@]}"} >"${LOG}" 2>&1; then
+    [ -n "${DELUGEMU_SPLASH_PID:-}" ] && kill "${DELUGEMU_SPLASH_PID}" 2>/dev/null
     tail_msg="$(tail -n 6 "${LOG}" 2>/dev/null | tr '\n' ' ' | tr -d '"\\' | cut -c1-700 || true)"
     osascript -e "display alert \"DelugEmu failed to start\" message \"${tail_msg} — full log: ${LOG}\"" \
         >/dev/null 2>&1 || true
@@ -238,7 +252,8 @@ LAUNCH
         codesign --remove-signature "${lib}" 2>/dev/null || true
         codesign --force --sign - "${lib}"
     done
-    for exe in "${resdir}/midi_bridge" "${bindir}/qemu-system-arm"; do
+    for exe in "${resdir}/midi_bridge" "${resdir}/delugemu_splash" \
+               "${bindir}/qemu-system-arm"; do
         codesign --remove-signature "${exe}" 2>/dev/null || true
         codesign --force --sign - "${exe}"
     done

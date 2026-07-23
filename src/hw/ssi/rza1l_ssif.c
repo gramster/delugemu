@@ -294,17 +294,18 @@ static void rza1l_ssif_drain(RzA1lSsifState *s, uint32_t max_bytes)
     }
 
     /*
-     * Deadband: within a couple of frames of the target the proportional
-     * correction rounds to a fraction of a step anyway, so snap to exactly 1.0x
-     * and reset the interpolation phase. This lets the common steady state take
-     * the bulk-copy fast path below (no per-frame interpolation), which matters
-     * most on Windows where this drain runs in QEMU's main loop. The one-time
-     * sub-sample phase snap on entry is inaudible; outside the band the drift
-     * correction is unchanged.
+     * Deadband: within a couple of frames of the target, hold the rate at
+     * exactly 1.0x so the steady state can use the bulk-copy fast path below
+     * (no per-frame interpolation), which matters most on Windows where this
+     * drain runs in QEMU's main loop. Any residual interpolation phase is run
+     * down smoothly — at most a 1% momentary stretch, the same order as the
+     * servo's normal correction — rather than snapped to zero: a snap is a
+     * sub-sample waveform discontinuity, and with the FIFO servo settling
+     * right at this band's edge it recurred every few hundred milliseconds,
+     * which was audible as steady crackle (the v0.5.0 distortion regression).
      */
     if (err >= -2 * (int32_t)F && err <= 2 * (int32_t)F) {
-        step = 65536;
-        s->drain_frac = 0;
+        step = 65536 - MIN(s->drain_frac, 655);
     } else {
         step = (uint32_t)(65536 + (int64_t)err * (65536 / 50) / target);
     }

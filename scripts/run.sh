@@ -843,6 +843,12 @@ if [ ${#BRIDGE_SPECS[@]} -gt 0 ]; then
     BRIDGE_PID=$!
 fi
 
+# The .app launcher shows a startup splash during the pre-boot work; take it
+# down now that the emulator window is about to appear.
+if [ -n "${DELUGEMU_SPLASH_PID:-}" ]; then
+    kill "${DELUGEMU_SPLASH_PID}" 2>/dev/null || true
+fi
+
 log "Launching ${DELUGE_MACHINE} machine with ${FIRMWARE} (display=${DISPLAY_MODE})"
 QEMU_CMD=("${BIN}"
     -M "${DELUGE_MACHINE}"

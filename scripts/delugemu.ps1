@@ -48,6 +48,7 @@ function Write-Log  { param([string]$Msg) Write-Host "[delugemu] $Msg" -Foregrou
 function Write-Warn { param([string]$Msg) Write-Host "[delugemu] $Msg" -ForegroundColor Yellow }
 function Die {
     param([string]$Msg)
+    Hide-Splash
     if ($AppMode) {
         [void][System.Windows.Forms.MessageBox]::Show($Msg, 'DelugEmu',
             [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -90,6 +91,46 @@ function Notify {
             [System.Windows.Forms.ToolTipIcon]::Info)
     } catch { }
 }
+
+# Startup splash for app mode: a separate PowerShell process showing a marquee
+# progress form, so the pre-boot work (downloads, SD image build) doesn't look
+# like a hang. Killed right before the emulator window appears.
+$script:SplashProc = $null
+function Show-Splash {
+    if (-not $AppMode) { return }
+    $code = @'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$f = New-Object System.Windows.Forms.Form
+$f.Text = 'DelugEmu'
+$f.ClientSize = New-Object System.Drawing.Size(420, 110)
+$f.StartPosition = 'CenterScreen'
+$f.FormBorderStyle = 'FixedDialog'
+$f.MaximizeBox = $false; $f.MinimizeBox = $false
+$f.TopMost = $true
+$p = New-Object System.Windows.Forms.ProgressBar
+$p.Style = 'Marquee'; $p.SetBounds(20, 20, 380, 20)
+$l = New-Object System.Windows.Forms.Label
+$l.Text = "Starting DelugEmu...`nThe window opens when the emulator is ready. A first launch can take a few minutes (downloads and SD card build)."
+$l.SetBounds(20, 50, 380, 55)
+$f.Controls.Add($p); $f.Controls.Add($l)
+[System.Windows.Forms.Application]::Run($f)
+'@
+    try {
+        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+        $script:SplashProc = Start-Process powershell -PassThru -WindowStyle Hidden `
+            -ArgumentList @('-NoProfile', '-EncodedCommand', $enc)
+    } catch { }
+}
+function Hide-Splash {
+    if ($script:SplashProc) {
+        try { Stop-Process -Id $script:SplashProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+        $script:SplashProc = $null
+    }
+}
+
+# Splash up as early as possible in app mode (functions above are defined now).
+if ($AppMode) { Show-Splash }
 
 function Show-Usage {
     @'
@@ -570,6 +611,7 @@ if ($Icount) {
 $qemuArgs = @('-M', 'deluge', '-kernel', $Firmware) +
     $SerialArgs + $UsbMidiArgs + $DisplayArgs + $SkinArgs + $AudioArgs + $IcountArgs + $SdArgs + $Extra
 
+Hide-Splash
 Write-Log "Launching deluge machine with $Firmware (display=$DisplayMode)"
 try {
     & $Qemu @qemuArgs
