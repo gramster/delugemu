@@ -14,8 +14,18 @@ int main(void)
     @autoreleasepool {
         [NSApplication sharedApplication];
 
+        /* Size the window around the label's own fitted size so the text can
+         * never truncate, whatever the font metrics. */
+        NSTextField *label = [NSTextField labelWithString:
+            @"Starting DelugEmu…\n"
+            @"The window opens when the emulator is ready. A first launch\n"
+            @"can take a few minutes (downloads and SD card build)."];
+        NSSize ls = [label frame].size;
+        CGFloat width = 84 + ls.width + 24;
+        CGFloat height = MAX(94, ls.height + 36);
+
         NSWindow *w = [[NSWindow alloc]
-            initWithContentRect:NSMakeRect(0, 0, 430, 110)
+            initWithContentRect:NSMakeRect(0, 0, width, height)
                       styleMask:NSWindowStyleMaskTitled
                         backing:NSBackingStoreBuffered
                           defer:NO];
@@ -24,16 +34,13 @@ int main(void)
         [w center];
 
         NSProgressIndicator *spin = [[NSProgressIndicator alloc]
-            initWithFrame:NSMakeRect(24, 34, 42, 42)];
+            initWithFrame:NSMakeRect(24, (height - 42) / 2, 42, 42)];
         [spin setStyle:NSProgressIndicatorStyleSpinning];
         [spin startAnimation:nil];
         [[w contentView] addSubview:spin];
 
-        NSTextField *label = [NSTextField labelWithString:
-            @"Starting DelugEmu…\n"
-            @"The window opens when the emulator is ready. A first launch\n"
-            @"can take a few minutes (downloads and SD card build)."];
-        [label setFrame:NSMakeRect(84, 18, 330, 74)];
+        [label setFrame:NSMakeRect(84, (height - ls.height) / 2,
+                                   ls.width, ls.height)];
         [[w contentView] addSubview:label];
 
         [w makeKeyAndOrderFront:nil];

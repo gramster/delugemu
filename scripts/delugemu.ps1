@@ -103,16 +103,16 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $f = New-Object System.Windows.Forms.Form
 $f.Text = 'DelugEmu'
-$f.ClientSize = New-Object System.Drawing.Size(420, 110)
+$f.ClientSize = New-Object System.Drawing.Size(480, 120)
 $f.StartPosition = 'CenterScreen'
 $f.FormBorderStyle = 'FixedDialog'
 $f.MaximizeBox = $false; $f.MinimizeBox = $false
 $f.TopMost = $true
 $p = New-Object System.Windows.Forms.ProgressBar
-$p.Style = 'Marquee'; $p.SetBounds(20, 20, 380, 20)
+$p.Style = 'Marquee'; $p.SetBounds(20, 20, 440, 20)
 $l = New-Object System.Windows.Forms.Label
 $l.Text = "Starting DelugEmu...`nThe window opens when the emulator is ready. A first launch can take a few minutes (downloads and SD card build)."
-$l.SetBounds(20, 50, 380, 55)
+$l.SetBounds(20, 50, 440, 60)
 $f.Controls.Add($p); $f.Controls.Add($l)
 [System.Windows.Forms.Application]::Run($f)
 '@
