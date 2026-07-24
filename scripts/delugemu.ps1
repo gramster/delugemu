@@ -42,7 +42,17 @@ if ($AppMode) {
     $StateDir = Join-Path $env:APPDATA 'DelugEmu'
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     Set-Location $StateDir
+    # There is no visible console in app mode: keep a transcript so failures
+    # are diagnosable (%APPDATA%\DelugEmu\delugemu.log).
+    try { Start-Transcript -Path (Join-Path $StateDir 'delugemu.log') -Force | Out-Null } catch { }
 }
+
+# Windows PowerShell 5.1 may not offer TLS 1.2 by default, which breaks the
+# GitHub/S3 downloads on some systems. Enable it additively; harmless if set.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
 
 function Write-Log  { param([string]$Msg) Write-Host "[delugemu] $Msg" -ForegroundColor Cyan }
 function Write-Warn { param([string]$Msg) Write-Host "[delugemu] $Msg" -ForegroundColor Yellow }
@@ -639,10 +649,34 @@ $qemuArgs = @('-M', 'deluge', '-kernel', $Firmware) +
 Hide-Splash
 Write-Log "Launching deluge machine with $Firmware (display=$DisplayMode)"
 try {
-    & $Qemu @qemuArgs
-    $code = $LASTEXITCODE
+    if ($AppMode) {
+        # Hidden console: run via Start-Process with qemu's output captured to
+        # files, and raise a dialog if it fails — otherwise an early qemu exit
+        # is a silent flash of a window and nothing else.
+        $outLog = Join-Path $StateDir 'qemu-out.log'
+        $errLog = Join-Path $StateDir 'qemu-err.log'
+        $quoted = $qemuArgs | ForEach-Object {
+            if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+        }
+        $proc = Start-Process -FilePath $Qemu -ArgumentList $quoted `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+        $code = $proc.ExitCode
+        if ($code -ne 0) {
+            $tail = (Get-Content -LiteralPath $errLog -Tail 10 -ErrorAction SilentlyContinue) -join "`n"
+            if (-not $tail) { $tail = '(no error output captured)' }
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "The emulator exited with code $code.`n`n$tail`n`nLogs: $StateDir",
+                'DelugEmu', 'OK', 'Error')
+        }
+    }
+    else {
+        & $Qemu @qemuArgs
+        $code = $LASTEXITCODE
+    }
 }
 finally {
+    if ($AppMode) { try { Stop-Transcript | Out-Null } catch { } }
     if ($script:Tray) { $script:Tray.Visible = $false; $script:Tray.Dispose() }
     if ($script:SdTmpImg) {
         if ($script:SdWriteback) { Invoke-SdWriteback }
