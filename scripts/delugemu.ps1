@@ -290,7 +290,9 @@ $script:SdWriteback = $false
 $script:SdSnapTime  = $null
 
 # Compute the power-of-two image size (MiB) for a content folder, mirroring
-# mksd.sh: content + 30% slack + 64 MiB, floor 128 MiB, rounded up to 2^n.
+# mksd.sh: content + 30% slack + 64 MiB, floor 256 MiB (128 MiB sits at
+# FAT32's minimum-cluster boundary, where mkfs.fat builds marginal volumes),
+# rounded up to 2^n.
 function Get-SdImageSizeMiB {
     param([string]$Folder)
     $bytes = (Get-ChildItem -LiteralPath $Folder -Recurse -File -ErrorAction SilentlyContinue |
@@ -298,8 +300,8 @@ function Get-SdImageSizeMiB {
     if (-not $bytes) { $bytes = 0 }
     $kib = [math]::Ceiling($bytes / 1024)
     $needMiB = [int]([math]::Floor(($kib * 13 / 10) / 1024) + 64)
-    if ($needMiB -lt 128) { $needMiB = 128 }
-    $imgMiB = 128
+    if ($needMiB -lt 256) { $needMiB = 256 }
+    $imgMiB = 256
     while ($imgMiB -lt $needMiB) { $imgMiB *= 2 }
     return $imgMiB
 }

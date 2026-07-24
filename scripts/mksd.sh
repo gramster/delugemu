@@ -26,11 +26,13 @@ mkdir -p "$(dirname "${OUT_IMG}")"
 
 # Size the image at the content size plus 30% slack (min 64 MiB), then round up
 # to the next power of two: QEMU's sd-card device requires a power-of-2 capacity.
-# Floor at 128 MiB so FAT32 has a reasonably large volume.
+# Floor at 256 MiB: 128 MiB sits at FAT32's minimum-cluster-count boundary,
+# where format tools differ in what they produce (mkfs.fat on Windows built
+# marginal volumes for near-empty folders).
 content_kib=$(du -sk "${CONTENT_DIR}" | awk '{print $1}')
 need_mib=$(( (content_kib * 13 / 10) / 1024 + 64 ))
-[ "${need_mib}" -lt 128 ] && need_mib=128
-img_mib=128
+[ "${need_mib}" -lt 256 ] && need_mib=256
+img_mib=256
 while [ "${img_mib}" -lt "${need_mib}" ]; do
     img_mib=$(( img_mib * 2 ))
 done
