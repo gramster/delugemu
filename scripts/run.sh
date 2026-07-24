@@ -540,7 +540,9 @@ done
 # ./${SD_DIR} and use that.
 if [ ${#SD_ARGS[@]} -eq 0 ]; then
     for default_sd in "${SD_DIR}_rw" "${SD_DIR}"; do
-        if [ -d "${default_sd}" ]; then
+        # An empty folder is "no card yet", not a card — don't let a
+        # pre-created state directory suppress the factory-card offer.
+        if [ -d "${default_sd}" ] && [ -n "$(ls -A "${default_sd}" 2>/dev/null)" ]; then
             log "No --sd given; defaulting to ./${default_sd}"
             sd_setup "${default_sd}"
             break

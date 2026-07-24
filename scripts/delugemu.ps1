@@ -502,7 +502,11 @@ if (Test-Path -LiteralPath $FirmwareDir -PathType Container) {
 # If neither exists and we are interactive, offer to download the factory card.
 if ($SdArgs.Count -eq 0) {
     foreach ($cand in @("${SdDir}_rw", $SdDir)) {
-        if (Test-Path -LiteralPath $cand -PathType Container) {
+        # An empty folder is "no card yet", not a card: the MSI pre-creates
+        # %APPDATA%\DelugEmu\sdcard_rw for its Start Menu shortcut, and
+        # treating it as content suppressed the factory-card offer.
+        if ((Test-Path -LiteralPath $cand -PathType Container) -and
+            @(Get-ChildItem -LiteralPath $cand -Force -ErrorAction SilentlyContinue).Count -gt 0) {
             Write-Log "No --sd given; defaulting to .\$cand"
             $SdArgs = Resolve-SdArgs $cand
             break
