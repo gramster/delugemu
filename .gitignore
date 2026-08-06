@@ -36,3 +36,10 @@ qemu/
 # WiX local extension manifest (created by package.sh)
 wix.json
 .wix/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+.kata.local.toml
