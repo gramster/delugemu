@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "delugemu",
-  "project_id": "88d4f252-18fa-481f-be67-aa1c8c81b784"
-}

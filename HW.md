@@ -2,6 +2,14 @@
 
 Some docs on the hardware/firmware.
 
+Components:
+
+- alliance as4c32m16sm-7tcn 512MB 32-bit SDRAM
+- microchip pic24fj256 16-bit 32 mHz microcontroller
+- renesas r7s721020vc ARM Cortex A9 32-bit 400MHz 3MB RAM SoC
+
+
+
 ## Interrupts
 
 Interrupt Name | Interrupt ID | Handler | Priority | Registered | Called
