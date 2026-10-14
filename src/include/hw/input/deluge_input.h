@@ -104,6 +104,9 @@ struct DelugeInputState {
     /* Audio-only toggle state and edge-detect for the Right Ctrl key. */
     bool render_suspended;
     bool render_key_down;
+
+    bool *binding_down;
+    int binding_count;
 };
 
 /* Bind the PIC whose input stream this device drives (board setup). */

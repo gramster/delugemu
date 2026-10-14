@@ -566,6 +566,14 @@ static void deluge_input_event(DeviceState *dev, QemuConsole *src,
             if (b->qcode != qcode) {
                 continue;
             }
+            /* Filter host auto-repeat: ignore identical repeated "down" events. */
+            if (i < (size_t)s->binding_count) {
+                if (key->down == s->binding_down[i]) {
+                    /* duplicate — likely host auto-repeat; ignore */
+                    return;
+                }
+                s->binding_down[i] = key->down;
+            }
             if (b->is_pad) {
                 deluge_pic_pad_event(s->pic, b->x, b->y, key->down);
             } else {
@@ -686,6 +694,14 @@ static void deluge_input_realize(DeviceState *dev, Error **errp)
     s->latch_active = false;
     s->latched_count = 0;
 
+    /* Track per-binding down state so we can filter host key auto-repeat. */
+    s->binding_count = ARRAY_SIZE(deluge_input_bindings);
+    s->binding_down = calloc(s->binding_count, sizeof(bool));
+    if (!s->binding_down) {
+        INPUT_DBG("failed to allocate binding_down");
+        s->binding_count = 0;
+    }
+
     s->handler = qemu_input_handler_register(dev, &deluge_input_handler);
     qemu_input_handler_activate(s->handler);
 }
@@ -709,6 +725,12 @@ static void deluge_input_unrealize(DeviceState *dev)
         timer_del(s->enc_repeat_timer);
         timer_free(s->enc_repeat_timer);
         s->enc_repeat_timer = NULL;
+    }
+
+    if (s->binding_down) {
+        free(s->binding_down);
+        s->binding_down = NULL;
+        s->binding_count = 0;
     }
 }
 
