@@ -26,10 +26,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <stdlib.h>
+
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/gpio/rza1l_gpio.h"
 
@@ -38,6 +41,10 @@
 #define GPIO_PPR_END  0x230 /* PPR1..PPR11 -> 0x200 + 11*4 */
 /* Port output data registers: P1 at 0x000, same stride. */
 #define GPIO_P_BASE   0x000
+
+#define RZA1L_GPIO_EDGE_SPACING_NS_DEFAULT 50000
+#define RZA1L_GPIO_EDGE_SPACING_NS_MIN     800
+#define RZA1L_GPIO_EDGE_SPACING_NS_MAX     1000000000
 
 /*
  * One rotary encoder's wiring, mirroring the firmware's kEncoderIrqMap
@@ -61,8 +68,7 @@ static const RzA1lEncoderMap rza1l_encoder_map[DELUGE_ENC_COUNT] = {
     [DELUGE_ENC_MOD_0]    = { .irq_pin = 0,  .comp_pin = 15, .irq_num = 4, .invert = false },
 };
 
-/* Spacing between successive quadrature edges (virtual time). */
-#define RZA1L_GPIO_EDGE_SPACING_NS 50000 /* 50us: ISR runs between edges */
+
 
 /*
  * Acknowledge a pending edge-mode external IRQ when its handler reads the
@@ -250,7 +256,7 @@ static void rza1l_gpio_edge_cb(void *opaque)
     if (s->edge_head != s->edge_tail) {
         timer_mod(s->edge_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      RZA1L_GPIO_EDGE_SPACING_NS);
+                      s->edge_spacing_ns);
     }
 }
 
@@ -272,7 +278,7 @@ static void rza1l_gpio_enqueue_edge(RzA1lGpioState *s, unsigned enc, int dir)
     if (!timer_pending(s->edge_timer)) {
         timer_mod(s->edge_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      RZA1L_GPIO_EDGE_SPACING_NS);
+                      s->edge_spacing_ns);
     }
 }
 
@@ -419,6 +425,12 @@ static void rza1l_gpio_realize(DeviceState *dev, Error **errp)
     RzA1lGpioState *s = RZA1L_GPIO(dev);
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
 
+    if (s->edge_spacing_ns < RZA1L_GPIO_EDGE_SPACING_NS_MIN) {
+        s->edge_spacing_ns = RZA1L_GPIO_EDGE_SPACING_NS_MIN;
+    } else if (s->edge_spacing_ns > RZA1L_GPIO_EDGE_SPACING_NS_MAX) {
+        s->edge_spacing_ns = RZA1L_GPIO_EDGE_SPACING_NS_MAX;
+    }
+
     memory_region_init_io(&s->iomem, OBJECT(dev), &rza1l_gpio_ops, s,
                           TYPE_RZA1L_GPIO, RZA1L_GPIO_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
@@ -446,6 +458,11 @@ static void rza1l_gpio_unrealize(DeviceState *dev)
     }
 }
 
+static const Property deluge_gpio_props[] = {
+    DEFINE_PROP_UINT32("edge-spacing-ns", RzA1lGpioState, edge_spacing_ns,
+        RZA1L_GPIO_EDGE_SPACING_NS_DEFAULT),
+};
+
 static const VMStateDescription vmstate_rza1l_gpio = {
     .name = TYPE_RZA1L_GPIO,
     .version_id = 3,
@@ -470,6 +487,7 @@ static void rza1l_gpio_class_init(ObjectClass *klass, const void *data)
     dc->unrealize = rza1l_gpio_unrealize;
     dc->vmsd = &vmstate_rza1l_gpio;
     device_class_set_legacy_reset(dc, rza1l_gpio_reset);
+    device_class_set_props(dc, deluge_gpio_props);
 }
 
 static const TypeInfo rza1l_gpio_info = {

@@ -110,6 +110,7 @@ struct RzA1lGpioState {
     } edge_q[RZA1L_GPIO_EDGE_QUEUE];
     int edge_head;
     int edge_tail;
+    uint32_t edge_spacing_ns;
     QEMUTimer *edge_timer;
 };
 

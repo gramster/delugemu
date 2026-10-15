@@ -426,6 +426,15 @@ SKIN_SCALE="native"
 # reduces the main-loop/BQL contention that competes with audio under live load;
 # a shorter one makes the panel smoother on a fast host.
 SKIN_REFRESH_MS=""
+
+# GPIO edge spacing in nanoseconds. Default to 50000 (50µs).
+# Increase this if encoders do not work consistently.
+# Recommended value on Linux: 470000 (470µs)
+EDGE_SPACING_NS=""
+if [ "$(uname -s)" == "Linux" ]; then
+    EDGE_SPACING_NS="470000"
+fi
+
 # Host-side playback buffer for the audio backend, in microseconds. On Windows
 # the dsound voice is serviced from QEMU's main loop, the same thread that
 # recomposites the front-panel skin; a periodic full-frame skin upload can
@@ -505,6 +514,11 @@ while [ $# -gt 0 ]; do
             SKIN_REFRESH_MS="$2"; shift 2
             ;;
         --skin-refresh-ms=*) SKIN_REFRESH_MS="${1#--skin-refresh-ms=}"; shift ;;
+        --edge-spacing-ns)
+            [ -n "${2:-}" ] || die "--edge-spacing-ns requires a value in ns"
+            EDGE_SPACING_NS="$2"; shift 2
+            ;;
+        --edge-spacing-ns=*) EDGE_SPACING_NS="${1#--edge-spacing-ns=}"; shift ;;
         --icount)
             # Optional shift argument. Treat a following token as the shift only
             # if it is not another option (a bare --icount means shift=auto).
@@ -686,6 +700,12 @@ if [ "${DISPLAY_MODE}" = "console" ]; then
         esac
         SKIN_ARGS+=(-global "deluge-skin.refresh-ms=${SKIN_REFRESH_MS}")
     fi
+fi
+
+# Timing parameters for the RZA1L GPIO device.
+GPIO_ARGS=()
+if [ -n "${EDGE_SPACING_NS}" ]; then
+    GPIO_ARGS=(-global "rza1l-gpio.edge-spacing-ns=${EDGE_SPACING_NS}")
 fi
 
 # Front-panel window scale. The native panel (2256x1584) renders 1:1 by default;
@@ -918,6 +938,7 @@ QEMU_CMD=("${BIN}"
     "${USB_MIDI_ARGS[@]+"${USB_MIDI_ARGS[@]}"}"
     "${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"}"
     "${SKIN_ARGS[@]+"${SKIN_ARGS[@]}"}"
+    "${GPIO_ARGS[@]+"${GPIO_ARGS[@]}"}"
     "${AUDIO_ARGS[@]+"${AUDIO_ARGS[@]}"}"
     "${ICOUNT_ARGS[@]+"${ICOUNT_ARGS[@]}"}"
     "${SD_ARGS[@]+"${SD_ARGS[@]}"}"
