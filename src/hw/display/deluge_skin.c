@@ -340,12 +340,7 @@ static void deluge_skin_prepare_padless_background(DelugeSkinState *s)
 {
     uint32_t *img = s->bg_argb;
     int stride = DELUGE_SKIN_IMAGE_WIDTH;
-    /*
-     * Unlit pad colour: white for the default light "Normal" panel, black for
-     * the inverse (dark) panel. Lit pads blend over this slot the same way in
-     * either theme, so only the resting colour differs.
-     */
-    uint32_t slot = s->inverse ? 0xff000000u : 0xffffffffu;
+    uint32_t slot = s->inverse ? 0xff000000u : 0xffccccccu;
 
     if (!s->bg_loaded || !img) {
         return;
@@ -646,6 +641,7 @@ static void deluge_skin_blend_triangle(uint32_t *dst, int stride,
 #define DELUGE_GOLD_R 201
 #define DELUGE_GOLD_G 162
 #define DELUGE_GOLD_B 56
+#define DELUGE_GOLD_A 235
 
 static bool deluge_skin_encoder_is_gold(const char *name)
 {
@@ -676,19 +672,19 @@ static void deluge_skin_draw_master_volume(DelugeSkinState *s, uint32_t *dst,
     deluge_skin_blend_disc(dst, stride,
                            DELUGE_MASTER_VOL_CX, DELUGE_MASTER_VOL_CY,
                            DELUGE_MASTER_VOL_R,
-                           DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B, 235,
-                           clip);
+                           DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B,
+                           DELUGE_GOLD_A, clip);
 
     /* Down (left) and up (right) triangles, dark for contrast on gold. */
     deluge_skin_blend_triangle(dst, stride,
                                DELUGE_MASTER_VOL_CX - DELUGE_ENC_TRI_OFFX,
                                DELUGE_MASTER_VOL_CY,
-                               DELUGE_ENC_TRI_HALF, false, 40, 40, 40, 190,
+                               DELUGE_ENC_TRI_HALF, false, 60, 60, 60, 190,
                                clip);
     deluge_skin_blend_triangle(dst, stride,
                                DELUGE_MASTER_VOL_CX + DELUGE_ENC_TRI_OFFX,
                                DELUGE_MASTER_VOL_CY,
-                               DELUGE_ENC_TRI_HALF, true, 40, 40, 40, 190,
+                               DELUGE_ENC_TRI_HALF, true, 60, 60, 60, 190,
                                clip);
 
     if (s->ssif) {
@@ -724,7 +720,7 @@ static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
 
     for (size_t i = 0; i < ARRAY_SIZE(deluge_skin_controls); i++) {
         const DelugeSkinControl *c = &deluge_skin_controls[i];
-        uint8_t tr, tg, tb;
+        uint8_t tr, tg, tb, ta = 100;
         bool gold;
 
         if (c->has_led) {
@@ -736,24 +732,24 @@ static void deluge_skin_draw_encoders(DelugeSkinState *s, uint32_t *dst,
             /* Solid gold knob; rim is softened by the disc helper. */
             deluge_skin_blend_disc(dst, stride, c->cx, c->cy, c->radius,
                                    DELUGE_GOLD_R, DELUGE_GOLD_G, DELUGE_GOLD_B,
-                                   235, clip);
-            tr = tg = tb = 40;          /* dark triangles read well on gold */
+                                   DELUGE_GOLD_A, clip);
+            tr = tg = tb = 0;           /* dark triangles read well on gold */
         } else if (s->inverse) {
             /* Inverse skin: encoder bodies are white, so use dark triangles. */
-            tr = tg = tb = 40;
+            tr = tg = tb = 0;
         } else {
             /* Normal skin: encoder bodies are black, so use light triangles. */
-            tr = tg = tb = 210;
+            tr = tg = tb = 255;
         }
 
         deluge_skin_blend_triangle(dst, stride,
                                    c->cx - DELUGE_ENC_TRI_OFFX, c->cy,
                                    DELUGE_ENC_TRI_HALF, false,
-                                   tr, tg, tb, 190, clip);
+                                   tr, tg, tb, ta, clip);
         deluge_skin_blend_triangle(dst, stride,
                                    c->cx + DELUGE_ENC_TRI_OFFX, c->cy,
                                    DELUGE_ENC_TRI_HALF, true,
-                                   tr, tg, tb, 190, clip);
+                                   tr, tg, tb, ta, clip);
     }
 }
 

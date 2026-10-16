@@ -111,6 +111,23 @@ static const DelugeInputBinding deluge_input_bindings[] = {
     { Q_KEY_CODE_Y,         false, 7, 3 }, /* TAP_TEMPO         */
     { Q_KEY_CODE_U,         false, 8, 1 }, /* TRIPLETS          */
 
+    /* 8 MOD (gold-knob assignment) buttons, top row. */
+    { Q_KEY_CODE_F1,        false, 1, 0 }, /* MOD0              */
+    { Q_KEY_CODE_F2,        false, 1, 1 }, /* MOD1              */
+    { Q_KEY_CODE_F3,        false, 1, 2 }, /* MOD2              */
+    { Q_KEY_CODE_F4,        false, 1, 3 }, /* MOD3              */
+    { Q_KEY_CODE_F5,        false, 2, 0 }, /* MOD4              */
+    { Q_KEY_CODE_F6,        false, 2, 1 }, /* MOD5              */
+    { Q_KEY_CODE_F7,        false, 2, 2 }, /* MOD6              */
+    { Q_KEY_CODE_F8,        false, 2, 3 }, /* MOD7              */
+
+    /* Encoder push buttons. */
+    { Q_KEY_CODE_COMMA,     false, 0, 0 }, /* X_ENC             */
+    { Q_KEY_CODE_DOT,       false, 0, 1 }, /* Y_ENC             */
+    { Q_KEY_CODE_SLASH,     false, 0, 2 }, /* MOD_ENCODER_0     */
+    { Q_KEY_CODE_APOSTROPHE,false, 0, 3 }, /* MOD_ENCODER_1     */
+    { Q_KEY_CODE_BACKSLASH, false, 4, 1 }, /* TEMPO             */
+
     /* Sidebar audition column (column kDisplayWidth + 1 = 17), top row first. */
     { Q_KEY_CODE_1,         true, 17, 0 },
     { Q_KEY_CODE_2,         true, 17, 1 },
@@ -120,6 +137,40 @@ static const DelugeInputBinding deluge_input_bindings[] = {
     { Q_KEY_CODE_6,         true, 17, 5 },
     { Q_KEY_CODE_7,         true, 17, 6 },
     { Q_KEY_CODE_8,         true, 17, 7 },
+};
+
+/* One host key binding to turn an encoder a particular direction.
+ */
+typedef struct DelugeEncoderBinding {
+    int qcode;   /* QKeyCode of the host key */
+    int enc;     /* Encoder to affect */
+    int dir;     /* Direction */
+} DelugeEncoderBinding;
+
+/*
+ * Default key map to turn encoders up/down.
+ *
+ * Up/down/left/right map to scroll encoders.
+ * Home/end/pgup/pgdn map to mod encoders.
+ * Minus/equal map to tempo encoder.
+ * Brackets left/right map to select encoder.
+ *
+ * The push action is mapped to keys that should be physically
+ * located close to the turn action key pair (see above).
+ */
+static const DelugeEncoderBinding deluge_encoder_bindings[] = {
+    { Q_KEY_CODE_LEFT,          DELUGE_ENC_SCROLL_X, -1 },
+    { Q_KEY_CODE_RIGHT,         DELUGE_ENC_SCROLL_X, +1 },
+    { Q_KEY_CODE_UP,            DELUGE_ENC_SCROLL_Y, -1 },
+    { Q_KEY_CODE_DOWN,          DELUGE_ENC_SCROLL_Y, +1 },
+    { Q_KEY_CODE_BRACKET_RIGHT, DELUGE_ENC_SELECT,   -1 },
+    { Q_KEY_CODE_BRACKET_LEFT,  DELUGE_ENC_SELECT,   +1 },
+    { Q_KEY_CODE_MINUS,         DELUGE_ENC_TEMPO,    -1 },
+    { Q_KEY_CODE_EQUAL,         DELUGE_ENC_TEMPO,    +1 },
+    { Q_KEY_CODE_PGDN,          DELUGE_ENC_MOD_0,    -1 },
+    { Q_KEY_CODE_PGUP,          DELUGE_ENC_MOD_0,    +1 },
+    { Q_KEY_CODE_HOME,          DELUGE_ENC_MOD_1,    -1 },
+    { Q_KEY_CODE_END,           DELUGE_ENC_MOD_1,    +1 },
 };
 
 static bool deluge_input_hit_test_pad(int px, int py, int *grid_x, int *grid_y)
@@ -570,6 +621,20 @@ static void deluge_input_event(DeviceState *dev, QemuConsole *src,
                 deluge_pic_pad_event(s->pic, b->x, b->y, key->down);
             } else {
                 deluge_pic_button_event(s->pic, b->x, b->y, key->down);
+            }
+            return;
+        }
+
+        for (size_t i = 0; i < ARRAY_SIZE(deluge_encoder_bindings); i++) {
+            const DelugeEncoderBinding *b = &deluge_encoder_bindings[i];
+
+            if (b->qcode != qcode) {
+                continue;
+            }
+            if (key->down && s->enc_repeat_id < 0) {
+                deluge_input_encoder_begin_repeat(s, b->enc, b->dir);
+            } else {
+                deluge_input_encoder_stop_repeat(s);
             }
             return;
         }

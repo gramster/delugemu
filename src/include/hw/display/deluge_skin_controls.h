@@ -33,9 +33,10 @@ typedef struct DelugeSkinControl {
 } DelugeSkinControl;
 
 /* Default "lit" colour for indicator LEDs without a distinctive hardware hue. */
-#define DELUGE_LED_AMBER 255, 110, 0
-#define DELUGE_LED_GREEN 0, 210, 40
-#define DELUGE_LED_RED   235, 20, 20
+#define DELUGE_LED_AMBER 255, 110,   0
+#define DELUGE_LED_GREEN 144, 235,   0
+#define DELUGE_LED_RED   235,  20,  20
+#define DELUGE_LED_BLUE   50,  50, 255
 
 /*
  * Layout table. Button (col, row) come from the firmware *ButtonCoord / MOD
@@ -55,25 +56,25 @@ static const DelugeSkinControl deluge_skin_controls[] = {
 
     /* Named function buttons (indicator LED at the same col,row). */
     { "AFFECT_ENTIRE", 3, 0,  684, 468, 24, true,  DELUGE_LED_AMBER },
-    { "SESSION_VIEW",  3, 1,  865, 424, 24, true,  DELUGE_LED_AMBER },
-    { "CLIP_VIEW",     3, 2,  865, 515, 24, true,  DELUGE_LED_AMBER },
-    { "KEYBOARD",      3, 3, 1045, 516, 24, true,  DELUGE_LED_AMBER },
-    { "SYNTH",         5, 0, 1187, 424, 24, true,  DELUGE_LED_AMBER },
-    { "KIT",           5, 1, 1268, 424, 24, true,  DELUGE_LED_AMBER },
-    { "MIDI",          5, 2, 1350, 424, 24, true,  DELUGE_LED_AMBER },
-    { "CV",            5, 3, 1432, 424, 24, true,  DELUGE_LED_AMBER },
-    { "SCALE_MODE",    6, 0, 1205, 515, 24, true,  DELUGE_LED_AMBER },
-    { "CROSS_SCREEN",  6, 2, 1350, 515, 24, true,  DELUGE_LED_AMBER },
-    { "BACK",          7, 1, 1529, 241, 24, true,  DELUGE_LED_AMBER },
-    { "LOAD",          6, 1, 1529, 332, 24, true,  DELUGE_LED_AMBER },
-    { "SAVE",          6, 3, 1529, 424, 24, true,  DELUGE_LED_AMBER },
-    { "LEARN",         7, 0, 1529, 515, 24, true,  DELUGE_LED_AMBER },
-    { "TAP_TEMPO",     7, 3, 1812, 332, 24, true,  DELUGE_LED_AMBER },
-    { "SYNC_SCALING",  7, 2, 1812, 424, 24, true,  DELUGE_LED_AMBER },
-    { "TRIPLETS",      8, 1, 1812, 515, 24, true,  DELUGE_LED_AMBER },
+    { "SESSION_VIEW",  3, 1,  865, 424, 24, true,  DELUGE_LED_BLUE  },
+    { "CLIP_VIEW",     3, 2,  865, 515, 24, true,  DELUGE_LED_BLUE  },
+    { "KEYBOARD",      3, 3, 1045, 516, 24, true,  DELUGE_LED_BLUE  },
+    { "SYNTH",         5, 0, 1187, 424, 24, true,  DELUGE_LED_RED   },
+    { "KIT",           5, 1, 1268, 424, 24, true,  DELUGE_LED_RED   },
+    { "MIDI",          5, 2, 1350, 424, 24, true,  DELUGE_LED_RED   },
+    { "CV",            5, 3, 1432, 424, 24, true,  DELUGE_LED_RED   },
+    { "SCALE_MODE",    6, 0, 1205, 515, 24, true,  DELUGE_LED_BLUE  },
+    { "CROSS_SCREEN",  6, 2, 1350, 515, 24, true,  DELUGE_LED_BLUE  },
+    { "BACK",          7, 1, 1529, 241, 24, true,  DELUGE_LED_RED   },
+    { "LOAD",          6, 1, 1529, 332, 24, true,  DELUGE_LED_RED   },
+    { "SAVE",          6, 3, 1529, 424, 24, true,  DELUGE_LED_RED   },
+    { "LEARN",         7, 0, 1529, 515, 24, true,  DELUGE_LED_BLUE  },
+    { "TAP_TEMPO",     7, 3, 1812, 332, 24, true,  DELUGE_LED_GREEN },
+    { "SYNC_SCALING",  7, 2, 1812, 424, 24, true,  DELUGE_LED_BLUE  },
+    { "TRIPLETS",      8, 1, 1812, 515, 24, true,  DELUGE_LED_BLUE  },
     { "PLAY",          8, 3, 2072, 332, 24, true,  DELUGE_LED_GREEN },
     { "RECORD",        8, 2, 2072, 424, 24, true,  DELUGE_LED_RED   },
-    { "SHIFT",         8, 0, 2072, 515, 24, true,  DELUGE_LED_AMBER },
+    { "SHIFT",         8, 0, 2072, 515, 24, true,  DELUGE_LED_BLUE  },
 
     /* Rotary-encoder push-clicks (button matrix, no indicator LED). */
     { "Y_ENC",         0, 0,   94, 469, 60, false, 0, 0, 0 },
