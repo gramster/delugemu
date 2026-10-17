@@ -12,12 +12,20 @@
  *     directly via -kernel, so that path is not exercised during boot here.
  *
  * This model makes every manual transfer complete instantly: CMNSR.TEND always
- * reads set, so the firmware's wait loops succeed. SMRDR reads back zero, which
- * the flash drivers interpret as "status WIP clear / not busy", letting the
- * boot-time Userdef_SFLASH_Busy_Wait() loops exit. CMNSR.SSLF tracks the SSL
+ * reads set, so the firmware's wait loops succeed. CMNSR.SSLF tracks the SSL
  * keep/negate state so spibsc_stop()/spibsc_transfer() chip-select handshakes
  * behave. No real flash device is attached; modelling actual flash content is
  * future work (storage milestone).
+ *
+ * What SMRDR reads back depends on the command in SMCMR. Flash-array reads
+ * (READ/FAST_READ and their dual/quad/4-byte variants) return all-ones,
+ * because that is what erased NOR flash holds — the firmware stores its
+ * settings in this flash, and its "were settings ever saved?" check relies on
+ * the erased pattern (an all-zero settings sector instead parses as valid
+ * saved settings with every value 0, e.g. all four clip-status pad colours
+ * become red). Every other command returns zero: the status read (RDSR 0x05)
+ * must see WIP clear so the boot-time Userdef_SFLASH_Busy_Wait() loops exit,
+ * and ID/config reads keep their previous behaviour.
  *
  * Register offsets verified via offsetof on the firmware st_spibsc:
  *   CMNCR 0x00 SSLDR 0x04 SPBCR 0x08 DRCR 0x0c DRCMR 0x10 DREAR 0x14
@@ -38,9 +46,14 @@
 /* Register byte offsets. */
 #define SPIBSC_DRCR   0x0c
 #define SPIBSC_SMCR   0x20
+#define SPIBSC_SMCMR  0x24
 #define SPIBSC_SMRDR0 0x38
 #define SPIBSC_SMRDR1 0x3c
 #define SPIBSC_CMNSR  0x48
+
+/* SMCMR fields. */
+#define SMCMR_CMD_SHIFT 16
+#define SMCMR_CMD_MASK  0xff
 
 /* SMCR bits. */
 #define SMCR_SPIE  0x00000001  /* start transfer */
@@ -53,6 +66,32 @@
 #define CMNSR_TEND 0x00000001  /* transfer end (always set in this model) */
 #define CMNSR_SSLF 0x00000002  /* SSL line state */
 
+/*
+ * Flash-array read commands (Spansion S25FL512 set, matching the firmware's
+ * sflash.h): READ/FAST_READ plus the dual/quad and 4-byte-address variants.
+ * These are the commands whose SMRDR data must look like erased flash.
+ */
+static bool rza1l_spibsc_cmd_reads_flash_array(uint8_t cmd)
+{
+    switch (cmd) {
+    case 0x03:  /* READ */
+    case 0x13:  /* READ_4B */
+    case 0x0b:  /* FAST_READ */
+    case 0x0c:  /* FAST_READ_4B */
+    case 0x3b:  /* DUAL_READ */
+    case 0x3c:  /* DUAL_READ_4B */
+    case 0x6b:  /* QUAD_READ */
+    case 0x6c:  /* QUAD_READ_4B */
+    case 0xbb:  /* DUAL_IO_READ */
+    case 0xbc:  /* DUAL_IO_READ_4B */
+    case 0xeb:  /* QUAD_IO_READ */
+    case 0xec:  /* QUAD_IO_READ_4B */
+        return true;
+    default:
+        return false;
+    }
+}
+
 static uint64_t rza1l_spibsc_read(void *opaque, hwaddr offset, unsigned size)
 {
     RzA1lSpibscState *s = opaque;
@@ -64,8 +103,18 @@ static uint64_t rza1l_spibsc_read(void *opaque, hwaddr offset, unsigned size)
         break;
     case SPIBSC_SMRDR0:
     case SPIBSC_SMRDR1:
-        /* No flash attached: read data is zero (status WIP clear). */
-        reg = 0;
+        /*
+         * No flash attached. Array reads see erased flash (all-ones) so the
+         * firmware's settings-sector validity check behaves as on factory
+         * hardware; status/ID/config reads see zero (WIP clear / not busy).
+         */
+        if (rza1l_spibsc_cmd_reads_flash_array(
+                (s->regs[SPIBSC_SMCMR / 4] >> SMCMR_CMD_SHIFT)
+                & SMCMR_CMD_MASK)) {
+            reg = 0xffffffffu;
+        } else {
+            reg = 0;
+        }
         break;
     default:
         reg = (offset < RZA1L_SPIBSC_MMIO_SIZE) ? s->regs[offset / 4] : 0;
