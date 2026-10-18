@@ -1,11 +1,24 @@
 diff --git a/audio/coreaudio.m b/audio/coreaudio.m
-index e4ec1df971..3b74193660 100644
+index e4ec1df..3d6a8b2 100644
 --- a/audio/coreaudio.m
 +++ b/audio/coreaudio.m
-@@ -156,6 +156,18 @@ static OSStatus coreaudio_get_out_isrunning(AudioDeviceID id, UInt32 *result)
+@@ -156,6 +156,31 @@ static OSStatus coreaudio_get_out_isrunning(AudioDeviceID id, UInt32 *result)
                                        result);
  }
  
++static OSStatus coreaudio_get_out_streamformat(AudioDeviceID id,
++                                               AudioStreamBasicDescription *d)
++{
++    UInt32 size = sizeof(*d);
++    AudioObjectPropertyAddress addr = {
++        kAudioDevicePropertyStreamFormat,
++        kAudioDevicePropertyScopeOutput,
++        kAudioObjectPropertyElementMain
++    };
++
++    return AudioObjectGetPropertyData(id, &addr, 0, NULL, &size, d);
++}
++
 +static OSStatus coreaudio_get_out_nominal_rate(AudioDeviceID id, Float64 *rate)
 +{
 +    UInt32 size = sizeof(*rate);
@@ -21,7 +34,7 @@ index e4ec1df971..3b74193660 100644
  static void coreaudio_logstatus(OSStatus status)
  {
      const char *str = "BUG";
-@@ -335,20 +347,68 @@ static OSStatus out_device_ioproc(
+@@ -335,20 +360,68 @@ static OSStatus out_device_ioproc(
          return 0;
      }
  
@@ -104,15 +117,46 @@ index e4ec1df971..3b74193660 100644
      }
  
      coreaudio_voice_out_buf_unlock(core, "out_device_ioproc");
-@@ -445,6 +505,7 @@ static OSStatus init_out_device(CoreaudioVoiceOut *core)
-         return status;
+@@ -439,12 +512,34 @@ static OSStatus init_out_device(CoreaudioVoiceOut *core)
+         return 0;
+     }
+     if (status != kAudioHardwareNoError) {
+-        coreaudio_playback_logerr(status,
+-                                  "Could not set samplerate %lf",
+-                                  stream_basic_description.mSampleRate);
+-        return status;
++        /*
++         * Some devices (notably virtual output drivers) reject every write to
++         * the stream format with kAudioHardwareIllegalOperationError, even one
++         * identical to the format they are already running. If the device's
++         * current format is already one we can feed -- interleaved 32-bit
++         * float PCM at our rate, with at least our channel count (the IOProc
++         * handles wider frames) -- use it as-is instead of failing.
++         */
++        AudioStreamBasicDescription cur;
++
++        if (coreaudio_get_out_streamformat(device_id, &cur) ==
++                kAudioHardwareNoError &&
++            cur.mFormatID == kAudioFormatLinearPCM &&
++            (cur.mFormatFlags & kLinearPCMFormatFlagIsFloat) &&
++            !(cur.mFormatFlags & kAudioFormatFlagIsNonInterleaved) &&
++            cur.mBitsPerChannel == 32 &&
++            cur.mChannelsPerFrame >= stream_basic_description.mChannelsPerFrame &&
++            (int)(cur.mSampleRate + 0.5) == core->hw.info.freq) {
++            status = kAudioHardwareNoError;
++        } else {
++            coreaudio_playback_logerr(status,
++                                      "Could not set samplerate %lf",
++                                      stream_basic_description.mSampleRate);
++            return status;
++        }
      }
  
 +
      /*
       * set Callback.
       *
-@@ -586,12 +647,44 @@ static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as)
+@@ -586,12 +681,44 @@ static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as)
      obt_as = *as;
      as = &obt_as;
      as->fmt = AUDIO_FORMAT_F32;
